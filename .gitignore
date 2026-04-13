@@ -1,0 +1,14 @@
+build/
+build-release/
+out/
+.cache/
+cmake-build-*/
+.idea/
+.vs/
+.vscode/
+CMakeUserPresets.json
+.DS_Store
+CMakeCache.txt
+CmakeFiles/
+cmake_install.cmake
+Makefile

@@ -1,0 +1,138 @@
+#pragma once
+
+#include "sim/BodyState.hpp"
+#include "sim/CommandQueue.hpp"
+#include "sim/IdIndexMap.hpp"
+#include "sim/QuadTree.hpp"
+#include "sim/SimulationConfig.hpp"
+#include "sim/ThreadPool.hpp"
+#include "sim/UniformGrid.hpp"
+
+#include <atomic>
+#include <cstddef>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
+#include <stop_token>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace sim {
+
+struct BodySnapshot {
+	BodyId id = 0;
+	double x = 0.0;
+	double y = 0.0;
+	double vx = 0.0;
+	double vy = 0.0;
+	double mass = 0.0;
+	double radius = 0.0;
+};
+
+class SimulationEngine {
+   public:
+	explicit SimulationEngine(SimulationConfig config = {});
+	~SimulationEngine();
+
+	SimulationEngine(const SimulationEngine&) = delete;
+	SimulationEngine& operator=(const SimulationEngine&) = delete;
+
+	void start();
+	void stop();
+
+	void queueSpawn(const SpawnCommand& command);
+	void queueDelete(BodyId id);
+	void queueDeleteNearest(double x, double y, double maxDistance);
+	void queueClearAll();
+	void queueReplaceWorld(const std::vector<SpawnCommand>& bodies);
+
+	[[nodiscard]] std::optional<BodyId> findNearestBody(double x,
+	                                                    double y,
+	                                                    double maxDistance) const;
+	[[nodiscard]] std::optional<BodySnapshot> bodyById(BodyId id) const;
+	[[nodiscard]] std::size_t bodyCount() const;
+
+	void withReadState(const std::function<void(const BodyState&)>& fn) const;
+	void withReadSnapshot(const std::function<void(const BodyState&, const IdIndexMap&)>& fn) const;
+	void copyBodies(std::vector<BodySnapshot>& out) const;
+
+	[[nodiscard]] SimulationConfig config() const;
+	[[nodiscard]] double simulationTimeSeconds() const;
+	[[nodiscard]] double updatesPerSecond() const;
+	[[nodiscard]] double simulatedSecondsPerRealSecond() const;
+	[[nodiscard]] double simulatedSecondsPerUpdate() const;
+	void resetSimulationTimer();
+	void setSimulationTimer(double seconds);
+
+	void setMode(SimulationMode mode);
+	void toggleMode();
+	void setPaused(bool paused);
+	void togglePaused();
+	void setTimeScale(double timeScale);
+	void scaleTimeBy(double factor);
+	void setFixedDt(double fixedDtSeconds);
+	void setRealtimeDtRange(double minDtSeconds, double maxDtSeconds);
+	void setGravityConstant(double gravitationalConstant);
+	void setCollisionCellScale(double cellScale);
+	void setTheta(double theta);
+	void setSoftening(double epsilon);
+	void setWorkerCount(std::size_t workers);
+
+	void seedCircularCloud(std::size_t count, double centerX, double centerY, double spreadRadius);
+	void drainMergeRemapEvents(std::vector<std::pair<BodyId, BodyId>>& out);
+
+   private:
+	void simulationLoop(std::stop_token stopToken);
+	void step(double dt, const SimulationConfig& cfg);
+
+	static void removeBodyAt(BodyState& state, IdIndexMap& idMap, std::uint32_t denseIndex);
+	static void applyCommands(BodyState& state,
+	                          IdIndexMap& idMap,
+	                          const std::vector<SimCommand>& commands);
+	void mergeOverlaps(BodyState& state,
+	                   IdIndexMap& idMap,
+	                   const std::vector<UniformGrid::OverlapPair>& overlaps);
+	void recordMergeRemap(BodyId from, BodyId to);
+
+	[[nodiscard]] SimulationConfig currentConfig() const;
+	void updateConfig(const std::function<void(SimulationConfig&)>& fn);
+	[[nodiscard]] std::size_t desiredWorkers(const SimulationConfig& cfg) const;
+
+	mutable std::shared_mutex stateMutex_;
+	BodyState states_[2];
+	IdIndexMap idMaps_[2];
+	int readIndex_ = 0;
+
+	mutable std::mutex configMutex_;
+	SimulationConfig config_;
+
+	CommandQueue commandQueue_;
+	ThreadPool threadPool_;
+	BarnesHutTree currentTree_;
+	BarnesHutTree predictedTree_;
+	UniformGrid collisionGrid_;
+
+	std::vector<SimCommand> drainedCommands_;
+	std::vector<UniformGrid::OverlapPair> overlapPairs_;
+	std::vector<double> acc0X_;
+	std::vector<double> acc0Y_;
+	std::vector<double> predX_;
+	std::vector<double> predY_;
+	std::vector<double> acc1X_;
+	std::vector<double> acc1Y_;
+
+	std::jthread simulationThread_;
+	std::atomic_bool running_{false};
+	std::atomic<double> updatesPerSecond_{0.0};
+	std::atomic<double> simulatedSecondsPerRealSecond_{0.0};
+	std::atomic<double> simulatedSecondsPerUpdate_{0.0};
+	mutable std::mutex timerMutex_;
+	double simulatedSeconds_ = 0.0;
+	std::mutex mergeMutex_;
+	std::vector<std::pair<BodyId, BodyId>> mergeRemapEvents_;
+	mutable std::mutex lifecycleMutex_;
+};
+
+}  // namespace sim
