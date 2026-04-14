@@ -84,8 +84,9 @@ int main() {
 	config.mode = sim::SimulationMode::RealTimeVariableStep;
 	config.timeScale = 3600.0;
 	config.fixedDtSeconds = 1.0 / 240.0;
-	config.realtimeMinDtSeconds = 1.0 / 240.0;
-	config.realtimeMaxDtSeconds = 1.0 / 30.0;
+	config.realtimeDtWindowSize = 120;
+	config.realtimeDtSpikeClampMultiplier = 6.0;
+	config.realtimeDtClampWarmupSamples = 16;
 	config.gravitationalConstant = 6.67430e-11;
 	config.softeningEpsilon = 1.0e6;
 	config.barnesHutTheta = 0.6;
@@ -111,6 +112,7 @@ int main() {
 	    .dt = 1.0 / 120.0,
 	    .maxAttractors = 1500,
 	});
+	engine.setDebugMetricsEnabled(ui.showDebugInfo);
 
 	auto applyScenario = [&](const std::vector<sim::SpawnCommand>& bodies) {
 		engine.queueReplaceWorld(bodies);
@@ -134,6 +136,8 @@ int main() {
 	std::vector<std::pair<sim::BodyId, sim::BodyId>> mergeRemapEvents;
 	std::vector<sf::Vector2f> selectedPrediction;
 	std::vector<sf::Vector2f> creationPrediction;
+	std::optional<sim::BodyId> trackedFollowId;
+	std::optional<sf::Vector2f> trackedFollowPosition;
 
 	auto statusUntil = std::chrono::steady_clock::now();
 	auto setStatus = [&](const std::string& message, double seconds) {
@@ -215,8 +219,9 @@ int main() {
 		engine.setMode(loaded.simConfig.mode);
 		engine.setTimeScale(loaded.simConfig.timeScale);
 		engine.setFixedDt(loaded.simConfig.fixedDtSeconds);
-		engine.setRealtimeDtRange(loaded.simConfig.realtimeMinDtSeconds,
-		                          loaded.simConfig.realtimeMaxDtSeconds);
+		engine.setRealtimeDtOutlierClamp(loaded.simConfig.realtimeDtWindowSize,
+		                                 loaded.simConfig.realtimeDtSpikeClampMultiplier,
+		                                 loaded.simConfig.realtimeDtClampWarmupSamples);
 		engine.setGravityConstant(loaded.simConfig.gravitationalConstant);
 		engine.setSoftening(loaded.simConfig.softeningEpsilon);
 		engine.setTheta(loaded.simConfig.barnesHutTheta);
@@ -288,6 +293,13 @@ int main() {
 				break;
 			case ui::Action::ToggleLabels:
 				ui.showLabels = !ui.showLabels;
+				break;
+			case ui::Action::ToggleDebugInfo:
+				ui.showDebugInfo = !ui.showDebugInfo;
+				engine.setDebugMetricsEnabled(ui.showDebugInfo);
+				setStatus(
+				    std::string("Debug overlay ") + (ui.showDebugInfo ? "enabled" : "disabled"),
+				    1.8);
 				break;
 			case ui::Action::ToggleCreationTool:
 				ui.creation.toggleEnabled();
@@ -400,6 +412,8 @@ int main() {
 			ui.showPredictions = !ui.showPredictions;
 		} else if (action.itemId == "labels.toggle") {
 			ui.showLabels = !ui.showLabels;
+		} else if (action.itemId == "debug.toggle") {
+			dispatchAction(ui::Action::ToggleDebugInfo);
 		} else if (action.itemId == "predict.horizon" && action.adjustDelta != 0) {
 			ui.predictor.scaleHorizon(action.adjustDelta > 0 ? 1.15 : (1.0 / 1.15));
 		} else if (action.itemId == "action.save") {
@@ -424,8 +438,24 @@ int main() {
 	auto lastFrameTime = std::chrono::steady_clock::now();
 	auto lastPredictTime = lastFrameTime;
 	double fps = 0.0;
+	const auto currentSimSecondsPerRealSecond = [&engine]() {
+		const double measured = engine.simulatedSecondsPerRealSecond();
+		if (std::isfinite(measured) && measured > 0.0) {
+			return measured;
+		}
+		const sim::SimulationConfig liveCfg = engine.config();
+		if (!std::isfinite(liveCfg.timeScale) || liveCfg.timeScale <= 0.0) {
+			return 1.0;
+		}
+		if (liveCfg.mode == sim::SimulationMode::DeterministicFixedStep) {
+			return liveCfg.timeScale * std::max(1.0, engine.updatesPerSecond());
+		}
+		return liveCfg.timeScale;
+	};
 
 	while (window.isOpen()) {
+		ui.creation.setFollowReferenceFrame(ui.selection.followEnabled());
+
 		const auto now = std::chrono::steady_clock::now();
 		const double frameDt = std::chrono::duration<double>(now - lastFrameTime).count();
 		lastFrameTime = now;
@@ -464,7 +494,8 @@ int main() {
 					}
 				}
 				const std::optional<sim::BodySnapshot> selectedForCreation =
-				    ui.selection.selectedId().has_value()
+				    (ui.selection.selectedId().has_value() &&
+				     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
 				        ? engine.bodyById(*ui.selection.selectedId())
 				        : std::nullopt;
 				ui.creation.updateCursor(renderer.screenToWorld(moved->position),
@@ -492,11 +523,12 @@ int main() {
 				if (mousePressed->button == sf::Mouse::Button::Left) {
 					if (ui.creation.enabled()) {
 						const std::optional<sim::BodySnapshot> selectedBody =
-						    ui.selection.selectedId().has_value()
+						    (ui.selection.selectedId().has_value() &&
+						     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
 						        ? engine.bodyById(*ui.selection.selectedId())
 						        : std::nullopt;
 						const std::optional<sim::SpawnCommand> spawn = ui.creation.handleLeftClick(
-						    world, selectedBody, engine.config().timeScale);
+						    world, selectedBody, currentSimSecondsPerRealSecond());
 						if (spawn.has_value()) {
 							engine.queueSpawn(*spawn);
 							if (ui.creation.negativeMass() && ui.showNegativeMassWarning) {
@@ -593,6 +625,7 @@ int main() {
 		renderer.update(frameDt);
 
 		const sim::SimulationConfig cfg = engine.config();
+		const sim::EngineDebugStats debugStats = engine.debugStats();
 
 		engine.drainMergeRemapEvents(mergeRemapEvents);
 		ui.selection.applyMergeRemap(mergeRemapEvents);
@@ -602,9 +635,26 @@ int main() {
 		const std::optional<sim::BodySnapshot> selectedBody =
 		    ui.selection.selectedId().has_value() ? engine.bodyById(*ui.selection.selectedId())
 		                                          : std::nullopt;
+		const std::optional<sim::BodySnapshot> creationReferenceBody =
+		    (selectedBody.has_value() &&
+		     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
+		        ? selectedBody
+		        : std::nullopt;
 		if (ui.selection.followEnabled() && selectedBody.has_value()) {
-			renderer.setViewCenter(sf::Vector2f(static_cast<float>(selectedBody->x),
-			                                    static_cast<float>(selectedBody->y)));
+			const sf::Vector2f currentSelectedPos(static_cast<float>(selectedBody->x),
+			                                      static_cast<float>(selectedBody->y));
+			if (trackedFollowId.has_value() && trackedFollowPosition.has_value() &&
+			    (*trackedFollowId == selectedBody->id)) {
+				const sf::Vector2f followDelta = currentSelectedPos - *trackedFollowPosition;
+				renderer.setViewCenter(renderer.view().getCenter() + followDelta);
+			} else {
+				renderer.setViewCenter(currentSelectedPos);
+			}
+			trackedFollowId = selectedBody->id;
+			trackedFollowPosition = currentSelectedPos;
+		} else {
+			trackedFollowId.reset();
+			trackedFollowPosition.reset();
 		}
 
 		engine.copyBodies(bodies);
@@ -629,30 +679,27 @@ int main() {
 		}
 
 		auto predictorSettings = ui.predictor.settings();
+		const double measuredSimDt = engine.simulatedSecondsPerUpdate();
 		const double predictorBaseDt =
-		    (cfg.mode == sim::SimulationMode::DeterministicFixedStep)
-		        ? cfg.fixedDtSeconds
-		        : (cfg.realtimeMinDtSeconds + cfg.realtimeMaxDtSeconds) * 0.5;
-		predictorSettings.dt = std::clamp(predictorBaseDt * cfg.timeScale, 1e-3, 2.0e6);
+		    measuredSimDt > 0.0
+		        ? measuredSimDt
+		        : ((cfg.mode == sim::SimulationMode::DeterministicFixedStep)
+		               ? cfg.timeScale
+		               : (cfg.timeScale / std::max(1.0, engine.updatesPerSecond())));
+		predictorSettings.dt = std::max(1e-9, predictorBaseDt);
 		ui.predictor.setSettings(predictorSettings);
 		const double simSecondsPerUpdate =
 		    (engine.simulatedSecondsPerUpdate() > 0.0)
 		        ? engine.simulatedSecondsPerUpdate()
 		        : ((cfg.mode == sim::SimulationMode::DeterministicFixedStep)
-		               ? (cfg.fixedDtSeconds * cfg.timeScale)
+		               ? cfg.timeScale
 		               : predictorSettings.dt);
-		const double displayTimeRate =
-		    (engine.simulatedSecondsPerRealSecond() > 0.0)
-		        ? engine.simulatedSecondsPerRealSecond()
-		        : ((cfg.mode == sim::SimulationMode::DeterministicFixedStep)
-		               ? (simSecondsPerUpdate * std::max(1.0, engine.updatesPerSecond()))
-		               : cfg.timeScale);
+		const double displayTimeRate = currentSimSecondsPerRealSecond();
 		const std::string timeScaleDisplay =
 		    (cfg.mode == sim::SimulationMode::DeterministicFixedStep)
 		        ? (ui::formatTimeLegacy(displayTimeRate) + "/s (" +
 		           ui::formatTimeLegacy(simSecondsPerUpdate) + "/U)")
-		        : (ui::formatTimeLegacy(cfg.timeScale) + "/s (actual " +
-		           ui::formatTimeLegacy(displayTimeRate) + "/s)");
+		        : (ui::formatTimeLegacy(cfg.timeScale) + "/s");
 		const std::string predictWindowDisplay = ui::formatTimeLegacy(
 		    static_cast<double>(ui.predictor.settings().steps) * predictorSettings.dt);
 		const std::string scaleDisplay =
@@ -669,7 +716,7 @@ int main() {
 				    bodies, selectedBody->id, cfg.gravitationalConstant, cfg.softeningEpsilon);
 			}
 			const std::optional<sim::SpawnCommand> previewSpawn =
-			    ui.creation.previewSpawn(selectedBody, engine.config().timeScale);
+			    ui.creation.previewSpawn(creationReferenceBody, currentSimSecondsPerRealSecond());
 			if (previewSpawn.has_value() &&
 			    ui.creation.step() == ui::CreationTool::Step::SetVelocity) {
 				const sim::SimulationConfig cfg = engine.config();
@@ -703,6 +750,7 @@ int main() {
 		     false},
 		    {"predict.enabled", "Predictions", ui.showPredictions ? "On" : "Off", false},
 		    {"labels.toggle", "Labels", ui.showLabels ? "On" : "Off", false},
+		    {"debug.toggle", "Debug Overlay", ui.showDebugInfo ? "On" : "Off", false},
 		    {"predict.horizon", "Prediction Horizon", predictWindowDisplay, true},
 		    {"action.save", "Save World", "F9", false},
 		    {"action.load", "Load World", "F10", false},
@@ -722,11 +770,11 @@ int main() {
 			sf::Vector2f anchor = ui.creation.anchor();
 			const float radius = ui.creation.previewRadius();
 			sf::Vector2f cursor = ui.creation.cursor();
-			if (ui.creation.relativeFrame() && selectedBody.has_value()) {
-				anchor += sf::Vector2f(static_cast<float>(selectedBody->x),
-				                       static_cast<float>(selectedBody->y));
-				cursor += sf::Vector2f(static_cast<float>(selectedBody->x),
-				                       static_cast<float>(selectedBody->y));
+			if (creationReferenceBody.has_value()) {
+				anchor += sf::Vector2f(static_cast<float>(creationReferenceBody->x),
+				                       static_cast<float>(creationReferenceBody->y));
+				cursor += sf::Vector2f(static_cast<float>(creationReferenceBody->x),
+				                       static_cast<float>(creationReferenceBody->y));
 			}
 			sf::CircleShape ghost(radius);
 			ghost.setOrigin(sf::Vector2f(radius, radius));
@@ -754,10 +802,11 @@ int main() {
 
 			const sf::Font* infoFont = overlay.fontPtr();
 			const std::optional<sim::SpawnCommand> previewSpawn =
-			    ui.creation.previewSpawn(selectedBody, cfg.timeScale);
+			    ui.creation.previewSpawn(creationReferenceBody, currentSimSecondsPerRealSecond());
 			if (infoFont != nullptr && previewSpawn.has_value()) {
 				const double speed = std::sqrt(previewSpawn->vx * previewSpawn->vx +
-				                               previewSpawn->vy * previewSpawn->vy);
+				                               previewSpawn->vy * previewSpawn->vy) *
+				                     currentSimSecondsPerRealSecond();
 				double distanceToSelected = 0.0;
 				bool hasDistance = false;
 				if (selectedBody.has_value()) {
@@ -835,6 +884,40 @@ int main() {
 		        " | Predictions: " + std::string(ui.showPredictions ? "On" : "Off") +
 		        " | Horizon steps: " + std::to_string(ui.predictor.settings().steps),
 		};
+		if (ui.showDebugInfo) {
+			const double contrib0 = debugStats.avgContributionsAcc0;
+			const double contrib1 = debugStats.avgContributionsAcc1;
+			const std::string treeLine =
+			    debugStats.usedDirectPath
+			        ? ("Debug force path: direct O(N^2) | avg contrib/body: " +
+			           formatFixed(contrib0, 1) + "/" + formatFixed(contrib1, 1))
+			        : ("Debug tree nodes cur/pred: " + std::to_string(debugStats.currentTreeNodes) +
+			           "/" + std::to_string(debugStats.predictedTreeNodes) +
+			           " | avg contrib/body: " + formatFixed(contrib0, 1) + "/" +
+			           formatFixed(contrib1, 1));
+			hudLines.push_back(treeLine);
+			hudLines.push_back(
+			    "Debug avg node visits acc0/acc1: " + formatFixed(debugStats.avgNodeVisitsAcc0, 1) +
+			    "/" + formatFixed(debugStats.avgNodeVisitsAcc1, 1) +
+			    " | direct interactions: " + formatFixed(debugStats.avgDirectInteractionsAcc0, 1) +
+			    "/" + formatFixed(debugStats.avgDirectInteractionsAcc1, 1));
+			hudLines.push_back("Debug avg aggregate approximations acc0/acc1: " +
+			                   formatFixed(debugStats.avgAggregateApproximationsAcc0, 1) + "/" +
+			                   formatFixed(debugStats.avgAggregateApproximationsAcc1, 1) +
+			                   " | overlap pairs: " + std::to_string(debugStats.overlapPairs) +
+			                   " | merged bodies: " + std::to_string(debugStats.mergedBodies));
+			hudLines.push_back("Debug step ms total/cmd/tree/acc0/tree2: " +
+			                   formatFixed(debugStats.totalStepMs, 3) + "/" +
+			                   formatFixed(debugStats.commandsMs, 3) + "/" +
+			                   formatFixed(debugStats.currentTreeBuildMs, 3) + "/" +
+			                   formatFixed(debugStats.acc0Ms, 3) + "/" +
+			                   formatFixed(debugStats.predictedTreeBuildMs, 3));
+			hudLines.push_back(
+			    "Debug step ms acc1/int/coll/merge/pub: " + formatFixed(debugStats.acc1Ms, 3) +
+			    "/" + formatFixed(debugStats.integrateMs, 3) + "/" +
+			    formatFixed(debugStats.collisionMs, 3) + "/" + formatFixed(debugStats.mergeMs, 3) +
+			    "/" + formatFixed(debugStats.publishMs, 3));
+		}
 		if (!ui.statusMessage.empty()) {
 			hudLines.push_back("Status: " + ui.statusMessage);
 		}

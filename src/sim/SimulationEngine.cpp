@@ -27,6 +27,10 @@ namespace {
 	return fallback;
 }
 
+[[nodiscard]] double durationMs(std::chrono::steady_clock::duration duration) {
+	return std::chrono::duration<double, std::milli>(duration).count();
+}
+
 }  // namespace
 
 SimulationEngine::SimulationEngine(SimulationConfig config) : config_(config) {
@@ -190,6 +194,11 @@ double SimulationEngine::simulatedSecondsPerUpdate() const {
 	return simulatedSecondsPerUpdate_.load(std::memory_order_relaxed);
 }
 
+EngineDebugStats SimulationEngine::debugStats() const {
+	std::lock_guard<std::mutex> lock(debugMutex_);
+	return debugStats_;
+}
+
 void SimulationEngine::resetSimulationTimer() {
 	std::lock_guard<std::mutex> lock(timerMutex_);
 	simulatedSeconds_ = 0.0;
@@ -201,15 +210,33 @@ void SimulationEngine::setSimulationTimer(double seconds) {
 }
 
 void SimulationEngine::setMode(SimulationMode mode) {
-	updateConfig([mode](SimulationConfig& cfg) { cfg.mode = mode; });
+	updateConfig([this, mode](SimulationConfig& cfg) {
+		if (cfg.mode == mode) {
+			return;
+		}
+		double ups = updatesPerSecond_.load(std::memory_order_relaxed);
+		if (!std::isfinite(ups) || ups < 1.0) {
+			ups = 1.0;
+		}
+		if (cfg.mode == SimulationMode::RealTimeVariableStep &&
+		    mode == SimulationMode::DeterministicFixedStep) {
+			cfg.timeScale /= ups;
+		} else if (cfg.mode == SimulationMode::DeterministicFixedStep &&
+		           mode == SimulationMode::RealTimeVariableStep) {
+			cfg.timeScale *= ups;
+		}
+		if (!std::isfinite(cfg.timeScale) || cfg.timeScale <= 0.0) {
+			cfg.timeScale = 1.0;
+		}
+		cfg.mode = mode;
+	});
 }
 
 void SimulationEngine::toggleMode() {
-	updateConfig([](SimulationConfig& cfg) {
-		cfg.mode = (cfg.mode == SimulationMode::DeterministicFixedStep)
-		               ? SimulationMode::RealTimeVariableStep
-		               : SimulationMode::DeterministicFixedStep;
-	});
+	const SimulationConfig cfg = currentConfig();
+	setMode(cfg.mode == SimulationMode::DeterministicFixedStep
+	            ? SimulationMode::RealTimeVariableStep
+	            : SimulationMode::DeterministicFixedStep);
 }
 
 void SimulationEngine::setPaused(bool paused) {
@@ -221,28 +248,45 @@ void SimulationEngine::togglePaused() {
 }
 
 void SimulationEngine::setTimeScale(double timeScale) {
-	updateConfig(
-	    [timeScale](SimulationConfig& cfg) { cfg.timeScale = std::clamp(timeScale, 1e-5, 1e8); });
+	updateConfig([timeScale](SimulationConfig& cfg) {
+		if (std::isfinite(timeScale) && timeScale > 0.0) {
+			cfg.timeScale = timeScale;
+		}
+	});
 }
 
 void SimulationEngine::scaleTimeBy(double factor) {
 	updateConfig([factor](SimulationConfig& cfg) {
-		cfg.timeScale = std::clamp(cfg.timeScale * factor, 1e-5, 1e8);
+		if (!std::isfinite(factor) || factor <= 0.0) {
+			return;
+		}
+		const double next = cfg.timeScale * factor;
+		if (std::isfinite(next) && next > 0.0) {
+			cfg.timeScale = next;
+		}
 	});
 }
 
 void SimulationEngine::setFixedDt(double fixedDtSeconds) {
 	updateConfig([fixedDtSeconds](SimulationConfig& cfg) {
-		cfg.fixedDtSeconds = std::clamp(fixedDtSeconds, 1e-6, 1.0);
+		if (std::isfinite(fixedDtSeconds) && fixedDtSeconds > 0.0) {
+			cfg.fixedDtSeconds = fixedDtSeconds;
+		}
 	});
 }
 
-void SimulationEngine::setRealtimeDtRange(double minDtSeconds, double maxDtSeconds) {
-	updateConfig([minDtSeconds, maxDtSeconds](SimulationConfig& cfg) {
-		const double mn = std::clamp(minDtSeconds, 1e-6, 1.0);
-		const double mx = std::clamp(maxDtSeconds, mn, 2.0);
-		cfg.realtimeMinDtSeconds = mn;
-		cfg.realtimeMaxDtSeconds = mx;
+void SimulationEngine::setRealtimeDtOutlierClamp(std::size_t windowSize,
+                                                 double spikeClampMultiplier,
+                                                 std::size_t warmupSamples) {
+	updateConfig([windowSize, spikeClampMultiplier, warmupSamples](SimulationConfig& cfg) {
+		const std::size_t safeWindow = std::max<std::size_t>(1, windowSize);
+		const std::size_t safeWarmup =
+		    std::min(safeWindow, std::max<std::size_t>(1, warmupSamples));
+		if (std::isfinite(spikeClampMultiplier) && spikeClampMultiplier >= 1.0) {
+			cfg.realtimeDtSpikeClampMultiplier = spikeClampMultiplier;
+		}
+		cfg.realtimeDtWindowSize = safeWindow;
+		cfg.realtimeDtClampWarmupSamples = safeWarmup;
 	});
 }
 
@@ -270,6 +314,14 @@ void SimulationEngine::setSoftening(double epsilon) {
 
 void SimulationEngine::setWorkerCount(std::size_t workers) {
 	updateConfig([workers](SimulationConfig& cfg) { cfg.workerCount = workers; });
+}
+
+void SimulationEngine::setDebugMetricsEnabled(bool enabled) {
+	debugMetricsEnabled_.store(enabled, std::memory_order_relaxed);
+}
+
+bool SimulationEngine::debugMetricsEnabled() const {
+	return debugMetricsEnabled_.load(std::memory_order_relaxed);
 }
 
 void SimulationEngine::seedCircularCloud(std::size_t count,
@@ -313,6 +365,10 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 	std::size_t stepsSinceUpsSample = 0;
 	double simulatedSecondsSinceSample = 0.0;
 	SimulationMode lastMode = currentConfig().mode;
+	std::vector<double> realtimeDtWindow;
+	std::size_t realtimeDtWrite = 0;
+	std::size_t realtimeDtCount = 0;
+	double realtimeDtSum = 0.0;
 
 	while (!stopToken.stop_requested()) {
 		const SimulationConfig cfg = currentConfig();
@@ -325,6 +381,10 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 			stepsSinceUpsSample = 0;
 			simulatedSecondsSinceSample = 0.0;
 			lastUpsSample = now;
+			realtimeDtWrite = 0;
+			realtimeDtCount = 0;
+			realtimeDtSum = 0.0;
+			realtimeDtWindow.clear();
 			updatesPerSecond_.store(0.0, std::memory_order_relaxed);
 			simulatedSecondsPerRealSecond_.store(0.0, std::memory_order_relaxed);
 			simulatedSecondsPerUpdate_.store(0.0, std::memory_order_relaxed);
@@ -335,34 +395,62 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 		}
 
 		if (cfg.paused) {
-			const double sampleWindow =
-			    std::chrono::duration<double>(clock::now() - lastUpsSample).count();
-			if (sampleWindow >= 0.25) {
-				updatesPerSecond_.store(0.0, std::memory_order_relaxed);
-				simulatedSecondsPerRealSecond_.store(0.0, std::memory_order_relaxed);
-				simulatedSecondsPerUpdate_.store(0.0, std::memory_order_relaxed);
-				stepsSinceUpsSample = 0;
-				simulatedSecondsSinceSample = 0.0;
-				lastUpsSample = clock::now();
-			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			continue;
 		}
 
 		if (cfg.mode == SimulationMode::DeterministicFixedStep) {
-			// Deterministic mode intentionally runs at maximum update throughput.
-			// This keeps step size fixed, but does not gate simulation by wall-clock pacing.
-			const double scaledFixedDt = std::max(1e-6, cfg.fixedDtSeconds * cfg.timeScale);
-			step(scaledFixedDt, cfg);
+			// Legacy-accurate mode: fixed simulation seconds per update.
+			const double dt =
+			    std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0 ? cfg.timeScale : 1.0;
+			step(dt, cfg);
 			++stepsSinceUpsSample;
-			simulatedSecondsSinceSample += scaledFixedDt;
+			simulatedSecondsSinceSample += dt;
 		} else {
-			const double elapsedRealtime = std::max(0.0, elapsed);
-			const double realtimeDt = std::min(elapsedRealtime, cfg.realtimeMaxDtSeconds);
-			if (realtimeDt <= 0.0) {
+			const std::size_t windowSize = std::max<std::size_t>(1, cfg.realtimeDtWindowSize);
+			if (realtimeDtWindow.size() != windowSize) {
+				realtimeDtWindow.assign(windowSize, 0.0);
+				realtimeDtWrite = 0;
+				realtimeDtCount = 0;
+				realtimeDtSum = 0.0;
+			}
+
+			double wallDt = std::max(0.0, elapsed);
+			if (!std::isfinite(wallDt) || wallDt <= 0.0) {
 				continue;
 			}
-			const double dt = realtimeDt * cfg.timeScale;
+
+			double avgDt = wallDt;
+			if (realtimeDtCount > 0) {
+				avgDt = realtimeDtSum / static_cast<double>(realtimeDtCount);
+			}
+			const std::size_t warmup =
+			    std::min(windowSize, std::max<std::size_t>(1, cfg.realtimeDtClampWarmupSamples));
+			const double spikeMultiplier = (std::isfinite(cfg.realtimeDtSpikeClampMultiplier) &&
+			                                cfg.realtimeDtSpikeClampMultiplier >= 1.0)
+			                                   ? cfg.realtimeDtSpikeClampMultiplier
+			                                   : 1.0;
+			if (realtimeDtCount >= warmup) {
+				wallDt = std::min(wallDt, avgDt * spikeMultiplier);
+			}
+
+			if (realtimeDtCount < windowSize) {
+				realtimeDtWindow[realtimeDtWrite] = wallDt;
+				realtimeDtSum += wallDt;
+				++realtimeDtCount;
+			} else {
+				realtimeDtSum -= realtimeDtWindow[realtimeDtWrite];
+				realtimeDtWindow[realtimeDtWrite] = wallDt;
+				realtimeDtSum += wallDt;
+			}
+			realtimeDtWrite = (realtimeDtWrite + 1) % windowSize;
+
+			const double dt =
+			    wallDt *
+			    (std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0 ? cfg.timeScale : 1.0);
+			if (!std::isfinite(dt) || dt <= 0.0) {
+				continue;
+			}
 			step(dt, cfg);
 			++stepsSinceUpsSample;
 			simulatedSecondsSinceSample += dt;
@@ -387,13 +475,265 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 	}
 }
 
+void SimulationEngine::publishStepResult(int writeIndex,
+                                         double dt,
+                                         bool advanceTimer,
+                                         const std::chrono::steady_clock::time_point& stepStart,
+                                         EngineDebugStats& debug) {
+	using clock = std::chrono::steady_clock;
+	const auto publishStart = clock::now();
+	{
+		std::unique_lock<std::shared_mutex> publishLock(stateMutex_);
+		readIndex_ = writeIndex;
+		if (advanceTimer) {
+			std::lock_guard<std::mutex> timerLock(timerMutex_);
+			simulatedSeconds_ += dt;
+		}
+	}
+	const auto publishEnd = clock::now();
+	debug.publishMs = durationMs(publishEnd - publishStart);
+	debug.totalStepMs = durationMs(publishEnd - stepStart);
+	std::lock_guard<std::mutex> debugLock(debugMutex_);
+	debugStats_ = debug;
+}
+
+void SimulationEngine::stepDirectPath(double dt,
+                                      const SimulationConfig& cfg,
+                                      BodyState& state,
+                                      IdIndexMap& idMap,
+                                      int writeIndex,
+                                      const std::chrono::steady_clock::time_point& stepStart,
+                                      EngineDebugStats& debug) {
+	using clock = std::chrono::steady_clock;
+	const std::size_t n = state.size();
+	debug.usedDirectPath = true;
+
+	const double eps2 = cfg.softeningEpsilon * cfg.softeningEpsilon;
+	auto computeAccelerationDirect = [&](const std::vector<double>& x, const std::vector<double>& y,
+	                                     std::vector<double>& outAx, std::vector<double>& outAy) {
+		for (std::size_t i = 0; i < n; ++i) {
+			double ax = 0.0;
+			double ay = 0.0;
+			for (std::size_t j = 0; j < n; ++j) {
+				if (i == j) {
+					continue;
+				}
+				const double dx = x[j] - x[i];
+				const double dy = y[j] - y[i];
+				const double d2 = dx * dx + dy * dy + eps2;
+				const double invD = 1.0 / std::sqrt(d2);
+				const double invD3 = invD * invD * invD;
+				const double f = cfg.gravitationalConstant * state.mass[j] * invD3;
+				ax += dx * f;
+				ay += dy * f;
+			}
+			outAx[i] = ax;
+			outAy[i] = ay;
+		}
+	};
+
+	const auto acc0Start = clock::now();
+	computeAccelerationDirect(state.posX, state.posY, acc0X_, acc0Y_);
+	const auto acc0End = clock::now();
+	debug.acc0Ms = durationMs(acc0End - acc0Start);
+
+	for (std::size_t i = 0; i < n; ++i) {
+		predX_[i] = state.posX[i] + state.velX[i] * dt + 0.5 * acc0X_[i] * dt * dt;
+		predY_[i] = state.posY[i] + state.velY[i] * dt + 0.5 * acc0Y_[i] * dt * dt;
+	}
+
+	const auto acc1Start = clock::now();
+	computeAccelerationDirect(predX_, predY_, acc1X_, acc1Y_);
+	const auto acc1End = clock::now();
+	debug.acc1Ms = durationMs(acc1End - acc1Start);
+
+	const auto integrateStart = clock::now();
+	for (std::size_t i = 0; i < n; ++i) {
+		state.velX[i] += 0.5 * (acc0X_[i] + acc1X_[i]) * dt;
+		state.velY[i] += 0.5 * (acc0Y_[i] + acc1Y_[i]) * dt;
+		state.posX[i] = predX_[i];
+		state.posY[i] = predY_[i];
+	}
+	const auto integrateEnd = clock::now();
+	debug.integrateMs = durationMs(integrateEnd - integrateStart);
+
+	const auto collisionStart = clock::now();
+	overlapPairs_.clear();
+	for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+		for (std::uint32_t j = i + 1; j < static_cast<std::uint32_t>(n); ++j) {
+			const double dx = state.posX[j] - state.posX[i];
+			const double dy = state.posY[j] - state.posY[i];
+			const double rr = state.radius[i] + state.radius[j];
+			if ((dx * dx + dy * dy) <= rr * rr) {
+				overlapPairs_.emplace_back(i, j);
+			}
+		}
+	}
+	const auto collisionEnd = clock::now();
+	debug.collisionMs = durationMs(collisionEnd - collisionStart);
+	debug.overlapPairs = overlapPairs_.size();
+
+	const auto mergeStart = clock::now();
+	const std::size_t preMergeCount = state.size();
+	if (!overlapPairs_.empty()) {
+		mergeOverlaps(state, idMap, overlapPairs_);
+	}
+	const auto mergeEnd = clock::now();
+	debug.mergeMs = durationMs(mergeEnd - mergeStart);
+	debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
+
+	const double directContribs = static_cast<double>(n > 0 ? (n - 1) : 0);
+	debug.avgDirectInteractionsAcc0 = directContribs;
+	debug.avgDirectInteractionsAcc1 = directContribs;
+	debug.avgContributionsAcc0 = directContribs;
+	debug.avgContributionsAcc1 = directContribs;
+
+	publishStepResult(writeIndex, dt, true, stepStart, debug);
+}
+
+void SimulationEngine::stepBarnesHutPath(double dt,
+                                         const SimulationConfig& cfg,
+                                         BodyState& state,
+                                         IdIndexMap& idMap,
+                                         int writeIndex,
+                                         bool collectTraversalStats,
+                                         const std::chrono::steady_clock::time_point& stepStart,
+                                         EngineDebugStats& debug) {
+	using clock = std::chrono::steady_clock;
+	const std::size_t n = state.size();
+	debug.usedDirectPath = false;
+
+	std::vector<BarnesHutTree::TraversalStats> traversalAcc0;
+	std::vector<BarnesHutTree::TraversalStats> traversalAcc1;
+	if (collectTraversalStats) {
+		traversalAcc0.resize(n);
+		traversalAcc1.resize(n);
+	}
+
+	const double eps2 = cfg.softeningEpsilon * cfg.softeningEpsilon;
+	const auto currentTreeBuildStart = clock::now();
+	currentTree_.build(state.posX, state.posY, state.mass);
+	const auto currentTreeBuildEnd = clock::now();
+	debug.currentTreeBuildMs = durationMs(currentTreeBuildEnd - currentTreeBuildStart);
+	debug.currentTreeNodes = currentTree_.nodeCount();
+	if (currentTree_.empty()) {
+		publishStepResult(writeIndex, dt, false, stepStart, debug);
+		return;
+	}
+
+	const std::size_t workers = std::max<std::size_t>(1, debug.workerCount);
+	const std::size_t chunkSize = std::max<std::size_t>(64, n / (workers * 8 + 1));
+	const auto acc0Start = clock::now();
+	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
+		for (std::size_t i = begin; i < end; ++i) {
+			double ax = 0.0;
+			double ay = 0.0;
+			BarnesHutTree::TraversalStats* stats =
+			    collectTraversalStats ? &traversalAcc0[i] : nullptr;
+			currentTree_.computeAcceleration(i, state.posX[i], state.posY[i], cfg.barnesHutTheta,
+			                                 eps2, cfg.gravitationalConstant, ax, ay, stats);
+			acc0X_[i] = ax;
+			acc0Y_[i] = ay;
+			predX_[i] = state.posX[i] + state.velX[i] * dt + 0.5 * ax * dt * dt;
+			predY_[i] = state.posY[i] + state.velY[i] * dt + 0.5 * ay * dt * dt;
+		}
+	});
+	const auto acc0End = clock::now();
+	debug.acc0Ms = durationMs(acc0End - acc0Start);
+
+	const auto predictedTreeBuildStart = clock::now();
+	predictedTree_.build(predX_, predY_, state.mass);
+	const auto predictedTreeBuildEnd = clock::now();
+	debug.predictedTreeBuildMs = durationMs(predictedTreeBuildEnd - predictedTreeBuildStart);
+	debug.predictedTreeNodes = predictedTree_.nodeCount();
+
+	const auto acc1Start = clock::now();
+	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
+		for (std::size_t i = begin; i < end; ++i) {
+			double ax = 0.0;
+			double ay = 0.0;
+			BarnesHutTree::TraversalStats* stats =
+			    collectTraversalStats ? &traversalAcc1[i] : nullptr;
+			predictedTree_.computeAcceleration(i, predX_[i], predY_[i], cfg.barnesHutTheta, eps2,
+			                                   cfg.gravitationalConstant, ax, ay, stats);
+			acc1X_[i] = ax;
+			acc1Y_[i] = ay;
+		}
+	});
+	const auto acc1End = clock::now();
+	debug.acc1Ms = durationMs(acc1End - acc1Start);
+
+	if (collectTraversalStats) {
+		double nodeVisits0 = 0.0;
+		double nodeVisits1 = 0.0;
+		double direct0 = 0.0;
+		double direct1 = 0.0;
+		double approx0 = 0.0;
+		double approx1 = 0.0;
+		for (std::size_t i = 0; i < n; ++i) {
+			nodeVisits0 += static_cast<double>(traversalAcc0[i].nodeVisits);
+			nodeVisits1 += static_cast<double>(traversalAcc1[i].nodeVisits);
+			direct0 += static_cast<double>(traversalAcc0[i].directBodyInteractions);
+			direct1 += static_cast<double>(traversalAcc1[i].directBodyInteractions);
+			approx0 += static_cast<double>(traversalAcc0[i].aggregateApproximations);
+			approx1 += static_cast<double>(traversalAcc1[i].aggregateApproximations);
+		}
+		const double invN = 1.0 / static_cast<double>(n);
+		debug.avgNodeVisitsAcc0 = nodeVisits0 * invN;
+		debug.avgNodeVisitsAcc1 = nodeVisits1 * invN;
+		debug.avgDirectInteractionsAcc0 = direct0 * invN;
+		debug.avgDirectInteractionsAcc1 = direct1 * invN;
+		debug.avgAggregateApproximationsAcc0 = approx0 * invN;
+		debug.avgAggregateApproximationsAcc1 = approx1 * invN;
+		debug.avgContributionsAcc0 = (direct0 + approx0) * invN;
+		debug.avgContributionsAcc1 = (direct1 + approx1) * invN;
+	}
+
+	const auto integrateStart = clock::now();
+	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
+		for (std::size_t i = begin; i < end; ++i) {
+			state.velX[i] += 0.5 * (acc0X_[i] + acc1X_[i]) * dt;
+			state.velY[i] += 0.5 * (acc0Y_[i] + acc1Y_[i]) * dt;
+			state.posX[i] = predX_[i];
+			state.posY[i] = predY_[i];
+		}
+	});
+	const auto integrateEnd = clock::now();
+	debug.integrateMs = durationMs(integrateEnd - integrateStart);
+
+	const auto collisionStart = clock::now();
+	collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
+	collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
+	const auto collisionEnd = clock::now();
+	debug.collisionMs = durationMs(collisionEnd - collisionStart);
+	debug.overlapPairs = overlapPairs_.size();
+
+	const auto mergeStart = clock::now();
+	const std::size_t preMergeCount = state.size();
+	if (!overlapPairs_.empty()) {
+		mergeOverlaps(state, idMap, overlapPairs_);
+	}
+	const auto mergeEnd = clock::now();
+	debug.mergeMs = durationMs(mergeEnd - mergeStart);
+	debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
+
+	publishStepResult(writeIndex, dt, true, stepStart, debug);
+}
+
 void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	constexpr std::size_t kDirectForceThreshold = 512;
+	using clock = std::chrono::steady_clock;
+	const auto stepStart = clock::now();
 
 	const std::size_t workers = desiredWorkers(cfg);
 	if (workers != threadPool_.workerCount()) {
 		threadPool_.resize(workers);
 	}
+
+	EngineDebugStats debug{};
+	debug.valid = true;
+	debug.workerCount = workers;
+	const bool collectTraversalStats = debugMetricsEnabled_.load(std::memory_order_relaxed);
 
 	int writeIndex = 0;
 	{
@@ -406,13 +746,16 @@ void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	BodyState& state = states_[writeIndex];
 	IdIndexMap& idMap = idMaps_[writeIndex];
 
+	const auto commandsStart = clock::now();
 	commandQueue_.drainTo(drainedCommands_);
 	applyCommands(state, idMap, drainedCommands_);
+	const auto commandsEnd = clock::now();
+	debug.commandsMs = durationMs(commandsEnd - commandsStart);
 
 	const std::size_t n = state.size();
+	debug.bodyCount = n;
 	if (n == 0) {
-		std::unique_lock<std::shared_mutex> publishLock(stateMutex_);
-		readIndex_ = writeIndex;
+		publishStepResult(writeIndex, dt, false, stepStart, debug);
 		return;
 	}
 
@@ -423,114 +766,11 @@ void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	acc1X_.assign(n, 0.0);
 	acc1Y_.assign(n, 0.0);
 
-	const double eps2 = cfg.softeningEpsilon * cfg.softeningEpsilon;
 	if (n <= kDirectForceThreshold) {
-		auto computeAccelerationDirect =
-		    [&](const std::vector<double>& x, const std::vector<double>& y,
-		        std::vector<double>& outAx, std::vector<double>& outAy) {
-			    for (std::size_t i = 0; i < n; ++i) {
-				    double ax = 0.0;
-				    double ay = 0.0;
-				    for (std::size_t j = 0; j < n; ++j) {
-					    if (i == j) {
-						    continue;
-					    }
-					    const double dx = x[j] - x[i];
-					    const double dy = y[j] - y[i];
-					    const double d2 = dx * dx + dy * dy + eps2;
-					    const double d = std::sqrt(d2);
-					    const double invD3 = 1.0 / (d2 * d);
-					    const double f = cfg.gravitationalConstant * state.mass[j] * invD3;
-					    ax += dx * f;
-					    ay += dy * f;
-				    }
-				    outAx[i] = ax;
-				    outAy[i] = ay;
-			    }
-		    };
-
-		computeAccelerationDirect(state.posX, state.posY, acc0X_, acc0Y_);
-		for (std::size_t i = 0; i < n; ++i) {
-			predX_[i] = state.posX[i] + state.velX[i] * dt + 0.5 * acc0X_[i] * dt * dt;
-			predY_[i] = state.posY[i] + state.velY[i] * dt + 0.5 * acc0Y_[i] * dt * dt;
-		}
-		computeAccelerationDirect(predX_, predY_, acc1X_, acc1Y_);
-		for (std::size_t i = 0; i < n; ++i) {
-			state.velX[i] += 0.5 * (acc0X_[i] + acc1X_[i]) * dt;
-			state.velY[i] += 0.5 * (acc0Y_[i] + acc1Y_[i]) * dt;
-			state.posX[i] = predX_[i];
-			state.posY[i] = predY_[i];
-		}
-
-		overlapPairs_.clear();
-		for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
-			for (std::uint32_t j = i + 1; j < static_cast<std::uint32_t>(n); ++j) {
-				const double dx = state.posX[j] - state.posX[i];
-				const double dy = state.posY[j] - state.posY[i];
-				const double rr = state.radius[i] + state.radius[j];
-				if ((dx * dx + dy * dy) <= rr * rr) {
-					overlapPairs_.emplace_back(i, j);
-				}
-			}
-		}
-		if (!overlapPairs_.empty()) {
-			mergeOverlaps(state, idMap, overlapPairs_);
-		}
-
-		std::unique_lock<std::shared_mutex> publishLock(stateMutex_);
-		readIndex_ = writeIndex;
-		std::lock_guard<std::mutex> timerLock(timerMutex_);
-		simulatedSeconds_ += dt;
+		stepDirectPath(dt, cfg, state, idMap, writeIndex, stepStart, debug);
 		return;
 	}
-	currentTree_.build(state.posX, state.posY, state.mass);
-	if (currentTree_.empty()) {
-		return;
-	}
-
-	const std::size_t chunkSize = std::max<std::size_t>(64, n / (workers * 8 + 1));
-	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
-		for (std::size_t i = begin; i < end; ++i) {
-			double ax = 0.0;
-			double ay = 0.0;
-			currentTree_.computeAcceleration(i, state.posX[i], state.posY[i], cfg.barnesHutTheta,
-			                                 eps2, cfg.gravitationalConstant, ax, ay);
-			acc0X_[i] = ax;
-			acc0Y_[i] = ay;
-			predX_[i] = state.posX[i] + state.velX[i] * dt + 0.5 * ax * dt * dt;
-			predY_[i] = state.posY[i] + state.velY[i] * dt + 0.5 * ay * dt * dt;
-		}
-	});
-	predictedTree_.build(predX_, predY_, state.mass);
-	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
-		for (std::size_t i = begin; i < end; ++i) {
-			double ax = 0.0;
-			double ay = 0.0;
-			predictedTree_.computeAcceleration(i, predX_[i], predY_[i], cfg.barnesHutTheta, eps2,
-			                                   cfg.gravitationalConstant, ax, ay);
-			acc1X_[i] = ax;
-			acc1Y_[i] = ay;
-		}
-	});
-
-	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
-		for (std::size_t i = begin; i < end; ++i) {
-			state.velX[i] += 0.5 * (acc0X_[i] + acc1X_[i]) * dt;
-			state.velY[i] += 0.5 * (acc0Y_[i] + acc1Y_[i]) * dt;
-			state.posX[i] = predX_[i];
-			state.posY[i] = predY_[i];
-		}
-	});
-	collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
-	collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
-	if (!overlapPairs_.empty()) {
-		mergeOverlaps(state, idMap, overlapPairs_);
-	}
-
-	std::unique_lock<std::shared_mutex> publishLock(stateMutex_);
-	readIndex_ = writeIndex;
-	std::lock_guard<std::mutex> timerLock(timerMutex_);
-	simulatedSeconds_ += dt;
+	stepBarnesHutPath(dt, cfg, state, idMap, writeIndex, collectTraversalStats, stepStart, debug);
 }
 
 void SimulationEngine::removeBodyAt(BodyState& state, IdIndexMap& idMap, std::uint32_t denseIndex) {

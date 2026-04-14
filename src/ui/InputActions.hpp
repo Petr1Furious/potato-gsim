@@ -19,6 +19,7 @@ enum class Action {
 	ToggleRelativeTrails,
 	TogglePredictions,
 	ToggleLabels,
+	ToggleDebugInfo,
 	ToggleCreationTool,
 	ToggleRelativeCreationFrame,
 	ToggleNegativeMass,

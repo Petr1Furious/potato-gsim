@@ -122,7 +122,8 @@ void InspectorOverlay::drawWorldSelection(
 		window.draw(strip);
 	}
 
-	drawBodyInfoText(window, *body, referenceBody, showDistanceToReference, worldToPixel);
+	drawBodyInfoText(window, *body, referenceBody, showDistanceToReference, arrowScale,
+	                 worldToPixel);
 }
 
 void InspectorOverlay::drawBodyInfoText(
@@ -130,6 +131,7 @@ void InspectorOverlay::drawBodyInfoText(
     const sim::BodySnapshot& body,
     const std::optional<sim::BodySnapshot>& referenceBody,
     bool showDistance,
+    double speedScale,
     const std::function<sf::Vector2i(const sf::Vector2f&)>& worldToPixel) const {
 	if (!fontReady_) {
 		return;
@@ -153,7 +155,7 @@ void InspectorOverlay::drawBodyInfoText(
 		distance = std::sqrt(dx * dx + dy * dy);
 		hasDistance = true;
 	}
-	const double speed = std::sqrt(relVx * relVx + relVy * relVy);
+	const double speed = std::sqrt(relVx * relVx + relVy * relVy) * std::max(0.0, speedScale);
 
 	std::ostringstream mass;
 	mass << std::scientific << std::setprecision(3) << body.mass;

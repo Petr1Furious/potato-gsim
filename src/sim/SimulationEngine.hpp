@@ -9,6 +9,7 @@
 #include "sim/UniformGrid.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <mutex>
@@ -29,6 +30,37 @@ struct BodySnapshot {
 	double vy = 0.0;
 	double mass = 0.0;
 	double radius = 0.0;
+};
+
+struct EngineDebugStats {
+	bool valid = false;
+	bool usedDirectPath = false;
+	std::size_t bodyCount = 0;
+	std::size_t workerCount = 0;
+	std::size_t currentTreeNodes = 0;
+	std::size_t predictedTreeNodes = 0;
+	std::size_t overlapPairs = 0;
+	std::size_t mergedBodies = 0;
+
+	double avgNodeVisitsAcc0 = 0.0;
+	double avgNodeVisitsAcc1 = 0.0;
+	double avgDirectInteractionsAcc0 = 0.0;
+	double avgDirectInteractionsAcc1 = 0.0;
+	double avgAggregateApproximationsAcc0 = 0.0;
+	double avgAggregateApproximationsAcc1 = 0.0;
+	double avgContributionsAcc0 = 0.0;
+	double avgContributionsAcc1 = 0.0;
+
+	double commandsMs = 0.0;
+	double currentTreeBuildMs = 0.0;
+	double acc0Ms = 0.0;
+	double predictedTreeBuildMs = 0.0;
+	double acc1Ms = 0.0;
+	double integrateMs = 0.0;
+	double collisionMs = 0.0;
+	double mergeMs = 0.0;
+	double publishMs = 0.0;
+	double totalStepMs = 0.0;
 };
 
 class SimulationEngine {
@@ -63,6 +95,7 @@ class SimulationEngine {
 	[[nodiscard]] double updatesPerSecond() const;
 	[[nodiscard]] double simulatedSecondsPerRealSecond() const;
 	[[nodiscard]] double simulatedSecondsPerUpdate() const;
+	[[nodiscard]] EngineDebugStats debugStats() const;
 	void resetSimulationTimer();
 	void setSimulationTimer(double seconds);
 
@@ -73,12 +106,16 @@ class SimulationEngine {
 	void setTimeScale(double timeScale);
 	void scaleTimeBy(double factor);
 	void setFixedDt(double fixedDtSeconds);
-	void setRealtimeDtRange(double minDtSeconds, double maxDtSeconds);
+	void setRealtimeDtOutlierClamp(std::size_t windowSize,
+	                               double spikeClampMultiplier,
+	                               std::size_t warmupSamples);
 	void setGravityConstant(double gravitationalConstant);
 	void setCollisionCellScale(double cellScale);
 	void setTheta(double theta);
 	void setSoftening(double epsilon);
 	void setWorkerCount(std::size_t workers);
+	void setDebugMetricsEnabled(bool enabled);
+	[[nodiscard]] bool debugMetricsEnabled() const;
 
 	void seedCircularCloud(std::size_t count, double centerX, double centerY, double spreadRadius);
 	void drainMergeRemapEvents(std::vector<std::pair<BodyId, BodyId>>& out);
@@ -86,6 +123,26 @@ class SimulationEngine {
    private:
 	void simulationLoop(std::stop_token stopToken);
 	void step(double dt, const SimulationConfig& cfg);
+	void publishStepResult(int writeIndex,
+	                       double dt,
+	                       bool advanceTimer,
+	                       const std::chrono::steady_clock::time_point& stepStart,
+	                       EngineDebugStats& debug);
+	void stepDirectPath(double dt,
+	                    const SimulationConfig& cfg,
+	                    BodyState& state,
+	                    IdIndexMap& idMap,
+	                    int writeIndex,
+	                    const std::chrono::steady_clock::time_point& stepStart,
+	                    EngineDebugStats& debug);
+	void stepBarnesHutPath(double dt,
+	                       const SimulationConfig& cfg,
+	                       BodyState& state,
+	                       IdIndexMap& idMap,
+	                       int writeIndex,
+	                       bool collectTraversalStats,
+	                       const std::chrono::steady_clock::time_point& stepStart,
+	                       EngineDebugStats& debug);
 
 	static void removeBodyAt(BodyState& state, IdIndexMap& idMap, std::uint32_t denseIndex);
 	static void applyCommands(BodyState& state,
@@ -128,8 +185,11 @@ class SimulationEngine {
 	std::atomic<double> updatesPerSecond_{0.0};
 	std::atomic<double> simulatedSecondsPerRealSecond_{0.0};
 	std::atomic<double> simulatedSecondsPerUpdate_{0.0};
+	std::atomic_bool debugMetricsEnabled_{false};
 	mutable std::mutex timerMutex_;
 	double simulatedSeconds_ = 0.0;
+	mutable std::mutex debugMutex_;
+	EngineDebugStats debugStats_;
 	std::mutex mergeMutex_;
 	std::vector<std::pair<BodyId, BodyId>> mergeRemapEvents_;
 	mutable std::mutex lifecycleMutex_;

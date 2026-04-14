@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
-#include <limits>
 #include <string>
 
 namespace io {
@@ -12,7 +11,7 @@ namespace io {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x5047534D;  // PGSM
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::uint32_t kMaxBodies = 1'000'000;
 
 template <typename T>
@@ -57,11 +56,12 @@ bool Persistence::save(const std::string& path,
 	const std::uint32_t mode = static_cast<std::uint32_t>(cfg.mode);
 	const std::uint8_t paused = cfg.paused ? 1u : 0u;
 	if (!writeRaw(out, mode) || !writeRaw(out, paused) || !writeRaw(out, cfg.timeScale) ||
-	    !writeRaw(out, cfg.fixedDtSeconds) || !writeRaw(out, cfg.realtimeMinDtSeconds) ||
-	    !writeRaw(out, cfg.realtimeMaxDtSeconds) || !writeRaw(out, cfg.gravitationalConstant) ||
-	    !writeRaw(out, cfg.softeningEpsilon) || !writeRaw(out, cfg.barnesHutTheta) ||
-	    !writeRaw(out, cfg.collisionCellScale) || !writeRaw(out, cfg.workerCount) ||
-	    !writeRaw(out, world.simulationTimeSeconds)) {
+	    !writeRaw(out, cfg.fixedDtSeconds) || !writeRaw(out, cfg.realtimeDtWindowSize) ||
+	    !writeRaw(out, cfg.realtimeDtSpikeClampMultiplier) ||
+	    !writeRaw(out, cfg.realtimeDtClampWarmupSamples) ||
+	    !writeRaw(out, cfg.gravitationalConstant) || !writeRaw(out, cfg.softeningEpsilon) ||
+	    !writeRaw(out, cfg.barnesHutTheta) || !writeRaw(out, cfg.collisionCellScale) ||
+	    !writeRaw(out, cfg.workerCount) || !writeRaw(out, world.simulationTimeSeconds)) {
 		errorOut = "Failed writing simulation metadata";
 		return false;
 	}
@@ -139,8 +139,9 @@ bool Persistence::load(const std::string& path,
 	std::uint8_t paused = 0;
 	if (!readRaw(in, mode) || !readRaw(in, paused) || !readRaw(in, loaded.simConfig.timeScale) ||
 	    !readRaw(in, loaded.simConfig.fixedDtSeconds) ||
-	    !readRaw(in, loaded.simConfig.realtimeMinDtSeconds) ||
-	    !readRaw(in, loaded.simConfig.realtimeMaxDtSeconds) ||
+	    !readRaw(in, loaded.simConfig.realtimeDtWindowSize) ||
+	    !readRaw(in, loaded.simConfig.realtimeDtSpikeClampMultiplier) ||
+	    !readRaw(in, loaded.simConfig.realtimeDtClampWarmupSamples) ||
 	    !readRaw(in, loaded.simConfig.gravitationalConstant) ||
 	    !readRaw(in, loaded.simConfig.softeningEpsilon) ||
 	    !readRaw(in, loaded.simConfig.barnesHutTheta) ||
@@ -196,8 +197,11 @@ bool Persistence::load(const std::string& path,
 
 	if (!finiteOrFail(loaded.simulationTimeSeconds) || !finiteOrFail(loaded.simConfig.timeScale) ||
 	    !finiteOrFail(loaded.simConfig.fixedDtSeconds) ||
-	    !finiteOrFail(loaded.simConfig.realtimeMinDtSeconds) ||
-	    !finiteOrFail(loaded.simConfig.realtimeMaxDtSeconds) ||
+	    loaded.simConfig.realtimeDtWindowSize < 1 ||
+	    loaded.simConfig.realtimeDtClampWarmupSamples < 1 ||
+	    loaded.simConfig.realtimeDtClampWarmupSamples > loaded.simConfig.realtimeDtWindowSize ||
+	    !finiteOrFail(loaded.simConfig.realtimeDtSpikeClampMultiplier) ||
+	    loaded.simConfig.realtimeDtSpikeClampMultiplier < 1.0 ||
 	    !finiteOrFail(loaded.simConfig.gravitationalConstant) ||
 	    !finiteOrFail(loaded.simConfig.softeningEpsilon) ||
 	    !finiteOrFail(loaded.simConfig.barnesHutTheta) ||

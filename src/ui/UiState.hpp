@@ -23,6 +23,7 @@ struct UiState {
 
 	bool showPredictions = true;
 	bool showLabels = true;
+	bool showDebugInfo = false;
 	bool showNegativeMassWarning = true;
 
 	std::size_t presetIndex = 0;

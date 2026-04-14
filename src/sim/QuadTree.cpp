@@ -25,9 +25,15 @@ void BarnesHutTree::build(const std::vector<double>& posX,
 	posY_ = &posY;
 	mass_ = &mass;
 	nodes_.clear();
+	leafPayloads_.clear();
+	overflowBodies_.clear();
+	overflowNext_.clear();
 	const std::size_t desiredNodes = std::max<std::size_t>(16, posX.size() * 2);
 	if (nodes_.capacity() < desiredNodes) {
 		nodes_.reserve(desiredNodes);
+	}
+	if (leafPayloads_.capacity() < desiredNodes) {
+		leafPayloads_.reserve(desiredNodes);
 	}
 
 	if (posX.empty()) {
@@ -67,9 +73,32 @@ void BarnesHutTree::computeAcceleration(std::size_t bodyIndex,
                                         double epsilonSquared,
                                         double gravitationalConstant,
                                         double& outAx,
-                                        double& outAy) const {
+                                        double& outAy,
+                                        TraversalStats* stats) const {
+	if (stats != nullptr) {
+		computeAccelerationImpl<true>(bodyIndex, bodyX, bodyY, theta, epsilonSquared,
+		                              gravitationalConstant, outAx, outAy, stats);
+	} else {
+		computeAccelerationImpl<false>(bodyIndex, bodyX, bodyY, theta, epsilonSquared,
+		                               gravitationalConstant, outAx, outAy, nullptr);
+	}
+}
+
+template <bool CollectStats>
+void BarnesHutTree::computeAccelerationImpl(std::size_t bodyIndex,
+                                            double bodyX,
+                                            double bodyY,
+                                            double theta,
+                                            double epsilonSquared,
+                                            double gravitationalConstant,
+                                            double& outAx,
+                                            double& outAy,
+                                            TraversalStats* stats) const {
 	outAx = 0.0;
 	outAy = 0.0;
+	if constexpr (CollectStats) {
+		*stats = TraversalStats{};
+	}
 	if (nodes_.empty()) {
 		return;
 	}
@@ -80,11 +109,15 @@ void BarnesHutTree::computeAcceleration(std::size_t bodyIndex,
 		stack.reserve(256);
 	}
 	stack.push_back(0);
+	const double theta2 = theta * theta;
 
 	while (!stack.empty()) {
 		const int nodeIndex = stack.back();
 		stack.pop_back();
 		const Node& node = nodes_[nodeIndex];
+		if constexpr (CollectStats) {
+			++stats->nodeVisits;
+		}
 
 		if (node.totalMass <= 0.0) {
 			continue;
@@ -93,44 +126,58 @@ void BarnesHutTree::computeAcceleration(std::size_t bodyIndex,
 		const double dx = node.comX - bodyX;
 		const double dy = node.comY - bodyY;
 		const double dist2 = dx * dx + dy * dy + epsilonSquared;
-		const double dist = std::sqrt(dist2);
-
 		if (node.isLeaf()) {
-			if (node.singleBody >= 0) {
-				const std::uint32_t other = static_cast<std::uint32_t>(node.singleBody);
-				if (other != bodyIndex) {
+			const LeafPayload* leaf = leafPayloadFor(node);
+			if (leaf != nullptr) {
+				for (std::uint8_t i = 0; i < leaf->inlineBodyCount; ++i) {
+					const std::uint32_t other = leaf->inlineBodies[i];
+					if (other == bodyIndex) {
+						continue;
+					}
 					const double odx = (*posX_)[other] - bodyX;
 					const double ody = (*posY_)[other] - bodyY;
 					const double od2 = odx * odx + ody * ody + epsilonSquared;
-					const double od = std::sqrt(od2);
-					const double invDist3 = 1.0 / (od2 * od);
+					const double invD = 1.0 / std::sqrt(od2);
+					const double invDist3 = invD * invD * invD;
 					const double factor = gravitationalConstant * (*mass_)[other] * invDist3;
 					outAx += odx * factor;
 					outAy += ody * factor;
+					if constexpr (CollectStats) {
+						++stats->directBodyInteractions;
+					}
 				}
-			}
-			for (std::uint32_t other : node.overflowBodies) {
-				if (other == bodyIndex) {
-					continue;
+				for (std::int32_t overflowIdx = leaf->overflowHead; overflowIdx >= 0;
+				     overflowIdx = overflowNext_[overflowIdx]) {
+					const std::uint32_t other = overflowBodies_[overflowIdx];
+					if (other == bodyIndex) {
+						continue;
+					}
+					const double odx = (*posX_)[other] - bodyX;
+					const double ody = (*posY_)[other] - bodyY;
+					const double od2 = odx * odx + ody * ody + epsilonSquared;
+					const double invD = 1.0 / std::sqrt(od2);
+					const double invDist3 = invD * invD * invD;
+					const double factor = gravitationalConstant * (*mass_)[other] * invDist3;
+					outAx += odx * factor;
+					outAy += ody * factor;
+					if constexpr (CollectStats) {
+						++stats->directBodyInteractions;
+					}
 				}
-				const double odx = (*posX_)[other] - bodyX;
-				const double ody = (*posY_)[other] - bodyY;
-				const double od2 = odx * odx + ody * ody + epsilonSquared;
-				const double od = std::sqrt(od2);
-				const double invDist3 = 1.0 / (od2 * od);
-				const double factor = gravitationalConstant * (*mass_)[other] * invDist3;
-				outAx += odx * factor;
-				outAy += ody * factor;
 			}
 			continue;
 		}
 
-		const double size = node.halfSize * 2.0;
-		if ((size / dist) < theta) {
-			const double invDist3 = 1.0 / (dist2 * dist);
+		const double size2 = node.halfSize * node.halfSize * 4.0;
+		if (size2 < theta2 * dist2) {
+			const double invD = 1.0 / std::sqrt(dist2);
+			const double invDist3 = invD * invD * invD;
 			const double factor = gravitationalConstant * node.totalMass * invDist3;
 			outAx += dx * factor;
 			outAy += dy * factor;
+			if constexpr (CollectStats) {
+				++stats->aggregateApproximations;
+			}
 			continue;
 		}
 
@@ -149,6 +196,28 @@ int BarnesHutTree::createNode(double centerX, double centerY, double halfSize) {
 	    .halfSize = halfSize,
 	});
 	return static_cast<int>(nodes_.size() - 1);
+}
+
+BarnesHutTree::LeafPayload& BarnesHutTree::ensureLeafPayload(Node& node) {
+	if (node.leafPayloadIndex < 0) {
+		leafPayloads_.push_back(LeafPayload{});
+		node.leafPayloadIndex = static_cast<std::int32_t>(leafPayloads_.size() - 1);
+	}
+	return leafPayloads_[static_cast<std::size_t>(node.leafPayloadIndex)];
+}
+
+const BarnesHutTree::LeafPayload* BarnesHutTree::leafPayloadFor(const Node& node) const {
+	if (node.leafPayloadIndex < 0) {
+		return nullptr;
+	}
+	return &leafPayloads_[static_cast<std::size_t>(node.leafPayloadIndex)];
+}
+
+void BarnesHutTree::appendOverflowBody(Node& node, std::uint32_t bodyIndex) {
+	LeafPayload& leaf = ensureLeafPayload(node);
+	overflowBodies_.push_back(bodyIndex);
+	overflowNext_.push_back(leaf.overflowHead);
+	leaf.overflowHead = static_cast<std::int32_t>(overflowBodies_.size() - 1);
 }
 
 void BarnesHutTree::splitNode(int nodeIndex) {
@@ -190,42 +259,43 @@ int BarnesHutTree::childForPoint(const Node& node, double x, double y) const {
 }
 
 void BarnesHutTree::insertBody(int nodeIndex, std::size_t bodyIndex, std::size_t depth) {
-	if (nodes_[nodeIndex].isLeaf()) {
-		Node& leaf = nodes_[nodeIndex];
-		auto appendToLeaf = [&](std::uint32_t idx) {
-			if (leaf.singleBody < 0 && leaf.overflowBodies.empty()) {
-				leaf.singleBody = static_cast<std::int32_t>(idx);
-			} else {
-				leaf.overflowBodies.push_back(idx);
-			}
-		};
-		if (leaf.singleBody < 0 && leaf.overflowBodies.empty()) {
-			leaf.singleBody = static_cast<std::int32_t>(bodyIndex);
+	Node& node = nodes_[nodeIndex];
+	if (node.isLeaf()) {
+		LeafPayload& leaf = ensureLeafPayload(node);
+		if (leaf.inlineBodyCount < kLeafBodyCapacity) {
+			leaf.inlineBodies[leaf.inlineBodyCount++] = static_cast<std::uint32_t>(bodyIndex);
 			return;
 		}
-		const std::size_t leafCount =
-		    (leaf.singleBody >= 0 ? 1u : 0u) + leaf.overflowBodies.size();
-		if (leafCount < kLeafBodyCapacity || depth >= kMaxDepth) {
-			appendToLeaf(static_cast<std::uint32_t>(bodyIndex));
+		if (depth >= kMaxDepth) {
+			appendOverflowBody(node, static_cast<std::uint32_t>(bodyIndex));
 			return;
 		}
 
-		std::vector<std::uint32_t> leafBodies;
-		leafBodies.reserve(1 + leaf.overflowBodies.size() + 1);
-		if (leaf.singleBody >= 0) {
-			leafBodies.push_back(static_cast<std::uint32_t>(leaf.singleBody));
-		}
-		leafBodies.insert(leafBodies.end(), leaf.overflowBodies.begin(), leaf.overflowBodies.end());
-		leafBodies.push_back(static_cast<std::uint32_t>(bodyIndex));
-
+		const std::array<std::uint32_t, kLeafBodyCapacity> existingInline = leaf.inlineBodies;
+		const std::uint8_t existingInlineCount = leaf.inlineBodyCount;
+		const std::int32_t existingOverflowHead = leaf.overflowHead;
 		splitNode(nodeIndex);
-		nodes_[nodeIndex].singleBody = -1;
-		nodes_[nodeIndex].overflowBodies.clear();
+		nodes_[nodeIndex].leafPayloadIndex = -1;
 
-		for (const std::uint32_t leafBody : leafBodies) {
+		for (std::uint8_t i = 0; i < existingInlineCount; ++i) {
+			const std::uint32_t existingBody = existingInline[i];
 			const Node& splitNodeRef = nodes_[nodeIndex];
-			const int child = childForPoint(splitNodeRef, (*posX_)[leafBody], (*posY_)[leafBody]);
-			insertBody(child, leafBody, depth + 1);
+			const int child =
+			    childForPoint(splitNodeRef, (*posX_)[existingBody], (*posY_)[existingBody]);
+			insertBody(child, existingBody, depth + 1);
+		}
+		{
+			const Node& splitNodeRef = nodes_[nodeIndex];
+			const int child = childForPoint(splitNodeRef, (*posX_)[bodyIndex], (*posY_)[bodyIndex]);
+			insertBody(child, bodyIndex, depth + 1);
+		}
+		for (std::int32_t overflowIdx = existingOverflowHead; overflowIdx >= 0;
+		     overflowIdx = overflowNext_[overflowIdx]) {
+			const std::uint32_t existingBody = overflowBodies_[overflowIdx];
+			const Node& splitNodeRef = nodes_[nodeIndex];
+			const int child =
+			    childForPoint(splitNodeRef, (*posX_)[existingBody], (*posY_)[existingBody]);
+			insertBody(child, existingBody, depth + 1);
 		}
 		return;
 	}
@@ -241,7 +311,6 @@ void BarnesHutTree::insertBody(int nodeIndex, std::size_t bodyIndex, std::size_t
 		y -= jitter;
 	}
 
-	const Node& node = nodes_[nodeIndex];
 	const int child = childForPoint(node, x, y);
 	insertBody(child, bodyIndex, depth + 1);
 }
@@ -249,7 +318,8 @@ void BarnesHutTree::insertBody(int nodeIndex, std::size_t bodyIndex, std::size_t
 void BarnesHutTree::accumulateMass(int nodeIndex) {
 	Node& node = nodes_[nodeIndex];
 	if (node.isLeaf()) {
-		if (node.singleBody < 0 && node.overflowBodies.empty()) {
+		const LeafPayload* leaf = leafPayloadFor(node);
+		if (leaf == nullptr || (leaf->inlineBodyCount == 0 && leaf->overflowHead < 0)) {
 			node.totalMass = 0.0;
 			node.comX = node.centerX;
 			node.comY = node.centerY;
@@ -259,14 +329,16 @@ void BarnesHutTree::accumulateMass(int nodeIndex) {
 		double totalMass = 0.0;
 		double weightedX = 0.0;
 		double weightedY = 0.0;
-		if (node.singleBody >= 0) {
-			const std::uint32_t body = static_cast<std::uint32_t>(node.singleBody);
+		for (std::uint8_t i = 0; i < leaf->inlineBodyCount; ++i) {
+			const std::uint32_t body = leaf->inlineBodies[i];
 			const double m = (*mass_)[body];
 			totalMass += m;
 			weightedX += (*posX_)[body] * m;
 			weightedY += (*posY_)[body] * m;
 		}
-		for (const std::uint32_t body : node.overflowBodies) {
+		for (std::int32_t overflowIdx = leaf->overflowHead; overflowIdx >= 0;
+		     overflowIdx = overflowNext_[overflowIdx]) {
+			const std::uint32_t body = overflowBodies_[overflowIdx];
 			const double m = (*mass_)[body];
 			totalMass += m;
 			weightedX += (*posX_)[body] * m;
@@ -307,5 +379,24 @@ void BarnesHutTree::accumulateMass(int nodeIndex) {
 		node.comY = node.centerY;
 	}
 }
+
+template void BarnesHutTree::computeAccelerationImpl<true>(std::size_t bodyIndex,
+                                                           double bodyX,
+                                                           double bodyY,
+                                                           double theta,
+                                                           double epsilonSquared,
+                                                           double gravitationalConstant,
+                                                           double& outAx,
+                                                           double& outAy,
+                                                           TraversalStats* stats) const;
+template void BarnesHutTree::computeAccelerationImpl<false>(std::size_t bodyIndex,
+                                                            double bodyX,
+                                                            double bodyY,
+                                                            double theta,
+                                                            double epsilonSquared,
+                                                            double gravitationalConstant,
+                                                            double& outAx,
+                                                            double& outAy,
+                                                            TraversalStats* stats) const;
 
 }  // namespace sim

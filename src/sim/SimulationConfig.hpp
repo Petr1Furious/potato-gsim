@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cstddef>
 
 namespace sim {
@@ -14,9 +13,10 @@ struct SimulationConfig {
 	// Deterministic mode
 	double fixedDtSeconds = 1.0 / 120.0;
 
-	// Real-time mode (simulation-clock dt clamping)
-	double realtimeMinDtSeconds = 1.0 / 240.0;
-	double realtimeMaxDtSeconds = 1.0 / 30.0;
+	// Real-time mode (wall-dt outlier clamping)
+	std::size_t realtimeDtWindowSize = 120;
+	double realtimeDtSpikeClampMultiplier = 6.0;
+	std::size_t realtimeDtClampWarmupSamples = 16;
 
 	// Gravity and Barnes-Hut controls
 	double gravitationalConstant = 6.67430e-11;
@@ -30,10 +30,6 @@ struct SimulationConfig {
 	std::size_t workerCount = 0;
 
 	bool paused = false;
-
-	[[nodiscard]] double clampRealtimeDt(double dt) const {
-		return std::clamp(dt, realtimeMinDtSeconds, realtimeMaxDtSeconds);
-	}
 };
 
 }  // namespace sim

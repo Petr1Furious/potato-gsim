@@ -114,7 +114,9 @@ void Renderer::draw(const sim::SimulationEngine& engine) {
 			const float radiusPx = static_cast<float>(state.radius[i]) * pixelsPerWorld;
 			const sf::Vector2f pos(static_cast<float>(state.posX[i]),
 			                       static_cast<float>(state.posY[i]));
-			if (radiusPx > 1.0f) {
+			// Small circles at huge world coordinates can become numerically unstable in
+			// world-space rendering; render them as points instead.
+			if (radiusPx > 2.5f) {
 				const float worldRadius = static_cast<float>(state.radius[i]);
 				circle_.setRadius(worldRadius);
 				circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));
