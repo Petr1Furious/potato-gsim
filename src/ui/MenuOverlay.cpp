@@ -68,9 +68,13 @@ std::optional<MenuAction> MenuOverlay::handleMouseClick(const sf::Vector2i& pixe
 sf::FloatRect MenuOverlay::itemRect(std::size_t idx, const sf::Vector2u& winSize) const {
 	const float panelWidth = 560.0f;
 	const float rowHeight = 28.0f;
-	const float panelTop = std::max(30.0f, static_cast<float>(winSize.y) * 0.12f);
+	const float headerHeight = 50.0f;
+	const float panelHeight = headerHeight + 14.0f + static_cast<float>(items_.size()) * rowHeight;
+	const float desiredTop = std::max(20.0f, static_cast<float>(winSize.y) * 0.08f);
+	const float maxTop = std::max(10.0f, static_cast<float>(winSize.y) - panelHeight - 10.0f);
+	const float panelTop = std::clamp(desiredTop, 10.0f, maxTop);
 	const float panelLeft = (static_cast<float>(winSize.x) - panelWidth) * 0.5f;
-	return sf::FloatRect(sf::Vector2f(panelLeft + 14.0f, panelTop + 18.0f + rowHeight * idx),
+	return sf::FloatRect(sf::Vector2f(panelLeft + 14.0f, panelTop + headerHeight + rowHeight * idx),
 	                     sf::Vector2f(panelWidth - 28.0f, rowHeight - 2.0f));
 }
 
@@ -88,8 +92,12 @@ void MenuOverlay::draw(sf::RenderWindow& window, const sf::Font& font) const {
 	window.draw(dim);
 
 	const float panelWidth = 560.0f;
-	const float panelHeight = 40.0f + static_cast<float>(items_.size()) * 28.0f;
-	const float panelTop = std::max(30.0f, static_cast<float>(size.y) * 0.12f);
+	const float rowHeight = 28.0f;
+	const float headerHeight = 50.0f;
+	const float panelHeight = headerHeight + 14.0f + static_cast<float>(items_.size()) * rowHeight;
+	const float desiredTop = std::max(20.0f, static_cast<float>(size.y) * 0.08f);
+	const float maxTop = std::max(10.0f, static_cast<float>(size.y) - panelHeight - 10.0f);
+	const float panelTop = std::clamp(desiredTop, 10.0f, maxTop);
 	const float panelLeft = (static_cast<float>(size.x) - panelWidth) * 0.5f;
 
 	sf::RectangleShape panel(sf::Vector2f(panelWidth, panelHeight));
@@ -100,7 +108,7 @@ void MenuOverlay::draw(sf::RenderWindow& window, const sf::Font& font) const {
 	window.draw(panel);
 
 	sf::Text header(font, "Settings (Esc to close)", 20);
-	header.setPosition(sf::Vector2f(panelLeft + 14.0f, panelTop + 8.0f));
+	header.setPosition(sf::Vector2f(panelLeft + 14.0f, panelTop + 12.0f));
 	header.setFillColor(sf::Color(240, 245, 255));
 	window.draw(header);
 

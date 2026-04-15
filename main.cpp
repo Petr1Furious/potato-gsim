@@ -3,6 +3,7 @@
 #include "render/Renderer.hpp"
 #include "scenario/ScenarioManager.hpp"
 #include "sim/SimulationEngine.hpp"
+#include "ui/CreationPauseStateMachine.hpp"
 #include "ui/InspectorOverlay.hpp"
 #include "ui/QuantityFormat.hpp"
 #include "ui/UiState.hpp"
@@ -110,6 +111,7 @@ int main() {
 	    .enabled = true,
 	    .steps = 220,
 	    .dt = 1.0 / 120.0,
+	    .realTimeHorizonSeconds = 5.0,
 	    .maxAttractors = 1500,
 	});
 	engine.setDebugMetricsEnabled(ui.showDebugInfo);
@@ -135,9 +137,14 @@ int main() {
 	std::vector<sim::BodySnapshot> bodies;
 	std::vector<std::pair<sim::BodyId, sim::BodyId>> mergeRemapEvents;
 	std::vector<sf::Vector2f> selectedPrediction;
+	std::vector<sf::Vector2f> selectedPredictionOffsets;
 	std::vector<sf::Vector2f> creationPrediction;
+	std::vector<sf::Vector2f> creationPredictionOffsets;
+	std::optional<sim::BodyId> selectedPredictionBodyId;
+	std::optional<sim::BodyId> creationPredictionRelativeSelectedId;
+	std::optional<sim::BodySnapshot> selectedBodyForInput;
 	std::optional<sim::BodyId> trackedFollowId;
-	std::optional<sf::Vector2f> trackedFollowPosition;
+	std::optional<sf::Vector2f> followViewOffset;
 
 	auto statusUntil = std::chrono::steady_clock::now();
 	auto setStatus = [&](const std::string& message, double seconds) {
@@ -145,6 +152,7 @@ int main() {
 		statusUntil = std::chrono::steady_clock::now() +
 		              std::chrono::milliseconds(static_cast<int>(seconds * 1000.0));
 	};
+	ui::CreationPauseStateMachine creationPauseState;
 
 	auto openMenu = [&](bool active) {
 		if (ui.menu.active() == active) {
@@ -259,6 +267,9 @@ int main() {
 				openMenu(!ui.menu.active());
 				break;
 			case ui::Action::TogglePause:
+				if (creationPauseState.blocksPauseToggle()) {
+					break;
+				}
 				engine.togglePaused();
 				break;
 			case ui::Action::ToggleMode:
@@ -292,7 +303,7 @@ int main() {
 				ui.showPredictions = !ui.showPredictions;
 				break;
 			case ui::Action::ToggleLabels:
-				ui.showLabels = !ui.showLabels;
+				ui.showHoverLabels = !ui.showHoverLabels;
 				break;
 			case ui::Action::ToggleDebugInfo:
 				ui.showDebugInfo = !ui.showDebugInfo;
@@ -346,7 +357,7 @@ int main() {
 				dispatchPersistenceLoad();
 				break;
 			case ui::Action::RandomScenario:
-				applyScenario(scenario::ScenarioManager::makeRandom(100000, 0.0, 0.0, 3.2e12));
+				applyScenario(scenario::ScenarioManager::makeRandom(10000, 0.0, 0.0, 1e11));
 				break;
 			case ui::Action::ClearScenario:
 				engine.queueClearAll();
@@ -372,6 +383,9 @@ int main() {
 	auto dispatchMenuAction = [&](const ui::MenuAction& action) {
 		const sim::SimulationConfig cfg = engine.config();
 		if (action.itemId == "sim.pause") {
+			if (creationPauseState.blocksPauseToggle()) {
+				return;
+			}
 			engine.togglePaused();
 		} else if (action.itemId == "sim.mode") {
 			engine.toggleMode();
@@ -411,11 +425,20 @@ int main() {
 		} else if (action.itemId == "predict.enabled") {
 			ui.showPredictions = !ui.showPredictions;
 		} else if (action.itemId == "labels.toggle") {
-			ui.showLabels = !ui.showLabels;
+			ui.showHoverLabels = !ui.showHoverLabels;
 		} else if (action.itemId == "debug.toggle") {
 			dispatchAction(ui::Action::ToggleDebugInfo);
-		} else if (action.itemId == "predict.horizon" && action.adjustDelta != 0) {
-			ui.predictor.scaleHorizon(action.adjustDelta > 0 ? 1.15 : (1.0 / 1.15));
+		} else if (action.itemId == "predict.realtime_window" && action.adjustDelta != 0) {
+			auto predictorSettings = ui.predictor.settings();
+			const double factor = action.adjustDelta > 0 ? 1.15 : (1.0 / 1.15);
+			predictorSettings.realTimeHorizonSeconds =
+			    std::clamp(predictorSettings.realTimeHorizonSeconds * factor, 0.05, 120.0);
+			ui.predictor.setSettings(predictorSettings);
+		} else if (action.itemId == "predict.steps" && action.adjustDelta != 0) {
+			auto predictorSettings = ui.predictor.settings();
+			predictorSettings.steps =
+			    std::clamp(predictorSettings.steps + (action.adjustDelta > 0 ? 20 : -20), 20, 5000);
+			ui.predictor.setSettings(predictorSettings);
 		} else if (action.itemId == "action.save") {
 			dispatchPersistenceSave();
 		} else if (action.itemId == "action.load") {
@@ -439,11 +462,15 @@ int main() {
 	auto lastPredictTime = lastFrameTime;
 	double fps = 0.0;
 	const auto currentSimSecondsPerRealSecond = [&engine]() {
-		const double measured = engine.simulatedSecondsPerRealSecond();
-		if (std::isfinite(measured) && measured > 0.0) {
-			return measured;
-		}
 		const sim::SimulationConfig liveCfg = engine.config();
+		// While paused, measured throughput is stale by definition; always derive
+		// from current config so time-scale edits immediately affect UI/tools.
+		if (!liveCfg.paused) {
+			const double measured = engine.simulatedSecondsPerRealSecond();
+			if (std::isfinite(measured) && measured > 0.0) {
+				return measured;
+			}
+		}
 		if (!std::isfinite(liveCfg.timeScale) || liveCfg.timeScale <= 0.0) {
 			return 1.0;
 		}
@@ -451,6 +478,14 @@ int main() {
 			return liveCfg.timeScale * std::max(1.0, engine.updatesPerSecond());
 		}
 		return liveCfg.timeScale;
+	};
+	const auto panView = [&](const sf::Vector2i& pixelDelta) {
+		const sf::Vector2f before = renderer.view().getCenter();
+		renderer.panByPixels(pixelDelta);
+		if (ui.selection.followEnabled() && followViewOffset.has_value()) {
+			const sf::Vector2f after = renderer.view().getCenter();
+			*followViewOffset += (after - before);
+		}
 	};
 
 	while (window.isOpen()) {
@@ -480,12 +515,12 @@ int main() {
 			if (const auto* moved = event->getIf<sf::Event::MouseMoved>()) {
 				if (middlePanning && !ui.menu.active()) {
 					const sf::Vector2i delta = moved->position - lastPanPixel;
-					renderer.panByPixels(delta);
+					panView(delta);
 					lastPanPixel = moved->position;
 				}
 				if (leftPanning && !ui.menu.active() && !ui.creation.enabled()) {
 					const sf::Vector2i delta = moved->position - leftPanPixel;
-					renderer.panByPixels(delta);
+					panView(delta);
 					leftPanPixel = moved->position;
 					const float dragDx = static_cast<float>(moved->position.x - leftDownPixel.x);
 					const float dragDy = static_cast<float>(moved->position.y - leftDownPixel.y);
@@ -493,13 +528,7 @@ int main() {
 						leftDragMaySelect = false;
 					}
 				}
-				const std::optional<sim::BodySnapshot> selectedForCreation =
-				    (ui.selection.selectedId().has_value() &&
-				     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
-				        ? engine.bodyById(*ui.selection.selectedId())
-				        : std::nullopt;
-				ui.creation.updateCursor(renderer.screenToWorld(moved->position),
-				                         selectedForCreation);
+				ui.creation.updateCursor(renderer.screenToWorld(moved->position));
 			}
 			if (const auto* mousePressed = event->getIf<sf::Event::MouseButtonPressed>()) {
 				if (ui.menu.active()) {
@@ -522,11 +551,18 @@ int main() {
 				const sf::Vector2f world = renderer.screenToWorld(mousePressed->position);
 				if (mousePressed->button == sf::Mouse::Button::Left) {
 					if (ui.creation.enabled()) {
-						const std::optional<sim::BodySnapshot> selectedBody =
-						    (ui.selection.selectedId().has_value() &&
-						     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
-						        ? engine.bodyById(*ui.selection.selectedId())
-						        : std::nullopt;
+						if (creationPauseState.onCreationClickStart(
+						        mousePressed->position, ui.creation.enabled(),
+						        ui.creation.isInProgress(), engine)) {
+							continue;
+						}
+						std::optional<sim::BodySnapshot> selectedBody;
+						if (selectedBodyForInput.has_value() &&
+						    ui.selection.selectedId().has_value() &&
+						    selectedBodyForInput->id == *ui.selection.selectedId() &&
+						    (ui.creation.relativeFrame() || ui.selection.followEnabled())) {
+							selectedBody = selectedBodyForInput;
+						}
 						const std::optional<sim::SpawnCommand> spawn = ui.creation.handleLeftClick(
 						    world, selectedBody, currentSimSecondsPerRealSecond());
 						if (spawn.has_value()) {
@@ -594,10 +630,15 @@ int main() {
 					continue;
 				}
 
-				if (key->code == sf::Keyboard::Key::Escape && ui.creation.isInProgress()) {
-					ui.creation.cancel();
-					setStatus("Creation cancelled", 1.6);
-					continue;
+				if (key->code == sf::Keyboard::Key::Escape) {
+					if (ui.creation.isInProgress()) {
+						ui.creation.cancel();
+						setStatus("Creation cancelled", 1.6);
+						continue;
+					}
+					if (creationPauseState.onEscape(engine)) {
+						continue;
+					}
 				}
 
 				const std::optional<ui::Action> action =
@@ -607,6 +648,8 @@ int main() {
 				}
 			}
 		}
+		const bool creationInProgress = ui.creation.enabled() && ui.creation.isInProgress();
+		creationPauseState.tick(ui.creation.enabled(), creationInProgress, engine);
 
 		const ui::HoldAdjustments holds = ui.input.computeHolds(frameDt, !ui.menu.active());
 		if (holds.timeScaleFactor != 1.0) {
@@ -619,10 +662,15 @@ int main() {
 			ui.predictor.scaleHorizon(holds.predictionFactor);
 		}
 		if (holds.panPixelsX != 0.0 || holds.panPixelsY != 0.0) {
-			renderer.panByPixels(sf::Vector2i(static_cast<int>(std::lround(holds.panPixelsX)),
-			                                  static_cast<int>(std::lround(holds.panPixelsY))));
+			panView(sf::Vector2i(static_cast<int>(std::lround(holds.panPixelsX)),
+			                     static_cast<int>(std::lround(holds.panPixelsY))));
 		}
+		const sf::Vector2f viewCenterBeforeUpdate = renderer.view().getCenter();
 		renderer.update(frameDt);
+		if (ui.selection.followEnabled() && followViewOffset.has_value()) {
+			const sf::Vector2f viewCenterAfterUpdate = renderer.view().getCenter();
+			*followViewOffset += (viewCenterAfterUpdate - viewCenterBeforeUpdate);
+		}
 
 		const sim::SimulationConfig cfg = engine.config();
 		const sim::EngineDebugStats debugStats = engine.debugStats();
@@ -632,9 +680,19 @@ int main() {
 		ui.traces.applyMergeRemap(mergeRemapEvents);
 		ui.selection.validateAgainstEngine(engine);
 
-		const std::optional<sim::BodySnapshot> selectedBody =
-		    ui.selection.selectedId().has_value() ? engine.bodyById(*ui.selection.selectedId())
-		                                          : std::nullopt;
+		engine.copyBodies(bodies);
+		std::optional<sim::BodySnapshot> selectedBody;
+		if (ui.selection.selectedId().has_value()) {
+			const sim::BodyId selectedId = *ui.selection.selectedId();
+			const auto it = std::find_if(
+			    bodies.begin(), bodies.end(),
+			    [selectedId](const sim::BodySnapshot& b) { return b.id == selectedId; });
+			if (it != bodies.end()) {
+				selectedBody = *it;
+			} else {
+				ui.selection.clear();
+			}
+		}
 		const std::optional<sim::BodySnapshot> creationReferenceBody =
 		    (selectedBody.has_value() &&
 		     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
@@ -643,50 +701,74 @@ int main() {
 		if (ui.selection.followEnabled() && selectedBody.has_value()) {
 			const sf::Vector2f currentSelectedPos(static_cast<float>(selectedBody->x),
 			                                      static_cast<float>(selectedBody->y));
-			if (trackedFollowId.has_value() && trackedFollowPosition.has_value() &&
-			    (*trackedFollowId == selectedBody->id)) {
-				const sf::Vector2f followDelta = currentSelectedPos - *trackedFollowPosition;
-				renderer.setViewCenter(renderer.view().getCenter() + followDelta);
-			} else {
-				renderer.setViewCenter(currentSelectedPos);
+			if (!trackedFollowId.has_value() || *trackedFollowId != selectedBody->id ||
+			    !followViewOffset.has_value()) {
+				followViewOffset = renderer.view().getCenter() - currentSelectedPos;
 			}
+			renderer.setViewCenter(currentSelectedPos + *followViewOffset);
 			trackedFollowId = selectedBody->id;
-			trackedFollowPosition = currentSelectedPos;
 		} else {
 			trackedFollowId.reset();
-			trackedFollowPosition.reset();
+			followViewOffset.reset();
 		}
-
-		engine.copyBodies(bodies);
-		ui.traces.ingest(bodies);
+		const std::optional<sim::BodySnapshot> selectedForCreation =
+		    (selectedBody.has_value() &&
+		     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
+		        ? selectedBody
+		        : std::nullopt;
+		if (const std::optional<sf::Vector2i> autoStartPixel =
+		        creationPauseState.consumeAutoStartPixel();
+		    autoStartPixel.has_value() && !ui.creation.isInProgress()) {
+			const sf::Vector2f startWorld = renderer.screenToWorld(*autoStartPixel);
+			(void)ui.creation.handleLeftClick(startWorld, selectedForCreation,
+			                                  currentSimSecondsPerRealSecond());
+		}
+		ui.creation.updateCursor(renderer.screenToWorld(sf::Mouse::getPosition(window)),
+		                         selectedForCreation);
+		selectedBodyForInput = selectedBody;
+		ui.traces.ingest(bodies, engine.simulationTimeSeconds());
 		const sf::Vector2f cursorWorld = renderer.screenToWorld(sf::Mouse::getPosition(window));
 		std::optional<sim::BodySnapshot> hoveredBody;
-		if (selectedBody.has_value()) {
-			const double hoverMaxDist = renderer.worldUnitsPerPixel() * 50.0;
-			double bestMass = -1.0;
-			for (const sim::BodySnapshot& b : bodies) {
-				if (b.id == selectedBody->id) {
-					continue;
-				}
-				const double dx = b.x - cursorWorld.x;
-				const double dy = b.y - cursorWorld.y;
-				const double dist = std::sqrt(dx * dx + dy * dy);
-				if (dist <= hoverMaxDist && std::abs(b.mass) > bestMass) {
-					bestMass = std::abs(b.mass);
-					hoveredBody = b;
-				}
+		const double worldUnitsPerPixel =
+		    std::max(1e-9, static_cast<double>(renderer.worldUnitsPerPixel()));
+		const double hoverMaxDistancePx = 26.0;
+		double bestSurfaceDistancePx = hoverMaxDistancePx;
+		double bestMass = -1.0;
+		for (const sim::BodySnapshot& b : bodies) {
+			if (selectedBody.has_value() && b.id == selectedBody->id) {
+				continue;
+			}
+			const double dx = b.x - cursorWorld.x;
+			const double dy = b.y - cursorWorld.y;
+			const double centerDistance = std::sqrt(dx * dx + dy * dy);
+			const double surfaceDistancePx =
+			    std::max(0.0, centerDistance - b.radius) / worldUnitsPerPixel;
+			if (surfaceDistancePx > hoverMaxDistancePx) {
+				continue;
+			}
+
+			const double massAbs = std::abs(b.mass);
+			constexpr double kDistanceBiasPx = 2.0;
+			const bool betterDistance = surfaceDistancePx + kDistanceBiasPx < bestSurfaceDistancePx;
+			const bool closeEnoughDistance =
+			    std::abs(surfaceDistancePx - bestSurfaceDistancePx) <= kDistanceBiasPx;
+			const bool betterMassTieBreak = closeEnoughDistance && (massAbs > bestMass);
+			if (betterDistance || betterMassTieBreak) {
+				bestSurfaceDistancePx = surfaceDistancePx;
+				bestMass = massAbs;
+				hoveredBody = b;
 			}
 		}
 
 		auto predictorSettings = ui.predictor.settings();
-		const double measuredSimDt = engine.simulatedSecondsPerUpdate();
-		const double predictorBaseDt =
-		    measuredSimDt > 0.0
-		        ? measuredSimDt
-		        : ((cfg.mode == sim::SimulationMode::DeterministicFixedStep)
-		               ? cfg.timeScale
-		               : (cfg.timeScale / std::max(1.0, engine.updatesPerSecond())));
-		predictorSettings.dt = std::max(1e-9, predictorBaseDt);
+		const double displayTimeRate = std::max(1e-6, currentSimSecondsPerRealSecond());
+		predictorSettings.realTimeHorizonSeconds =
+		    std::clamp(predictorSettings.realTimeHorizonSeconds, 0.05, 120.0);
+		predictorSettings.steps = std::clamp(predictorSettings.steps, 20, 5000);
+		const double predictWindowSimSeconds =
+		    predictorSettings.realTimeHorizonSeconds * displayTimeRate;
+		predictorSettings.dt =
+		    std::max(1e-9, predictWindowSimSeconds / static_cast<double>(predictorSettings.steps));
 		ui.predictor.setSettings(predictorSettings);
 		const double simSecondsPerUpdate =
 		    (engine.simulatedSecondsPerUpdate() > 0.0)
@@ -694,34 +776,86 @@ int main() {
 		        : ((cfg.mode == sim::SimulationMode::DeterministicFixedStep)
 		               ? cfg.timeScale
 		               : predictorSettings.dt);
-		const double displayTimeRate = currentSimSecondsPerRealSecond();
 		const std::string timeScaleDisplay =
 		    (cfg.mode == sim::SimulationMode::DeterministicFixedStep)
 		        ? (ui::formatTimeLegacy(displayTimeRate) + "/s (" +
 		           ui::formatTimeLegacy(simSecondsPerUpdate) + "/U)")
 		        : (ui::formatTimeLegacy(cfg.timeScale) + "/s");
-		const std::string predictWindowDisplay = ui::formatTimeLegacy(
-		    static_cast<double>(ui.predictor.settings().steps) * predictorSettings.dt);
+		const std::string predictWindowDisplay =
+		    formatFixed(predictorSettings.realTimeHorizonSeconds, 2) + " s real (" +
+		    ui::formatTimeLegacy(predictWindowSimSeconds) + " sim)";
 		const std::string scaleDisplay =
 		    ui::formatDistanceLegacy(renderer.worldUnitsPerPixel()) + "/pixel";
+		const std::optional<sim::SpawnCommand> creationPreviewSpawn =
+		    ui.creation.previewSpawn(creationReferenceBody, currentSimSecondsPerRealSecond());
 
 		if (ui.showPredictions &&
 		    std::chrono::duration<double>(now - lastPredictTime).count() > 0.12) {
 			lastPredictTime = now;
-			selectedPrediction.clear();
-			creationPrediction.clear();
+			selectedPredictionOffsets.clear();
+			selectedPredictionBodyId.reset();
+			creationPredictionOffsets.clear();
+			creationPredictionRelativeSelectedId.reset();
 			if (selectedBody.has_value()) {
 				const sim::SimulationConfig cfg = engine.config();
-				selectedPrediction = ui.predictor.predictForBody(
+				const std::vector<sf::Vector2f> selectedPredicted = ui.predictor.predictForBody(
 				    bodies, selectedBody->id, cfg.gravitationalConstant, cfg.softeningEpsilon);
+				if (!selectedPredicted.empty()) {
+					const sf::Vector2f anchor(static_cast<float>(selectedBody->x),
+					                          static_cast<float>(selectedBody->y));
+					selectedPredictionOffsets.reserve(selectedPredicted.size());
+					for (const sf::Vector2f& point : selectedPredicted) {
+						selectedPredictionOffsets.push_back(point - anchor);
+					}
+					selectedPredictionBodyId = selectedBody->id;
+				}
 			}
-			const std::optional<sim::SpawnCommand> previewSpawn =
-			    ui.creation.previewSpawn(creationReferenceBody, currentSimSecondsPerRealSecond());
-			if (previewSpawn.has_value() &&
+			if (creationPreviewSpawn.has_value() &&
 			    ui.creation.step() == ui::CreationTool::Step::SetVelocity) {
 				const sim::SimulationConfig cfg = engine.config();
-				creationPrediction = ui.predictor.predictSpawn(
-				    bodies, *previewSpawn, cfg.gravitationalConstant, cfg.softeningEpsilon);
+				if (selectedBody.has_value()) {
+					creationPredictionOffsets = ui.predictor.predictSpawnRelativeToBody(
+					    bodies, *creationPreviewSpawn, selectedBody->id, cfg.gravitationalConstant,
+					    cfg.softeningEpsilon);
+					creationPredictionRelativeSelectedId = selectedBody->id;
+				} else {
+					const std::vector<sf::Vector2f> previewPredicted =
+					    ui.predictor.predictSpawn(bodies, *creationPreviewSpawn,
+					                              cfg.gravitationalConstant, cfg.softeningEpsilon);
+					const sf::Vector2f anchor(static_cast<float>(creationPreviewSpawn->x),
+					                          static_cast<float>(creationPreviewSpawn->y));
+					creationPredictionOffsets.reserve(previewPredicted.size());
+					for (const sf::Vector2f& point : previewPredicted) {
+						creationPredictionOffsets.push_back(point - anchor);
+					}
+				}
+			}
+		}
+		selectedPrediction.clear();
+		if (ui.showPredictions && selectedBody.has_value() &&
+		    selectedPredictionBodyId.has_value() && *selectedPredictionBodyId == selectedBody->id &&
+		    !selectedPredictionOffsets.empty()) {
+			const sf::Vector2f anchor(static_cast<float>(selectedBody->x),
+			                          static_cast<float>(selectedBody->y));
+			selectedPrediction.reserve(selectedPredictionOffsets.size());
+			for (const sf::Vector2f& offset : selectedPredictionOffsets) {
+				selectedPrediction.push_back(anchor + offset);
+			}
+		}
+		creationPrediction.clear();
+		if (ui.showPredictions && creationPreviewSpawn.has_value() &&
+		    ui.creation.step() == ui::CreationTool::Step::SetVelocity &&
+		    !creationPredictionOffsets.empty()) {
+			sf::Vector2f anchor(static_cast<float>(creationPreviewSpawn->x),
+			                    static_cast<float>(creationPreviewSpawn->y));
+			if (creationPredictionRelativeSelectedId.has_value() && selectedBody.has_value() &&
+			    *creationPredictionRelativeSelectedId == selectedBody->id) {
+				anchor = sf::Vector2f(static_cast<float>(selectedBody->x),
+				                      static_cast<float>(selectedBody->y));
+			}
+			creationPrediction.reserve(creationPredictionOffsets.size());
+			for (const sf::Vector2f& offset : creationPredictionOffsets) {
+				creationPrediction.push_back(anchor + offset);
 			}
 		}
 
@@ -749,9 +883,11 @@ int main() {
 		    {"trace.relative", "Relative Trails", ui.traces.settings().relative ? "On" : "Off",
 		     false},
 		    {"predict.enabled", "Predictions", ui.showPredictions ? "On" : "Off", false},
-		    {"labels.toggle", "Labels", ui.showLabels ? "On" : "Off", false},
+		    {"labels.toggle", "Hover Labels", ui.showHoverLabels ? "On" : "Off", false},
 		    {"debug.toggle", "Debug Overlay", ui.showDebugInfo ? "On" : "Off", false},
-		    {"predict.horizon", "Prediction Horizon", predictWindowDisplay, true},
+		    {"predict.realtime_window", "Prediction Horizon (Real Time)", predictWindowDisplay,
+		     true},
+		    {"predict.steps", "Prediction Steps", std::to_string(predictorSettings.steps), true},
 		    {"action.save", "Save World", "F9", false},
 		    {"action.load", "Load World", "F10", false},
 		    {"action.random", "Random Scenario", "F5", false},
@@ -763,19 +899,13 @@ int main() {
 		};
 		ui.menu.setItems(menuItems);
 
-		renderer.draw(engine);
+		renderer.draw(bodies);
 		ui.traces.draw(window, selectedBody);
 
 		if (ui.creation.enabled() && ui.creation.isInProgress()) {
 			sf::Vector2f anchor = ui.creation.anchor();
 			const float radius = ui.creation.previewRadius();
 			sf::Vector2f cursor = ui.creation.cursor();
-			if (creationReferenceBody.has_value()) {
-				anchor += sf::Vector2f(static_cast<float>(creationReferenceBody->x),
-				                       static_cast<float>(creationReferenceBody->y));
-				cursor += sf::Vector2f(static_cast<float>(creationReferenceBody->x),
-				                       static_cast<float>(creationReferenceBody->y));
-			}
 			sf::CircleShape ghost(radius);
 			ghost.setOrigin(sf::Vector2f(radius, radius));
 			ghost.setPosition(anchor);
@@ -801,31 +931,48 @@ int main() {
 			}
 
 			const sf::Font* infoFont = overlay.fontPtr();
-			const std::optional<sim::SpawnCommand> previewSpawn =
-			    ui.creation.previewSpawn(creationReferenceBody, currentSimSecondsPerRealSecond());
-			if (infoFont != nullptr && previewSpawn.has_value()) {
-				const double speed = std::sqrt(previewSpawn->vx * previewSpawn->vx +
-				                               previewSpawn->vy * previewSpawn->vy) *
-				                     currentSimSecondsPerRealSecond();
+			if (infoFont != nullptr) {
+				constexpr double kPi = 3.14159265358979323846;
+				const double radiusMeters = std::max(0.05, static_cast<double>(radius));
+				double previewX = anchor.x;
+				double previewY = anchor.y;
+				double previewMass = ui.creation.density() * ((4.0 / 3.0) * kPi * radiusMeters *
+				                                              radiusMeters * radiusMeters);
+				if (ui.creation.negativeMass()) {
+					previewMass = -previewMass;
+				}
+				double speed = 0.0;
+				if (creationPreviewSpawn.has_value()) {
+					previewX = creationPreviewSpawn->x;
+					previewY = creationPreviewSpawn->y;
+					previewMass = creationPreviewSpawn->mass;
+					speed = std::sqrt(creationPreviewSpawn->vx * creationPreviewSpawn->vx +
+					                  creationPreviewSpawn->vy * creationPreviewSpawn->vy) *
+					        currentSimSecondsPerRealSecond();
+				}
 				double distanceToSelected = 0.0;
 				bool hasDistance = false;
 				if (selectedBody.has_value()) {
-					const double dx = previewSpawn->x - selectedBody->x;
-					const double dy = previewSpawn->y - selectedBody->y;
+					const double dx = previewX - selectedBody->x;
+					const double dy = previewY - selectedBody->y;
 					distanceToSelected = std::sqrt(dx * dx + dy * dy);
 					hasDistance = true;
 				}
 
 				std::ostringstream mass;
-				mass << std::scientific << std::setprecision(3) << previewSpawn->mass;
+				mass << std::scientific << std::setprecision(3) << previewMass;
 				std::string previewInfo = "preview m=" + mass.str() + " kg" +
-				                          "\nr=" + ui::formatDistanceLegacy(previewSpawn->radius) +
+				                          "\nr=" + ui::formatDistanceLegacy(radiusMeters) +
 				                          "\nv=" + ui::formatSpeedLegacy(speed);
 				if (hasDistance) {
 					previewInfo += "\nd=" + ui::formatDistanceLegacy(distanceToSelected);
 				}
 
 				const sf::Vector2i anchorPx = renderer.worldToPixel(anchor);
+				const sf::Vector2i radiusEdgePx =
+				    renderer.worldToPixel(anchor + sf::Vector2f(radius, 0.0f));
+				const float radiusPx =
+				    std::max(1.0f, static_cast<float>(std::abs(radiusEdgePx.x - anchorPx.x)));
 				sf::Text text(*infoFont, previewInfo, 12);
 				text.setFillColor(sf::Color::White);
 				text.setOutlineColor(sf::Color::Black);
@@ -837,7 +984,7 @@ int main() {
 				const sf::View oldView = window.getView();
 				window.setView(window.getDefaultView());
 				text.setPosition(sf::Vector2f(static_cast<float>(anchorPx.x),
-				                              static_cast<float>(anchorPx.y) + radius + 10.0f));
+				                              static_cast<float>(anchorPx.y) + radiusPx + 10.0f));
 				window.draw(text);
 				window.setView(oldView);
 			}
@@ -846,12 +993,11 @@ int main() {
 		const auto worldToPixel = [&](const sf::Vector2f& world) {
 			return renderer.worldToPixel(world);
 		};
-		overlay.drawWorldSelection(window, selectedBody, selectedBody, selectedPrediction,
+		overlay.drawWorldSelection(window, selectedBody, std::nullopt, selectedPrediction,
 		                           std::nullopt, displayTimeRate, true, false, worldToPixel);
-		overlay.drawWorldSelection(window, hoveredBody, selectedBody, {}, std::nullopt,
-		                           displayTimeRate, false, true, worldToPixel);
-		if (ui.showLabels) {
-			overlay.drawLabels(window, bodies, ui.selection.selectedId(), worldToPixel, 6.0f);
+		if (ui.showHoverLabels) {
+			overlay.drawWorldSelection(window, hoveredBody, selectedBody, {}, std::nullopt,
+			                           displayTimeRate, false, true, worldToPixel);
 		}
 
 		if (std::chrono::steady_clock::now() > statusUntil) {

@@ -23,6 +23,7 @@ class Renderer {
 	void setViewCenter(const sf::Vector2f& center) { view_.setCenter(center); }
 	void setViewSize(const sf::Vector2f& size);
 
+	void draw(const std::vector<sim::BodySnapshot>& bodies);
 	void draw(const sim::SimulationEngine& engine);
 
    private:

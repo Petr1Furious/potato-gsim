@@ -243,6 +243,16 @@ void SimulationEngine::setPaused(bool paused) {
 	updateConfig([paused](SimulationConfig& cfg) { cfg.paused = paused; });
 }
 
+std::uint64_t SimulationEngine::requestPauseAck(bool paused) {
+	updateConfig([paused](SimulationConfig& cfg) { cfg.paused = paused; });
+	pauseRequestPausedState_.store(paused, std::memory_order_release);
+	return pauseRequestSeq_.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
+bool SimulationEngine::isPauseAcked(std::uint64_t token) const {
+	return pauseAckSeq_.load(std::memory_order_acquire) >= token;
+}
+
 void SimulationEngine::togglePaused() {
 	updateConfig([](SimulationConfig& cfg) { cfg.paused = !cfg.paused; });
 }
@@ -362,6 +372,7 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 	using clock = std::chrono::steady_clock;
 	auto lastTick = clock::now();
 	auto lastUpsSample = lastTick;
+	std::uint64_t lastPauseAckedSeq = pauseAckSeq_.load(std::memory_order_relaxed);
 	std::size_t stepsSinceUpsSample = 0;
 	double simulatedSecondsSinceSample = 0.0;
 	SimulationMode lastMode = currentConfig().mode;
@@ -372,6 +383,14 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 
 	while (!stopToken.stop_requested()) {
 		const SimulationConfig cfg = currentConfig();
+		const std::uint64_t pauseRequestSeq = pauseRequestSeq_.load(std::memory_order_acquire);
+		if (pauseRequestSeq != lastPauseAckedSeq) {
+			const bool requestedPaused = pauseRequestPausedState_.load(std::memory_order_acquire);
+			if (cfg.paused == requestedPaused) {
+				lastPauseAckedSeq = pauseRequestSeq;
+				pauseAckSeq_.store(lastPauseAckedSeq, std::memory_order_release);
+			}
+		}
 		const auto now = clock::now();
 		const double elapsed = std::chrono::duration<double>(now - lastTick).count();
 		lastTick = now;
@@ -430,7 +449,8 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 			                                cfg.realtimeDtSpikeClampMultiplier >= 1.0)
 			                                   ? cfg.realtimeDtSpikeClampMultiplier
 			                                   : 1.0;
-			if (realtimeDtCount >= warmup) {
+			const bool hasFullRealtimeDtWindow = realtimeDtCount >= windowSize;
+			if (hasFullRealtimeDtWindow && realtimeDtCount >= warmup) {
 				wallDt = std::min(wallDt, avgDt * spikeMultiplier);
 			}
 

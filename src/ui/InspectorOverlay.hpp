@@ -50,7 +50,6 @@ class InspectorOverlay {
 	    const sim::BodySnapshot& body,
 	    const std::optional<sim::BodySnapshot>& referenceBody,
 	    bool showDistance,
-	    double speedScale,
 	    const std::function<sf::Vector2i(const sf::Vector2f&)>& worldToPixel) const;
 
 	mutable sf::Font font_;

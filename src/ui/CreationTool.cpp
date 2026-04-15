@@ -5,20 +5,6 @@
 
 namespace ui {
 
-namespace {
-
-sf::Vector2f toLocalFrame(const sf::Vector2f& worldPos,
-                          bool useReferenceFrame,
-                          const std::optional<sim::BodySnapshot>& selectedBody) {
-	if (useReferenceFrame && selectedBody.has_value()) {
-		return sf::Vector2f(worldPos.x - static_cast<float>(selectedBody->x),
-		                    worldPos.y - static_cast<float>(selectedBody->y));
-	}
-	return worldPos;
-}
-
-}  // namespace
-
 void CreationTool::toggleEnabled() {
 	enabled_ = !enabled_;
 	if (!enabled_) {
@@ -65,20 +51,17 @@ std::optional<sim::SpawnCommand> CreationTool::handleLeftClick(
 		return std::nullopt;
 	}
 
-	const bool useReferenceFrame =
-	    (relativeFrame_ || followReferenceFrame_) && selectedBody.has_value();
-	const sf::Vector2f local = toLocalFrame(worldPos, useReferenceFrame, selectedBody);
-	cursor_ = local;
 	if (step_ == Step::Inactive) {
-		anchor_ = local;
+		anchorWorld_ = worldPos;
+		cursorWorld_ = worldPos;
 		previewRadius_ = 1.0f;
 		step_ = Step::SetRadius;
 		return std::nullopt;
 	}
 
+	updateCursor(worldPos, selectedBody);
+
 	if (step_ == Step::SetRadius) {
-		const sf::Vector2f d = local - anchor_;
-		previewRadius_ = std::max(0.05f, std::sqrt(d.x * d.x + d.y * d.y));
 		step_ = Step::SetVelocity;
 		return std::nullopt;
 	}
@@ -95,11 +78,10 @@ void CreationTool::updateCursor(const sf::Vector2f& worldPos) {
 
 void CreationTool::updateCursor(const sf::Vector2f& worldPos,
                                 const std::optional<sim::BodySnapshot>& selectedBody) {
-	const bool useReferenceFrame =
-	    (relativeFrame_ || followReferenceFrame_) && selectedBody.has_value();
-	cursor_ = toLocalFrame(worldPos, useReferenceFrame, selectedBody);
+	(void)selectedBody;
+	cursorWorld_ = worldPos;
 	if (step_ == Step::SetRadius) {
-		const sf::Vector2f d = cursor_ - anchor_;
+		const sf::Vector2f d = cursorWorld_ - anchorWorld_;
 		previewRadius_ = std::max(0.05f, std::sqrt(d.x * d.x + d.y * d.y));
 	}
 }
@@ -115,7 +97,13 @@ std::optional<sim::SpawnCommand> CreationTool::previewSpawn(
 	const double simRate = (std::isfinite(simSecondsPerRealSecond) && simSecondsPerRealSecond > 0.0)
 	                           ? simSecondsPerRealSecond
 	                           : 1.0;
-	const sf::Vector2f velocityVector = (cursor_ - anchor_) / static_cast<float>(simRate);
+	sf::Vector2f velocityVector = (cursorWorld_ - anchorWorld_) / static_cast<float>(simRate);
+	const bool useReferenceFrame =
+	    (relativeFrame_ || followReferenceFrame_) && selectedBody.has_value();
+	if (useReferenceFrame) {
+		velocityVector += sf::Vector2f(static_cast<float>(selectedBody->vx),
+		                               static_cast<float>(selectedBody->vy));
+	}
 	const double radius = std::max(0.05, static_cast<double>(previewRadius_));
 	double mass = density_ * volumeFromRadius(radius);
 	if (negativeMass_) {
@@ -123,21 +111,13 @@ std::optional<sim::SpawnCommand> CreationTool::previewSpawn(
 	}
 
 	sim::SpawnCommand out{
-	    .x = anchor_.x,
-	    .y = anchor_.y,
+	    .x = anchorWorld_.x,
+	    .y = anchorWorld_.y,
 	    .vx = velocityVector.x,
 	    .vy = velocityVector.y,
 	    .mass = mass,
 	    .radius = radius,
 	};
-	const bool useReferenceFrame =
-	    (relativeFrame_ || followReferenceFrame_) && selectedBody.has_value();
-	if (useReferenceFrame) {
-		out.x += selectedBody->x;
-		out.y += selectedBody->y;
-		out.vx += selectedBody->vx;
-		out.vy += selectedBody->vy;
-	}
 	return out;
 }
 

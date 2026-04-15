@@ -43,9 +43,9 @@ class CreationTool {
 	void updateCursor(const sf::Vector2f& worldPos,
 	                  const std::optional<sim::BodySnapshot>& selectedBody);
 
-	[[nodiscard]] sf::Vector2f anchor() const { return anchor_; }
+	[[nodiscard]] sf::Vector2f anchor() const { return anchorWorld_; }
 	[[nodiscard]] float previewRadius() const { return previewRadius_; }
-	[[nodiscard]] sf::Vector2f cursor() const { return cursor_; }
+	[[nodiscard]] sf::Vector2f cursor() const { return cursorWorld_; }
 	[[nodiscard]] std::optional<sim::SpawnCommand> previewSpawn(
 	    const std::optional<sim::BodySnapshot>& selectedBody,
 	    double simSecondsPerRealSecond) const;
@@ -61,9 +61,9 @@ class CreationTool {
 	bool negativeMass_ = false;
 	bool relativeFrame_ = false;
 	bool followReferenceFrame_ = false;
-	sf::Vector2f anchor_{0.0f, 0.0f};
+	sf::Vector2f anchorWorld_{0.0f, 0.0f};
 	float previewRadius_ = 1.0f;
-	sf::Vector2f cursor_{0.0f, 0.0f};
+	sf::Vector2f cursorWorld_{0.0f, 0.0f};
 };
 
 }  // namespace ui

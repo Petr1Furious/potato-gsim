@@ -113,18 +113,16 @@ HoldAdjustments InputActions::computeHolds(double dtSeconds, bool enabled) const
 }
 
 std::vector<std::string> InputActions::legendLines(bool menuActive) const {
-	if (menuActive) {
-		return {
-		    "Esc: close menu | Up/Down: select | Enter: apply | Left/Right: adjust",
-		};
+	if (!menuActive) {
+		return {};
 	}
 	return {
-	    "Esc menu | Space pause | M mode | F follow | C create | V rel-frame | N negative-mass",
-	    "WASD/Arrows move POV | Left-drag pan/select | Middle-drag pan | Wheel zoom",
-	    ",/. time-scale | -/= or num +/- density | [/] prediction horizon | L trails | T relative "
-	    "trails",
-	    "P predictions | H labels | F3 debug | F9 save | F10 load | F5 random | F6 clear | "
-	    "F7/F8 preset",
+	    "Esc close menu | Up/Down select | Enter apply | Left/Right adjust",
+	    "Space pause | M mode | F follow | C create | V rel-frame | N negative-mass",
+	    "WASD/Arrows move | Left/Middle drag pan | Wheel zoom",
+	    ",/. time-scale | -/= density | [/] prediction steps",
+	    "L trails | T relative trails | P predictions | H hover labels | F3 debug",
+	    "F5 random | F6 clear | F7/F8 preset | F9 save | F10 load",
 	};
 }
 

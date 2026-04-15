@@ -102,35 +102,36 @@ float Renderer::worldUnitsPerPixel() const {
 	return view_.getSize().x / std::max(1.0f, static_cast<float>(window_.getSize().x));
 }
 
-void Renderer::draw(const sim::SimulationEngine& engine) {
+void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
 	window_.setView(view_);
 	window_.clear(sf::Color(8, 10, 16));
 
 	const float pixelsPerWorld = 1.0f / worldUnitsPerPixel();
 	sf::VertexArray points(sf::PrimitiveType::Points);
 
-	engine.withReadState([&](const sim::BodyState& state) {
-		for (std::size_t i = 0; i < state.size(); ++i) {
-			const float radiusPx = static_cast<float>(state.radius[i]) * pixelsPerWorld;
-			const sf::Vector2f pos(static_cast<float>(state.posX[i]),
-			                       static_cast<float>(state.posY[i]));
-			// Small circles at huge world coordinates can become numerically unstable in
-			// world-space rendering; render them as points instead.
-			if (radiusPx > 2.5f) {
-				const float worldRadius = static_cast<float>(state.radius[i]);
-				circle_.setRadius(worldRadius);
-				circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));
-				circle_.setPosition(pos);
-				window_.draw(circle_);
-			} else {
-				points.append(sf::Vertex{pos, sf::Color(210, 230, 255)});
-			}
+	for (const sim::BodySnapshot& body : bodies) {
+		const float radiusPx = static_cast<float>(body.radius) * pixelsPerWorld;
+		const sf::Vector2f pos(static_cast<float>(body.x), static_cast<float>(body.y));
+		if (radiusPx > 2.5f) {
+			const float worldRadius = static_cast<float>(body.radius);
+			circle_.setRadius(worldRadius);
+			circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));
+			circle_.setPosition(pos);
+			window_.draw(circle_);
+		} else {
+			points.append(sf::Vertex{pos, sf::Color(210, 230, 255)});
 		}
-	});
+	}
 
 	if (points.getVertexCount() > 0) {
 		window_.draw(points);
 	}
+}
+
+void Renderer::draw(const sim::SimulationEngine& engine) {
+	std::vector<sim::BodySnapshot> bodies;
+	engine.copyBodies(bodies);
+	draw(bodies);
 }
 
 }  // namespace render

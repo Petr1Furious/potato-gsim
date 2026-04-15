@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -102,6 +103,8 @@ class SimulationEngine {
 	void setMode(SimulationMode mode);
 	void toggleMode();
 	void setPaused(bool paused);
+	[[nodiscard]] std::uint64_t requestPauseAck(bool paused);
+	[[nodiscard]] bool isPauseAcked(std::uint64_t token) const;
 	void togglePaused();
 	void setTimeScale(double timeScale);
 	void scaleTimeBy(double factor);
@@ -185,6 +188,9 @@ class SimulationEngine {
 	std::atomic<double> updatesPerSecond_{0.0};
 	std::atomic<double> simulatedSecondsPerRealSecond_{0.0};
 	std::atomic<double> simulatedSecondsPerUpdate_{0.0};
+	std::atomic<std::uint64_t> pauseRequestSeq_{0};
+	std::atomic<std::uint64_t> pauseAckSeq_{0};
+	std::atomic_bool pauseRequestPausedState_{false};
 	std::atomic_bool debugMetricsEnabled_{false};
 	mutable std::mutex timerMutex_;
 	double simulatedSeconds_ = 0.0;

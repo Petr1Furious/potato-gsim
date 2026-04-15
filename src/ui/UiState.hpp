@@ -22,7 +22,7 @@ struct UiState {
 	MenuOverlay menu;
 
 	bool showPredictions = true;
-	bool showLabels = true;
+	bool showHoverLabels = true;
 	bool showDebugInfo = false;
 	bool showNegativeMassWarning = true;
 

@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cstddef>
-#include <cstdint>
 #include <vector>
 
 namespace sim {
@@ -65,12 +64,11 @@ struct BodyState {
 	}
 
 	void validate() const {
-		const std::size_t n = size();
-		assert(posY.size() == n);
-		assert(velX.size() == n);
-		assert(velY.size() == n);
-		assert(mass.size() == n);
-		assert(radius.size() == n);
+		assert(posY.size() == size());
+		assert(velX.size() == size());
+		assert(velY.size() == size());
+		assert(mass.size() == size());
+		assert(radius.size() == size());
 	}
 };
 

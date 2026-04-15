@@ -122,8 +122,7 @@ void InspectorOverlay::drawWorldSelection(
 		window.draw(strip);
 	}
 
-	drawBodyInfoText(window, *body, referenceBody, showDistanceToReference, arrowScale,
-	                 worldToPixel);
+	drawBodyInfoText(window, *body, referenceBody, showDistanceToReference, worldToPixel);
 }
 
 void InspectorOverlay::drawBodyInfoText(
@@ -131,7 +130,6 @@ void InspectorOverlay::drawBodyInfoText(
     const sim::BodySnapshot& body,
     const std::optional<sim::BodySnapshot>& referenceBody,
     bool showDistance,
-    double speedScale,
     const std::function<sf::Vector2i(const sf::Vector2f&)>& worldToPixel) const {
 	if (!fontReady_) {
 		return;
@@ -155,7 +153,7 @@ void InspectorOverlay::drawBodyInfoText(
 		distance = std::sqrt(dx * dx + dy * dy);
 		hasDistance = true;
 	}
-	const double speed = std::sqrt(relVx * relVx + relVy * relVy) * std::max(0.0, speedScale);
+	const double speed = std::sqrt(relVx * relVx + relVy * relVy);
 
 	std::ostringstream mass;
 	mass << std::scientific << std::setprecision(3) << body.mass;
@@ -264,32 +262,65 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 	const sf::View oldView = window.getView();
 	window.setView(window.getDefaultView());
 
-	const float panelWidth = 530.0f;
-	const float panelHeight = 28.0f + static_cast<float>(lines.size()) * 18.0f;
+	const float panelX = 12.0f;
+	const float panelY = 10.0f;
+	const float panelPadding = 8.0f;
+	const float lineHeight = 18.0f;
+	float maxLineWidth = 0.0f;
+	for (const std::string& line : lines) {
+		sf::Text probe(font_, line, 14);
+		maxLineWidth = std::max(maxLineWidth, probe.getLocalBounds().size.x);
+	}
+	const float panelWidth = panelPadding * 2.0f + maxLineWidth;
+	const float panelHeight = panelPadding * 2.0f + static_cast<float>(lines.size()) * lineHeight;
+
 	sf::RectangleShape panel(sf::Vector2f(panelWidth, panelHeight));
-	panel.setPosition(sf::Vector2f(12.0f, 10.0f));
+	panel.setPosition(sf::Vector2f(panelX, panelY));
 	panel.setFillColor(sf::Color(12, 16, 22, 170));
 	panel.setOutlineColor(sf::Color(60, 80, 110, 220));
 	panel.setOutlineThickness(1.0f);
 	window.draw(panel);
 
-	float y = 16.0f;
+	float y = panelY + panelPadding;
 	for (const std::string& line : lines) {
 		sf::Text text(font_, line, 14);
-		text.setPosition(sf::Vector2f(20.0f, y));
+		text.setPosition(sf::Vector2f(panelX + panelPadding, y));
 		text.setFillColor(sf::Color(230, 235, 255));
 		window.draw(text);
-		y += 18.0f;
+		y += lineHeight;
 	}
 
-	float legendY = static_cast<float>(window.getSize().y) - 20.0f -
-	                static_cast<float>(legendLines.size()) * 18.0f;
-	for (const std::string& line : legendLines) {
-		sf::Text text(font_, line, 13);
-		text.setPosition(sf::Vector2f(16.0f, legendY));
-		text.setFillColor(sf::Color(190, 210, 240));
-		window.draw(text);
-		legendY += 18.0f;
+	if (!legendLines.empty()) {
+		const float lineHeight = 18.0f;
+		const float padding = 8.0f;
+		float maxLineWidth = 0.0f;
+		for (const std::string& line : legendLines) {
+			sf::Text probe(font_, line, 13);
+			maxLineWidth = std::max(maxLineWidth, probe.getLocalBounds().size.x);
+		}
+
+		const sf::Vector2f legendPanelSize(
+		    maxLineWidth + padding * 2.0f,
+		    padding * 2.0f + lineHeight * static_cast<float>(legendLines.size()));
+		const float legendX = 12.0f;
+		const float legendY =
+		    std::max(12.0f, static_cast<float>(window.getSize().y) - legendPanelSize.y - 12.0f);
+
+		sf::RectangleShape legendPanel(legendPanelSize);
+		legendPanel.setPosition(sf::Vector2f(legendX, legendY));
+		legendPanel.setFillColor(sf::Color(12, 16, 22, 170));
+		legendPanel.setOutlineColor(sf::Color(60, 80, 110, 220));
+		legendPanel.setOutlineThickness(1.0f);
+		window.draw(legendPanel);
+
+		float y = legendY + padding;
+		for (const std::string& line : legendLines) {
+			sf::Text text(font_, line, 13);
+			text.setPosition(sf::Vector2f(legendX + padding, y));
+			text.setFillColor(sf::Color(190, 210, 240));
+			window.draw(text);
+			y += lineHeight;
+		}
 	}
 
 	if (paused) {

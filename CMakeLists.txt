@@ -23,6 +23,7 @@ add_executable(
   src/sim/ThreadPool.cpp
   src/sim/UniformGrid.cpp
   src/ui/CreationTool.cpp
+  src/ui/CreationPauseStateMachine.cpp
   src/ui/InputActions.cpp
   src/ui/InspectorOverlay.cpp
   src/ui/MenuOverlay.cpp

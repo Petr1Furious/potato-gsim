@@ -62,7 +62,7 @@ std::vector<sim::SpawnCommand> makeBinaryDance() {
 	const double starMass = 1.15e30;
 	const double starRadius = 6.5e8;
 	const double orbitRadius = starSeparation * 0.5;
-	const double starSpeed = std::sqrt(kG * starMass / (2.0 * orbitRadius));
+	const double starSpeed = std::sqrt(kG * starMass / (4.0 * orbitRadius));
 	bodies.push_back(sim::SpawnCommand{
 	    .x = -orbitRadius,
 	    .y = 0.0,
@@ -165,7 +165,7 @@ std::vector<sim::SpawnCommand> ScenarioManager::makeRandom(std::size_t count,
                                                            double centerY,
                                                            double spreadRadius) {
 	std::vector<sim::SpawnCommand> bodies;
-	bodies.reserve(count + 1);
+	bodies.reserve(count);
 	std::random_device rd;
 	std::mt19937_64 rng((static_cast<std::uint64_t>(rd()) << 1u) ^ 0x9E3779B97F4A7C15ULL);
 	std::uniform_real_distribution<double> angleDist(0.0, 2.0 * std::numbers::pi);
@@ -173,27 +173,17 @@ std::vector<sim::SpawnCommand> ScenarioManager::makeRandom(std::size_t count,
 	std::uniform_real_distribution<double> massDist(1e21, 5e25);
 	std::uniform_real_distribution<double> jitter(-1.5e9, 1.5e9);
 
-	bodies.push_back(sim::SpawnCommand{
-	    .x = centerX,
-	    .y = centerY,
-	    .vx = 0.0,
-	    .vy = 0.0,
-	    .mass = 1.98847e30,
-	    .radius = 6.9634e8,
-	});
-
 	for (std::size_t i = 0; i < count; ++i) {
 		const double a = angleDist(rng);
 		const double r = std::sqrt(radialDist(rng)) * spreadRadius;
 		const double x = centerX + std::cos(a) * r + jitter(rng);
 		const double y = centerY + std::sin(a) * r + jitter(rng);
-		const double tangent = std::sqrt(std::max(0.0, kG * 1.98847e30 / std::max(1.0, r)));
 		const double mass = massDist(rng);
 		bodies.push_back(sim::SpawnCommand{
 		    .x = x,
 		    .y = y,
-		    .vx = -std::sin(a) * tangent,
-		    .vy = std::cos(a) * tangent,
+		    .vx = 0,
+		    .vy = 0,
 		    .mass = mass,
 		    .radius = radiusFromMass(mass),
 		});
