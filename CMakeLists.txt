@@ -72,6 +72,30 @@ if(BUILD_TESTING)
   target_include_directories(high_load_smoke PRIVATE src)
   target_link_libraries(high_load_smoke PRIVATE SFML::System)
 
+  add_executable(
+    throughput_benchmark
+    tests/throughput_benchmark.cpp
+    src/scenario/ScenarioManager.cpp
+    src/sim/QuadTree.cpp
+    src/sim/SimulationEngine.cpp
+    src/sim/ThreadPool.cpp
+    src/sim/UniformGrid.cpp
+  )
+  target_include_directories(throughput_benchmark PRIVATE src)
+  target_link_libraries(throughput_benchmark PRIVATE SFML::System)
+
+  add_executable(
+    algorithm_switching_tests
+    tests/algorithm_switching_tests.cpp
+    src/sim/QuadTree.cpp
+    src/sim/SimulationEngine.cpp
+    src/sim/ThreadPool.cpp
+    src/sim/UniformGrid.cpp
+  )
+  target_include_directories(algorithm_switching_tests PRIVATE src)
+  target_link_libraries(algorithm_switching_tests PRIVATE SFML::System)
+
   add_test(NAME parity_regression_tests COMMAND parity_regression_tests)
   add_test(NAME high_load_smoke COMMAND high_load_smoke)
+  add_test(NAME algorithm_switching_tests COMMAND algorithm_switching_tests)
 endif()

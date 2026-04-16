@@ -1,8 +1,6 @@
 #include "sim/ThreadPool.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <stdexcept>
 
 namespace sim {
 
@@ -50,6 +48,7 @@ void ThreadPool::stopThreads() {
 
 void ThreadPool::parallelFor(std::size_t count,
                              std::size_t chunkSize,
+                             ChunkPolicy policy,
                              const std::function<void(std::size_t, std::size_t)>& fn) {
 	if (count == 0) {
 		return;
@@ -63,14 +62,21 @@ void ThreadPool::parallelFor(std::size_t count,
 		fn(0, count);
 		return;
 	}
+	const std::size_t localChunkCount = (count + chunkSize - 1) / chunkSize;
+	if (localChunkCount <= 1) {
+		fn(0, count);
+		return;
+	}
 
 	std::uint64_t localSeq = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		taskCount_ = count;
 		chunkSize_ = chunkSize;
-		chunkCount_ = (taskCount_ + chunkSize_ - 1) / chunkSize_;
+		chunkCount_ = localChunkCount;
 		participantCount_ = threads_.size() + 1;
+		chunkPolicy_ = policy;
+		nextChunk_.store(0, std::memory_order_relaxed);
 		taskFn_ = fn;
 		completedWorkers_ = 0;
 		++jobSequence_;
@@ -79,11 +85,23 @@ void ThreadPool::parallelFor(std::size_t count,
 
 	cvJob_.notify_all();
 
-	const std::size_t mainWorkerId = threads_.size();
-	for (std::size_t chunk = mainWorkerId; chunk < chunkCount_; chunk += participantCount_) {
-		const std::size_t begin = chunk * chunkSize_;
-		const std::size_t end = std::min(taskCount_, begin + chunkSize_);
-		fn(begin, end);
+	if (policy == ChunkPolicy::DynamicClaim) {
+		while (true) {
+			const std::size_t chunk = nextChunk_.fetch_add(1, std::memory_order_relaxed);
+			if (chunk >= chunkCount_) {
+				break;
+			}
+			const std::size_t begin = chunk * chunkSize_;
+			const std::size_t end = std::min(taskCount_, begin + chunkSize_);
+			fn(begin, end);
+		}
+	} else {
+		const std::size_t mainWorkerId = threads_.size();
+		for (std::size_t chunk = mainWorkerId; chunk < chunkCount_; chunk += participantCount_) {
+			const std::size_t begin = chunk * chunkSize_;
+			const std::size_t end = std::min(taskCount_, begin + chunkSize_);
+			fn(begin, end);
+		}
 	}
 
 	std::unique_lock<std::mutex> lock(mutex_);
@@ -100,6 +118,7 @@ void ThreadPool::workerLoop(std::size_t workerId) {
 		std::size_t chunkSize = 1;
 		std::size_t chunkCount = 0;
 		std::size_t participants = 1;
+		ChunkPolicy policy = ChunkPolicy::DynamicClaim;
 
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
@@ -113,12 +132,25 @@ void ThreadPool::workerLoop(std::size_t workerId) {
 			chunkSize = chunkSize_;
 			chunkCount = chunkCount_;
 			participants = participantCount_;
+			policy = chunkPolicy_;
 		}
 
-		for (std::size_t chunk = workerId; chunk < chunkCount; chunk += participants) {
-			const std::size_t begin = chunk * chunkSize;
-			const std::size_t end = std::min(count, begin + chunkSize);
-			fn(begin, end);
+		if (policy == ChunkPolicy::DynamicClaim) {
+			while (true) {
+				const std::size_t chunk = nextChunk_.fetch_add(1, std::memory_order_relaxed);
+				if (chunk >= chunkCount) {
+					break;
+				}
+				const std::size_t begin = chunk * chunkSize;
+				const std::size_t end = std::min(count, begin + chunkSize);
+				fn(begin, end);
+			}
+		} else {
+			for (std::size_t chunk = workerId; chunk < chunkCount; chunk += participants) {
+				const std::size_t begin = chunk * chunkSize;
+				const std::size_t end = std::min(count, begin + chunkSize);
+				fn(begin, end);
+			}
 		}
 
 		{

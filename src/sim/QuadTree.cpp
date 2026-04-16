@@ -16,6 +16,16 @@ namespace {
 	return std::max(1.0, extent * 0.5 + 1.0);
 }
 
+[[nodiscard]] std::uint64_t spreadBits21(std::uint32_t value) {
+	std::uint64_t x = value & 0x1FFFFFu;
+	x = (x | (x << 32u)) & 0x1F00000000FFFFull;
+	x = (x | (x << 16u)) & 0x1F0000FF0000FFull;
+	x = (x | (x << 8u)) & 0x100F00F00F00F00Full;
+	x = (x | (x << 4u)) & 0x10C30C30C30C30C3ull;
+	x = (x | (x << 2u)) & 0x1249249249249249ull;
+	return x;
+}
+
 }  // namespace
 
 void BarnesHutTree::build(const std::vector<double>& posX,
@@ -34,6 +44,12 @@ void BarnesHutTree::build(const std::vector<double>& posX,
 	}
 	if (leafPayloads_.capacity() < desiredNodes) {
 		leafPayloads_.reserve(desiredNodes);
+	}
+	if (overflowBodies_.capacity() < posX.size()) {
+		overflowBodies_.reserve(posX.size());
+	}
+	if (overflowNext_.capacity() < posX.size()) {
+		overflowNext_.reserve(posX.size());
 	}
 
 	if (posX.empty()) {
@@ -55,12 +71,27 @@ void BarnesHutTree::build(const std::vector<double>& posX,
 	const double centerX = (minX + maxX) * 0.5;
 	const double centerY = (minY + maxY) * 0.5;
 	const double halfSize = safeHalfSize(minX, maxX, minY, maxY);
+	const double invExtent = halfSize > 0.0 ? (1.0 / (halfSize * 2.0)) : 0.0;
 
 	const int root = createNode(centerX, centerY, halfSize);
 	(void)root;
 
-	for (std::size_t i = 0; i < posX.size(); ++i) {
-		insertBody(0, i, 0);
+	mortonKeys_.resize(posX.size());
+	insertionOrder_.resize(posX.size());
+	for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(posX.size()); ++i) {
+		mortonKeys_[i] = mortonKey(posX[i], posY[i], minX, minY, invExtent);
+		insertionOrder_[i] = i;
+	}
+	std::sort(insertionOrder_.begin(), insertionOrder_.end(),
+	          [&](std::uint32_t a, std::uint32_t b) {
+		          if (mortonKeys_[a] != mortonKeys_[b]) {
+			          return mortonKeys_[a] < mortonKeys_[b];
+		          }
+		          return a < b;
+	          });
+
+	for (std::uint32_t bodyIndex : insertionOrder_) {
+		insertBody(0, bodyIndex, 0);
 	}
 
 	accumulateMass(0);
@@ -102,6 +133,9 @@ void BarnesHutTree::computeAccelerationImpl(std::size_t bodyIndex,
 	if (nodes_.empty()) {
 		return;
 	}
+	const std::vector<double>& posX = *posX_;
+	const std::vector<double>& posY = *posY_;
+	const std::vector<double>& mass = *mass_;
 
 	static thread_local std::vector<int> stack;
 	stack.clear();
@@ -134,12 +168,12 @@ void BarnesHutTree::computeAccelerationImpl(std::size_t bodyIndex,
 					if (other == bodyIndex) {
 						continue;
 					}
-					const double odx = (*posX_)[other] - bodyX;
-					const double ody = (*posY_)[other] - bodyY;
+					const double odx = posX[other] - bodyX;
+					const double ody = posY[other] - bodyY;
 					const double od2 = odx * odx + ody * ody + epsilonSquared;
 					const double invD = 1.0 / std::sqrt(od2);
 					const double invDist3 = invD * invD * invD;
-					const double factor = gravitationalConstant * (*mass_)[other] * invDist3;
+					const double factor = gravitationalConstant * mass[other] * invDist3;
 					outAx += odx * factor;
 					outAy += ody * factor;
 					if constexpr (CollectStats) {
@@ -152,12 +186,12 @@ void BarnesHutTree::computeAccelerationImpl(std::size_t bodyIndex,
 					if (other == bodyIndex) {
 						continue;
 					}
-					const double odx = (*posX_)[other] - bodyX;
-					const double ody = (*posY_)[other] - bodyY;
+					const double odx = posX[other] - bodyX;
+					const double ody = posY[other] - bodyY;
 					const double od2 = odx * odx + ody * ody + epsilonSquared;
 					const double invD = 1.0 / std::sqrt(od2);
 					const double invDist3 = invD * invD * invD;
-					const double factor = gravitationalConstant * (*mass_)[other] * invDist3;
+					const double factor = gravitationalConstant * mass[other] * invDist3;
 					outAx += odx * factor;
 					outAy += ody * factor;
 					if constexpr (CollectStats) {
@@ -211,6 +245,22 @@ const BarnesHutTree::LeafPayload* BarnesHutTree::leafPayloadFor(const Node& node
 		return nullptr;
 	}
 	return &leafPayloads_[static_cast<std::size_t>(node.leafPayloadIndex)];
+}
+
+std::uint64_t BarnesHutTree::mortonKey(double x,
+                                       double y,
+                                       double minX,
+                                       double minY,
+                                       double invExtent) {
+	if (!(std::isfinite(x) && std::isfinite(y) && std::isfinite(invExtent)) || invExtent <= 0.0) {
+		return 0;
+	}
+	constexpr std::uint32_t kGridMax = (1u << 21u) - 1u;
+	const double tx = std::clamp((x - minX) * invExtent, 0.0, 1.0);
+	const double ty = std::clamp((y - minY) * invExtent, 0.0, 1.0);
+	const std::uint32_t qx = static_cast<std::uint32_t>(tx * static_cast<double>(kGridMax));
+	const std::uint32_t qy = static_cast<std::uint32_t>(ty * static_cast<double>(kGridMax));
+	return (spreadBits21(qx) << 1u) | spreadBits21(qy);
 }
 
 void BarnesHutTree::appendOverflowBody(Node& node, std::uint32_t bodyIndex) {

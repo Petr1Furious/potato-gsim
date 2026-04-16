@@ -33,11 +33,19 @@ struct BodySnapshot {
 	double radius = 0.0;
 };
 
+enum class ForceAlgorithm { DirectSerial, DirectParallel, BarnesHutParallel };
+
 struct EngineDebugStats {
 	bool valid = false;
-	bool usedDirectPath = false;
+	const char* forceAlgorithm = "direct_serial";
+	bool collisionPhaseExecuted = false;
 	std::size_t bodyCount = 0;
 	std::size_t workerCount = 0;
+	std::size_t chunkSize = 0;
+	std::size_t directSerialMaxBodies = 0;
+	std::size_t directParallelMaxBodies = 0;
+	std::size_t collisionStepInterval = 1;
+	const char* chunkPolicy = "dynamic";
 	std::size_t currentTreeNodes = 0;
 	std::size_t predictedTreeNodes = 0;
 	std::size_t overlapPairs = 0;
@@ -114,9 +122,14 @@ class SimulationEngine {
 	                               std::size_t warmupSamples);
 	void setGravityConstant(double gravitationalConstant);
 	void setCollisionCellScale(double cellScale);
+	void setCollisionStepInterval(std::size_t stepInterval);
 	void setTheta(double theta);
 	void setSoftening(double epsilon);
 	void setWorkerCount(std::size_t workers);
+	void setParallelChunkSize(std::size_t chunkSize);
+	void setChunkPolicy(ChunkPolicy policy);
+	void setDirectSerialMaxBodies(std::size_t bodyCount);
+	void setDirectParallelMaxBodies(std::size_t bodyCount);
 	void setDebugMetricsEnabled(bool enabled);
 	[[nodiscard]] bool debugMetricsEnabled() const;
 
@@ -133,9 +146,11 @@ class SimulationEngine {
 	                       EngineDebugStats& debug);
 	void stepDirectPath(double dt,
 	                    const SimulationConfig& cfg,
+	                    ForceAlgorithm algorithm,
 	                    BodyState& state,
 	                    IdIndexMap& idMap,
 	                    int writeIndex,
+	                    bool runCollisionPhase,
 	                    const std::chrono::steady_clock::time_point& stepStart,
 	                    EngineDebugStats& debug);
 	void stepBarnesHutPath(double dt,
@@ -143,6 +158,7 @@ class SimulationEngine {
 	                       BodyState& state,
 	                       IdIndexMap& idMap,
 	                       int writeIndex,
+	                       bool runCollisionPhase,
 	                       bool collectTraversalStats,
 	                       const std::chrono::steady_clock::time_point& stepStart,
 	                       EngineDebugStats& debug);
@@ -159,6 +175,14 @@ class SimulationEngine {
 	[[nodiscard]] SimulationConfig currentConfig() const;
 	void updateConfig(const std::function<void(SimulationConfig&)>& fn);
 	[[nodiscard]] std::size_t desiredWorkers(const SimulationConfig& cfg) const;
+	[[nodiscard]] std::size_t resolveChunkSize(const SimulationConfig& cfg,
+	                                           std::size_t bodyCount,
+	                                           std::size_t workers) const;
+	[[nodiscard]] static ForceAlgorithm selectForceAlgorithm(std::size_t bodyCount,
+	                                                         std::size_t workers,
+	                                                         const SimulationConfig& cfg);
+	[[nodiscard]] static const char* forceAlgorithmLabel(ForceAlgorithm algorithm);
+	[[nodiscard]] static const char* chunkPolicyLabel(ChunkPolicy policy);
 
 	mutable std::shared_mutex stateMutex_;
 	BodyState states_[2];
@@ -182,6 +206,8 @@ class SimulationEngine {
 	std::vector<double> predY_;
 	std::vector<double> acc1X_;
 	std::vector<double> acc1Y_;
+	std::vector<BarnesHutTree::TraversalStats> traversalAcc0_;
+	std::vector<BarnesHutTree::TraversalStats> traversalAcc1_;
 
 	std::jthread simulationThread_;
 	std::atomic_bool running_{false};
@@ -192,6 +218,7 @@ class SimulationEngine {
 	std::atomic<std::uint64_t> pauseAckSeq_{0};
 	std::atomic_bool pauseRequestPausedState_{false};
 	std::atomic_bool debugMetricsEnabled_{false};
+	std::uint64_t stepCounter_ = 0;
 	mutable std::mutex timerMutex_;
 	double simulatedSeconds_ = 0.0;
 	mutable std::mutex debugMutex_;

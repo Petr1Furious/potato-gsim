@@ -66,6 +66,11 @@ class BarnesHutTree {
 	void appendOverflowBody(Node& node, std::uint32_t bodyIndex);
 	LeafPayload& ensureLeafPayload(Node& node);
 	[[nodiscard]] const LeafPayload* leafPayloadFor(const Node& node) const;
+	[[nodiscard]] static std::uint64_t mortonKey(double x,
+	                                             double y,
+	                                             double minX,
+	                                             double minY,
+	                                             double invExtent);
 	template <bool CollectStats>
 	void computeAccelerationImpl(std::size_t bodyIndex,
 	                             double bodyX,
@@ -87,6 +92,8 @@ class BarnesHutTree {
 	std::vector<LeafPayload> leafPayloads_;
 	std::vector<std::uint32_t> overflowBodies_;
 	std::vector<std::int32_t> overflowNext_;
+	std::vector<std::uint64_t> mortonKeys_;
+	std::vector<std::uint32_t> insertionOrder_;
 };
 
 }  // namespace sim

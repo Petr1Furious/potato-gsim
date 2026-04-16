@@ -2,11 +2,16 @@
 #include "sim/UnionFind.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
+#include <iostream>
+#include <mutex>
 #include <numbers>
 #include <random>
+#include <sstream>
 #include <thread>
 
 namespace sim {
@@ -31,6 +36,58 @@ namespace {
 	return std::chrono::duration<double, std::milli>(duration).count();
 }
 
+void findOverlapsDirectSmall(const std::vector<double>& posX,
+                             const std::vector<double>& posY,
+                             const std::vector<double>& radius,
+                             std::vector<UniformGrid::OverlapPair>& outPairs) {
+	outPairs.clear();
+	const std::size_t n = posX.size();
+	if (n < 2) {
+		return;
+	}
+	outPairs.reserve((n * (n - 1)) / 8 + 4);
+	for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+		for (std::uint32_t j = i + 1; j < static_cast<std::uint32_t>(n); ++j) {
+			const double dx = posX[j] - posX[i];
+			const double dy = posY[j] - posY[i];
+			const double rr = radius[i] + radius[j];
+			if ((dx * dx + dy * dy) <= rr * rr) {
+				outPairs.emplace_back(i, j);
+			}
+		}
+	}
+}
+
+void logStepBreakdown(const EngineDebugStats& debug) {
+	std::array<std::pair<const char*, double>, 8> phases{
+	    std::pair{"cmd", debug.commandsMs},        std::pair{"tree0", debug.currentTreeBuildMs},
+	    std::pair{"acc0", debug.acc0Ms},           std::pair{"tree1", debug.predictedTreeBuildMs},
+	    std::pair{"acc1", debug.acc1Ms},           std::pair{"integrate", debug.integrateMs},
+	    std::pair{"collision", debug.collisionMs}, std::pair{"merge", debug.mergeMs},
+	};
+	std::sort(phases.begin(), phases.end(),
+	          [](const auto& a, const auto& b) { return a.second > b.second; });
+
+	std::ostringstream line;
+	line << std::fixed << std::setprecision(3);
+	line << "[sim-step] n=" << debug.bodyCount << " path=" << debug.forceAlgorithm
+	     << " workers=" << debug.workerCount << " chunk=" << debug.chunkSize << "("
+	     << debug.chunkPolicy << ")"
+	     << " coll=" << (debug.collisionPhaseExecuted ? "run" : "skip")
+	     << " total=" << debug.totalStepMs << "ms"
+	     << " | cmd=" << debug.commandsMs << " tree0=" << debug.currentTreeBuildMs
+	     << " acc0=" << debug.acc0Ms << " tree1=" << debug.predictedTreeBuildMs
+	     << " acc1=" << debug.acc1Ms << " int=" << debug.integrateMs
+	     << " coll=" << debug.collisionMs << " merge=" << debug.mergeMs
+	     << " pub=" << debug.publishMs << " | top=" << phases[0].first << ":" << phases[0].second
+	     << "ms, " << phases[1].first << ":" << phases[1].second << "ms, " << phases[2].first << ":"
+	     << phases[2].second << "ms";
+
+	static std::mutex logMutex;
+	std::lock_guard<std::mutex> lock(logMutex);
+	std::cout << line.str() << '\n';
+}
+
 }  // namespace
 
 SimulationEngine::SimulationEngine(SimulationConfig config) : config_(config) {
@@ -51,6 +108,7 @@ void SimulationEngine::start() {
 
 	const SimulationConfig cfg = currentConfig();
 	threadPool_.resize(desiredWorkers(cfg));
+	stepCounter_ = 0;
 	simulationThread_ =
 	    std::jthread([this](std::stop_token stopToken) { simulationLoop(stopToken); });
 }
@@ -312,6 +370,12 @@ void SimulationEngine::setCollisionCellScale(double cellScale) {
 	});
 }
 
+void SimulationEngine::setCollisionStepInterval(std::size_t stepInterval) {
+	updateConfig([stepInterval](SimulationConfig& cfg) {
+		cfg.collisionStepInterval = std::max<std::size_t>(1, stepInterval);
+	});
+}
+
 void SimulationEngine::setTheta(double theta) {
 	updateConfig(
 	    [theta](SimulationConfig& cfg) { cfg.barnesHutTheta = std::clamp(theta, 0.1, 1.5); });
@@ -324,6 +388,34 @@ void SimulationEngine::setSoftening(double epsilon) {
 
 void SimulationEngine::setWorkerCount(std::size_t workers) {
 	updateConfig([workers](SimulationConfig& cfg) { cfg.workerCount = workers; });
+}
+
+void SimulationEngine::setParallelChunkSize(std::size_t chunkSize) {
+	updateConfig([chunkSize](SimulationConfig& cfg) {
+		cfg.parallelChunkSize = std::min<std::size_t>(chunkSize, 1u << 20u);
+	});
+}
+
+void SimulationEngine::setChunkPolicy(ChunkPolicy policy) {
+	updateConfig([policy](SimulationConfig& cfg) { cfg.chunkPolicy = policy; });
+}
+
+void SimulationEngine::setDirectSerialMaxBodies(std::size_t bodyCount) {
+	updateConfig([bodyCount](SimulationConfig& cfg) {
+		cfg.directSerialMaxBodies = std::min<std::size_t>(bodyCount, 1u << 22u);
+		if (cfg.directParallelMaxBodies < cfg.directSerialMaxBodies) {
+			cfg.directParallelMaxBodies = cfg.directSerialMaxBodies;
+		}
+	});
+}
+
+void SimulationEngine::setDirectParallelMaxBodies(std::size_t bodyCount) {
+	updateConfig([bodyCount](SimulationConfig& cfg) {
+		cfg.directParallelMaxBodies = std::min<std::size_t>(bodyCount, 1u << 22u);
+		if (cfg.directSerialMaxBodies > cfg.directParallelMaxBodies) {
+			cfg.directSerialMaxBodies = cfg.directParallelMaxBodies;
+		}
+	});
 }
 
 void SimulationEngine::setDebugMetricsEnabled(bool enabled) {
@@ -515,31 +607,53 @@ void SimulationEngine::publishStepResult(int writeIndex,
 	debug.totalStepMs = durationMs(publishEnd - stepStart);
 	std::lock_guard<std::mutex> debugLock(debugMutex_);
 	debugStats_ = debug;
+	if (debugMetricsEnabled_.load(std::memory_order_relaxed)) {
+		logStepBreakdown(debug);
+	}
 }
 
 void SimulationEngine::stepDirectPath(double dt,
                                       const SimulationConfig& cfg,
+                                      ForceAlgorithm algorithm,
                                       BodyState& state,
                                       IdIndexMap& idMap,
                                       int writeIndex,
+                                      bool runCollisionPhase,
                                       const std::chrono::steady_clock::time_point& stepStart,
                                       EngineDebugStats& debug) {
 	using clock = std::chrono::steady_clock;
 	const std::size_t n = state.size();
-	debug.usedDirectPath = true;
+	const std::size_t workers = std::max<std::size_t>(1, debug.workerCount);
+	const std::size_t chunkSize = resolveChunkSize(cfg, n, workers);
+	const ChunkPolicy chunkPolicy = cfg.chunkPolicy;
+	debug.chunkSize = chunkSize;
+	debug.chunkPolicy = chunkPolicyLabel(chunkPolicy);
+	const bool serialNoPool = algorithm == ForceAlgorithm::DirectSerial || debug.workerCount == 0;
+	const auto runRange = [&](auto&& fn) {
+		if (serialNoPool) {
+			fn(0, n);
+			return;
+		}
+		threadPool_.parallelFor(n, chunkSize, chunkPolicy, fn);
+	};
 
 	const double eps2 = cfg.softeningEpsilon * cfg.softeningEpsilon;
-	auto computeAccelerationDirect = [&](const std::vector<double>& x, const std::vector<double>& y,
-	                                     std::vector<double>& outAx, std::vector<double>& outAy) {
-		for (std::size_t i = 0; i < n; ++i) {
+	const double halfDt = 0.5 * dt;
+	const double halfDt2 = 0.5 * dt * dt;
+
+	const auto acc0Start = clock::now();
+	runRange([&](std::size_t begin, std::size_t end) {
+		for (std::size_t i = begin; i < end; ++i) {
 			double ax = 0.0;
 			double ay = 0.0;
+			const double xi = state.posX[i];
+			const double yi = state.posY[i];
 			for (std::size_t j = 0; j < n; ++j) {
 				if (i == j) {
 					continue;
 				}
-				const double dx = x[j] - x[i];
-				const double dy = y[j] - y[i];
+				const double dx = state.posX[j] - xi;
+				const double dy = state.posY[j] - yi;
 				const double d2 = dx * dx + dy * dy + eps2;
 				const double invD = 1.0 / std::sqrt(d2);
 				const double invD3 = invD * invD * invD;
@@ -547,60 +661,74 @@ void SimulationEngine::stepDirectPath(double dt,
 				ax += dx * f;
 				ay += dy * f;
 			}
-			outAx[i] = ax;
-			outAy[i] = ay;
+			acc0X_[i] = ax;
+			acc0Y_[i] = ay;
+			predX_[i] = xi + state.velX[i] * dt + ax * halfDt2;
+			predY_[i] = yi + state.velY[i] * dt + ay * halfDt2;
 		}
-	};
-
-	const auto acc0Start = clock::now();
-	computeAccelerationDirect(state.posX, state.posY, acc0X_, acc0Y_);
+	});
 	const auto acc0End = clock::now();
 	debug.acc0Ms = durationMs(acc0End - acc0Start);
 
-	for (std::size_t i = 0; i < n; ++i) {
-		predX_[i] = state.posX[i] + state.velX[i] * dt + 0.5 * acc0X_[i] * dt * dt;
-		predY_[i] = state.posY[i] + state.velY[i] * dt + 0.5 * acc0Y_[i] * dt * dt;
-	}
-
 	const auto acc1Start = clock::now();
-	computeAccelerationDirect(predX_, predY_, acc1X_, acc1Y_);
+	runRange([&](std::size_t begin, std::size_t end) {
+		for (std::size_t i = begin; i < end; ++i) {
+			double ax1 = 0.0;
+			double ay1 = 0.0;
+			const double xi = predX_[i];
+			const double yi = predY_[i];
+			for (std::size_t j = 0; j < n; ++j) {
+				if (i == j) {
+					continue;
+				}
+				const double dx = predX_[j] - xi;
+				const double dy = predY_[j] - yi;
+				const double d2 = dx * dx + dy * dy + eps2;
+				const double invD = 1.0 / std::sqrt(d2);
+				const double invD3 = invD * invD * invD;
+				const double f = cfg.gravitationalConstant * state.mass[j] * invD3;
+				ax1 += dx * f;
+				ay1 += dy * f;
+			}
+			acc1X_[i] = ax1;
+			acc1Y_[i] = ay1;
+			state.velX[i] += (acc0X_[i] + ax1) * halfDt;
+			state.velY[i] += (acc0Y_[i] + ay1) * halfDt;
+			state.posX[i] = xi;
+			state.posY[i] = yi;
+		}
+	});
 	const auto acc1End = clock::now();
 	debug.acc1Ms = durationMs(acc1End - acc1Start);
+	debug.integrateMs = 0.0;
 
-	const auto integrateStart = clock::now();
-	for (std::size_t i = 0; i < n; ++i) {
-		state.velX[i] += 0.5 * (acc0X_[i] + acc1X_[i]) * dt;
-		state.velY[i] += 0.5 * (acc0Y_[i] + acc1Y_[i]) * dt;
-		state.posX[i] = predX_[i];
-		state.posY[i] = predY_[i];
-	}
-	const auto integrateEnd = clock::now();
-	debug.integrateMs = durationMs(integrateEnd - integrateStart);
-
-	const auto collisionStart = clock::now();
-	overlapPairs_.clear();
-	for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
-		for (std::uint32_t j = i + 1; j < static_cast<std::uint32_t>(n); ++j) {
-			const double dx = state.posX[j] - state.posX[i];
-			const double dy = state.posY[j] - state.posY[i];
-			const double rr = state.radius[i] + state.radius[j];
-			if ((dx * dx + dy * dy) <= rr * rr) {
-				overlapPairs_.emplace_back(i, j);
-			}
+	if (runCollisionPhase) {
+		const auto collisionStart = clock::now();
+		if (n <= 128) {
+			findOverlapsDirectSmall(state.posX, state.posY, state.radius, overlapPairs_);
+		} else {
+			collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
+			collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
 		}
-	}
-	const auto collisionEnd = clock::now();
-	debug.collisionMs = durationMs(collisionEnd - collisionStart);
-	debug.overlapPairs = overlapPairs_.size();
+		const auto collisionEnd = clock::now();
+		debug.collisionMs = durationMs(collisionEnd - collisionStart);
+		debug.overlapPairs = overlapPairs_.size();
 
-	const auto mergeStart = clock::now();
-	const std::size_t preMergeCount = state.size();
-	if (!overlapPairs_.empty()) {
-		mergeOverlaps(state, idMap, overlapPairs_);
+		const auto mergeStart = clock::now();
+		const std::size_t preMergeCount = state.size();
+		if (!overlapPairs_.empty()) {
+			mergeOverlaps(state, idMap, overlapPairs_);
+		}
+		const auto mergeEnd = clock::now();
+		debug.mergeMs = durationMs(mergeEnd - mergeStart);
+		debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
+	} else {
+		overlapPairs_.clear();
+		debug.collisionMs = 0.0;
+		debug.mergeMs = 0.0;
+		debug.overlapPairs = 0;
+		debug.mergedBodies = 0;
 	}
-	const auto mergeEnd = clock::now();
-	debug.mergeMs = durationMs(mergeEnd - mergeStart);
-	debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
 
 	const double directContribs = static_cast<double>(n > 0 ? (n - 1) : 0);
 	debug.avgDirectInteractionsAcc0 = directContribs;
@@ -616,18 +744,16 @@ void SimulationEngine::stepBarnesHutPath(double dt,
                                          BodyState& state,
                                          IdIndexMap& idMap,
                                          int writeIndex,
+                                         bool runCollisionPhase,
                                          bool collectTraversalStats,
                                          const std::chrono::steady_clock::time_point& stepStart,
                                          EngineDebugStats& debug) {
 	using clock = std::chrono::steady_clock;
 	const std::size_t n = state.size();
-	debug.usedDirectPath = false;
 
-	std::vector<BarnesHutTree::TraversalStats> traversalAcc0;
-	std::vector<BarnesHutTree::TraversalStats> traversalAcc1;
 	if (collectTraversalStats) {
-		traversalAcc0.resize(n);
-		traversalAcc1.resize(n);
+		traversalAcc0_.resize(n);
+		traversalAcc1_.resize(n);
 	}
 
 	const double eps2 = cfg.softeningEpsilon * cfg.softeningEpsilon;
@@ -642,20 +768,33 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 	}
 
 	const std::size_t workers = std::max<std::size_t>(1, debug.workerCount);
-	const std::size_t chunkSize = std::max<std::size_t>(64, n / (workers * 8 + 1));
+	const std::size_t chunkSize = resolveChunkSize(cfg, n, workers);
+	const ChunkPolicy chunkPolicy = cfg.chunkPolicy;
+	debug.chunkSize = chunkSize;
+	debug.chunkPolicy = chunkPolicyLabel(chunkPolicy);
+	const bool serialNoPool = debug.workerCount == 0;
+	const double halfDt = 0.5 * dt;
+	const double halfDt2 = 0.5 * dt * dt;
+	const auto runRange = [&](auto&& fn) {
+		if (serialNoPool) {
+			fn(0, n);
+			return;
+		}
+		threadPool_.parallelFor(n, chunkSize, chunkPolicy, fn);
+	};
 	const auto acc0Start = clock::now();
-	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
+	runRange([&](std::size_t begin, std::size_t end) {
 		for (std::size_t i = begin; i < end; ++i) {
 			double ax = 0.0;
 			double ay = 0.0;
 			BarnesHutTree::TraversalStats* stats =
-			    collectTraversalStats ? &traversalAcc0[i] : nullptr;
+			    collectTraversalStats ? &traversalAcc0_[i] : nullptr;
 			currentTree_.computeAcceleration(i, state.posX[i], state.posY[i], cfg.barnesHutTheta,
 			                                 eps2, cfg.gravitationalConstant, ax, ay, stats);
 			acc0X_[i] = ax;
 			acc0Y_[i] = ay;
-			predX_[i] = state.posX[i] + state.velX[i] * dt + 0.5 * ax * dt * dt;
-			predY_[i] = state.posY[i] + state.velY[i] * dt + 0.5 * ay * dt * dt;
+			predX_[i] = state.posX[i] + state.velX[i] * dt + ax * halfDt2;
+			predY_[i] = state.posY[i] + state.velY[i] * dt + ay * halfDt2;
 		}
 	});
 	const auto acc0End = clock::now();
@@ -668,20 +807,25 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 	debug.predictedTreeNodes = predictedTree_.nodeCount();
 
 	const auto acc1Start = clock::now();
-	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
+	runRange([&](std::size_t begin, std::size_t end) {
 		for (std::size_t i = begin; i < end; ++i) {
 			double ax = 0.0;
 			double ay = 0.0;
 			BarnesHutTree::TraversalStats* stats =
-			    collectTraversalStats ? &traversalAcc1[i] : nullptr;
+			    collectTraversalStats ? &traversalAcc1_[i] : nullptr;
 			predictedTree_.computeAcceleration(i, predX_[i], predY_[i], cfg.barnesHutTheta, eps2,
 			                                   cfg.gravitationalConstant, ax, ay, stats);
 			acc1X_[i] = ax;
 			acc1Y_[i] = ay;
+			state.velX[i] += (acc0X_[i] + ax) * halfDt;
+			state.velY[i] += (acc0Y_[i] + ay) * halfDt;
+			state.posX[i] = predX_[i];
+			state.posY[i] = predY_[i];
 		}
 	});
 	const auto acc1End = clock::now();
 	debug.acc1Ms = durationMs(acc1End - acc1Start);
+	debug.integrateMs = 0.0;
 
 	if (collectTraversalStats) {
 		double nodeVisits0 = 0.0;
@@ -691,12 +835,12 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 		double approx0 = 0.0;
 		double approx1 = 0.0;
 		for (std::size_t i = 0; i < n; ++i) {
-			nodeVisits0 += static_cast<double>(traversalAcc0[i].nodeVisits);
-			nodeVisits1 += static_cast<double>(traversalAcc1[i].nodeVisits);
-			direct0 += static_cast<double>(traversalAcc0[i].directBodyInteractions);
-			direct1 += static_cast<double>(traversalAcc1[i].directBodyInteractions);
-			approx0 += static_cast<double>(traversalAcc0[i].aggregateApproximations);
-			approx1 += static_cast<double>(traversalAcc1[i].aggregateApproximations);
+			nodeVisits0 += static_cast<double>(traversalAcc0_[i].nodeVisits);
+			nodeVisits1 += static_cast<double>(traversalAcc1_[i].nodeVisits);
+			direct0 += static_cast<double>(traversalAcc0_[i].directBodyInteractions);
+			direct1 += static_cast<double>(traversalAcc1_[i].directBodyInteractions);
+			approx0 += static_cast<double>(traversalAcc0_[i].aggregateApproximations);
+			approx1 += static_cast<double>(traversalAcc1_[i].aggregateApproximations);
 		}
 		const double invN = 1.0 / static_cast<double>(n);
 		debug.avgNodeVisitsAcc0 = nodeVisits0 * invN;
@@ -709,39 +853,38 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 		debug.avgContributionsAcc1 = (direct1 + approx1) * invN;
 	}
 
-	const auto integrateStart = clock::now();
-	threadPool_.parallelFor(n, chunkSize, [&](std::size_t begin, std::size_t end) {
-		for (std::size_t i = begin; i < end; ++i) {
-			state.velX[i] += 0.5 * (acc0X_[i] + acc1X_[i]) * dt;
-			state.velY[i] += 0.5 * (acc0Y_[i] + acc1Y_[i]) * dt;
-			state.posX[i] = predX_[i];
-			state.posY[i] = predY_[i];
+	if (runCollisionPhase) {
+		const auto collisionStart = clock::now();
+		if (n <= 128) {
+			findOverlapsDirectSmall(state.posX, state.posY, state.radius, overlapPairs_);
+		} else {
+			collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
+			collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
 		}
-	});
-	const auto integrateEnd = clock::now();
-	debug.integrateMs = durationMs(integrateEnd - integrateStart);
+		const auto collisionEnd = clock::now();
+		debug.collisionMs = durationMs(collisionEnd - collisionStart);
+		debug.overlapPairs = overlapPairs_.size();
 
-	const auto collisionStart = clock::now();
-	collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
-	collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
-	const auto collisionEnd = clock::now();
-	debug.collisionMs = durationMs(collisionEnd - collisionStart);
-	debug.overlapPairs = overlapPairs_.size();
-
-	const auto mergeStart = clock::now();
-	const std::size_t preMergeCount = state.size();
-	if (!overlapPairs_.empty()) {
-		mergeOverlaps(state, idMap, overlapPairs_);
+		const auto mergeStart = clock::now();
+		const std::size_t preMergeCount = state.size();
+		if (!overlapPairs_.empty()) {
+			mergeOverlaps(state, idMap, overlapPairs_);
+		}
+		const auto mergeEnd = clock::now();
+		debug.mergeMs = durationMs(mergeEnd - mergeStart);
+		debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
+	} else {
+		overlapPairs_.clear();
+		debug.collisionMs = 0.0;
+		debug.mergeMs = 0.0;
+		debug.overlapPairs = 0;
+		debug.mergedBodies = 0;
 	}
-	const auto mergeEnd = clock::now();
-	debug.mergeMs = durationMs(mergeEnd - mergeStart);
-	debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
 
 	publishStepResult(writeIndex, dt, true, stepStart, debug);
 }
 
 void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
-	constexpr std::size_t kDirectForceThreshold = 512;
 	using clock = std::chrono::steady_clock;
 	const auto stepStart = clock::now();
 
@@ -753,6 +896,12 @@ void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	EngineDebugStats debug{};
 	debug.valid = true;
 	debug.workerCount = workers;
+	debug.directSerialMaxBodies = cfg.directSerialMaxBodies;
+	debug.directParallelMaxBodies =
+	    std::max(cfg.directSerialMaxBodies, cfg.directParallelMaxBodies);
+	debug.collisionStepInterval = std::max<std::size_t>(1, cfg.collisionStepInterval);
+	debug.collisionPhaseExecuted = (stepCounter_ % debug.collisionStepInterval) == 0;
+	debug.chunkPolicy = chunkPolicyLabel(cfg.chunkPolicy);
 	const bool collectTraversalStats = debugMetricsEnabled_.load(std::memory_order_relaxed);
 
 	int writeIndex = 0;
@@ -775,22 +924,29 @@ void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	const std::size_t n = state.size();
 	debug.bodyCount = n;
 	if (n == 0) {
+		debug.forceAlgorithm = forceAlgorithmLabel(ForceAlgorithm::DirectSerial);
 		publishStepResult(writeIndex, dt, false, stepStart, debug);
 		return;
 	}
 
-	acc0X_.assign(n, 0.0);
-	acc0Y_.assign(n, 0.0);
-	predX_.assign(n, 0.0);
-	predY_.assign(n, 0.0);
-	acc1X_.assign(n, 0.0);
-	acc1Y_.assign(n, 0.0);
+	acc0X_.resize(n);
+	acc0Y_.resize(n);
+	predX_.resize(n);
+	predY_.resize(n);
+	acc1X_.resize(n);
+	acc1Y_.resize(n);
 
-	if (n <= kDirectForceThreshold) {
-		stepDirectPath(dt, cfg, state, idMap, writeIndex, stepStart, debug);
+	const bool runCollisionPhase = debug.collisionPhaseExecuted;
+	++stepCounter_;
+	const ForceAlgorithm algorithm = selectForceAlgorithm(n, workers, cfg);
+	debug.forceAlgorithm = forceAlgorithmLabel(algorithm);
+	if (algorithm == ForceAlgorithm::DirectSerial || algorithm == ForceAlgorithm::DirectParallel) {
+		stepDirectPath(dt, cfg, algorithm, state, idMap, writeIndex, runCollisionPhase, stepStart,
+		               debug);
 		return;
 	}
-	stepBarnesHutPath(dt, cfg, state, idMap, writeIndex, collectTraversalStats, stepStart, debug);
+	stepBarnesHutPath(dt, cfg, state, idMap, writeIndex, runCollisionPhase, collectTraversalStats,
+	                  stepStart, debug);
 }
 
 void SimulationEngine::removeBodyAt(BodyState& state, IdIndexMap& idMap, std::uint32_t denseIndex) {
@@ -961,6 +1117,56 @@ std::size_t SimulationEngine::desiredWorkers(const SimulationConfig& cfg) const 
 		return 1;
 	}
 	return static_cast<std::size_t>(hw - 1u);
+}
+
+std::size_t SimulationEngine::resolveChunkSize(const SimulationConfig& cfg,
+                                               std::size_t bodyCount,
+                                               std::size_t workers) const {
+	if (cfg.parallelChunkSize > 0) {
+		return std::max<std::size_t>(1, cfg.parallelChunkSize);
+	}
+	const std::size_t safeWorkers = std::max<std::size_t>(1, workers);
+	const std::size_t autoChunk = bodyCount / (safeWorkers * 8 + 1);
+	return std::max<std::size_t>(32, autoChunk);
+}
+
+ForceAlgorithm SimulationEngine::selectForceAlgorithm(std::size_t bodyCount,
+                                                      std::size_t workers,
+                                                      const SimulationConfig& cfg) {
+	const std::size_t serialMax = cfg.directSerialMaxBodies;
+	const std::size_t parallelMax = std::max(serialMax, cfg.directParallelMaxBodies);
+	if (bodyCount <= serialMax) {
+		return ForceAlgorithm::DirectSerial;
+	}
+	if (bodyCount <= parallelMax && workers > 0) {
+		return ForceAlgorithm::DirectParallel;
+	}
+	if (bodyCount <= parallelMax) {
+		return ForceAlgorithm::DirectSerial;
+	}
+	return ForceAlgorithm::BarnesHutParallel;
+}
+
+const char* SimulationEngine::forceAlgorithmLabel(ForceAlgorithm algorithm) {
+	switch (algorithm) {
+		case ForceAlgorithm::DirectSerial:
+			return "direct_serial";
+		case ForceAlgorithm::DirectParallel:
+			return "direct_parallel";
+		case ForceAlgorithm::BarnesHutParallel:
+		default:
+			return "barnes_hut_parallel";
+	}
+}
+
+const char* SimulationEngine::chunkPolicyLabel(ChunkPolicy policy) {
+	switch (policy) {
+		case ChunkPolicy::StaticCyclic:
+			return "static";
+		case ChunkPolicy::DynamicClaim:
+		default:
+			return "dynamic";
+	}
 }
 
 }  // namespace sim

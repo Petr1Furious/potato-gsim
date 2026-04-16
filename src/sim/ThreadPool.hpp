@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sim/ChunkPolicy.hpp"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -26,6 +28,7 @@ class ThreadPool {
 
 	void parallelFor(std::size_t count,
 	                 std::size_t chunkSize,
+	                 ChunkPolicy policy,
 	                 const std::function<void(std::size_t, std::size_t)>& fn);
 
    private:
@@ -47,6 +50,8 @@ class ThreadPool {
 	std::size_t chunkSize_ = 1;
 	std::size_t chunkCount_ = 0;
 	std::size_t participantCount_ = 1;
+	std::atomic<std::size_t> nextChunk_{0};
+	ChunkPolicy chunkPolicy_ = ChunkPolicy::DynamicClaim;
 	std::function<void(std::size_t, std::size_t)> taskFn_;
 };
 

@@ -11,7 +11,7 @@ namespace io {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x5047534D;  // PGSM
-constexpr std::uint32_t kVersion = 2;
+constexpr std::uint32_t kVersion = 4;
 constexpr std::uint32_t kMaxBodies = 1'000'000;
 
 template <typename T>
@@ -54,6 +54,7 @@ bool Persistence::save(const std::string& path,
 
 	const sim::SimulationConfig& cfg = world.simConfig;
 	const std::uint32_t mode = static_cast<std::uint32_t>(cfg.mode);
+	const std::uint32_t chunkPolicy = static_cast<std::uint32_t>(cfg.chunkPolicy);
 	const std::uint8_t paused = cfg.paused ? 1u : 0u;
 	if (!writeRaw(out, mode) || !writeRaw(out, paused) || !writeRaw(out, cfg.timeScale) ||
 	    !writeRaw(out, cfg.fixedDtSeconds) || !writeRaw(out, cfg.realtimeDtWindowSize) ||
@@ -61,7 +62,10 @@ bool Persistence::save(const std::string& path,
 	    !writeRaw(out, cfg.realtimeDtClampWarmupSamples) ||
 	    !writeRaw(out, cfg.gravitationalConstant) || !writeRaw(out, cfg.softeningEpsilon) ||
 	    !writeRaw(out, cfg.barnesHutTheta) || !writeRaw(out, cfg.collisionCellScale) ||
-	    !writeRaw(out, cfg.workerCount) || !writeRaw(out, world.simulationTimeSeconds)) {
+	    !writeRaw(out, cfg.collisionStepInterval) || !writeRaw(out, cfg.workerCount) ||
+	    !writeRaw(out, cfg.parallelChunkSize) || !writeRaw(out, chunkPolicy) ||
+	    !writeRaw(out, cfg.directSerialMaxBodies) || !writeRaw(out, cfg.directParallelMaxBodies) ||
+	    !writeRaw(out, world.simulationTimeSeconds)) {
 		errorOut = "Failed writing simulation metadata";
 		return false;
 	}
@@ -136,6 +140,7 @@ bool Persistence::load(const std::string& path,
 
 	PersistedWorldState loaded{};
 	std::uint32_t mode = 0;
+	std::uint32_t chunkPolicy = 0;
 	std::uint8_t paused = 0;
 	if (!readRaw(in, mode) || !readRaw(in, paused) || !readRaw(in, loaded.simConfig.timeScale) ||
 	    !readRaw(in, loaded.simConfig.fixedDtSeconds) ||
@@ -146,11 +151,17 @@ bool Persistence::load(const std::string& path,
 	    !readRaw(in, loaded.simConfig.softeningEpsilon) ||
 	    !readRaw(in, loaded.simConfig.barnesHutTheta) ||
 	    !readRaw(in, loaded.simConfig.collisionCellScale) ||
-	    !readRaw(in, loaded.simConfig.workerCount) || !readRaw(in, loaded.simulationTimeSeconds)) {
+	    !readRaw(in, loaded.simConfig.collisionStepInterval) ||
+	    !readRaw(in, loaded.simConfig.workerCount) ||
+	    !readRaw(in, loaded.simConfig.parallelChunkSize) || !readRaw(in, chunkPolicy) ||
+	    !readRaw(in, loaded.simConfig.directSerialMaxBodies) ||
+	    !readRaw(in, loaded.simConfig.directParallelMaxBodies) ||
+	    !readRaw(in, loaded.simulationTimeSeconds)) {
 		errorOut = "Failed reading simulation metadata";
 		return false;
 	}
 	loaded.simConfig.mode = static_cast<sim::SimulationMode>(mode);
+	loaded.simConfig.chunkPolicy = static_cast<sim::ChunkPolicy>(chunkPolicy);
 	loaded.simConfig.paused = paused != 0;
 
 	std::uint8_t uiFlags[6]{};
@@ -205,8 +216,13 @@ bool Persistence::load(const std::string& path,
 	    !finiteOrFail(loaded.simConfig.gravitationalConstant) ||
 	    !finiteOrFail(loaded.simConfig.softeningEpsilon) ||
 	    !finiteOrFail(loaded.simConfig.barnesHutTheta) ||
-	    !finiteOrFail(loaded.simConfig.collisionCellScale) || loaded.ui.predictionSteps < 1 ||
-	    !finiteOrFail(loaded.ui.creationDensity) || !finiteOrFail(loaded.ui.predictionDt)) {
+	    !finiteOrFail(loaded.simConfig.collisionCellScale) ||
+	    loaded.simConfig.collisionStepInterval < 1 ||
+	    (loaded.simConfig.chunkPolicy != sim::ChunkPolicy::StaticCyclic &&
+	     loaded.simConfig.chunkPolicy != sim::ChunkPolicy::DynamicClaim) ||
+	    loaded.simConfig.directParallelMaxBodies < loaded.simConfig.directSerialMaxBodies ||
+	    loaded.ui.predictionSteps < 1 || !finiteOrFail(loaded.ui.creationDensity) ||
+	    !finiteOrFail(loaded.ui.predictionDt)) {
 		errorOut = "Metadata validation failed";
 		return false;
 	}

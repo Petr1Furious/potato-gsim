@@ -92,7 +92,12 @@ int main() {
 	config.softeningEpsilon = 1.0e6;
 	config.barnesHutTheta = 0.6;
 	config.collisionCellScale = 8.0;
+	config.collisionStepInterval = 2;
 	config.workerCount = 0;
+	config.parallelChunkSize = 0;
+	config.chunkPolicy = sim::ChunkPolicy::DynamicClaim;
+	config.directSerialMaxBodies = 224;
+	config.directParallelMaxBodies = 768;
 
 	sim::SimulationEngine engine(config);
 	engine.start();
@@ -234,7 +239,12 @@ int main() {
 		engine.setSoftening(loaded.simConfig.softeningEpsilon);
 		engine.setTheta(loaded.simConfig.barnesHutTheta);
 		engine.setCollisionCellScale(loaded.simConfig.collisionCellScale);
+		engine.setCollisionStepInterval(loaded.simConfig.collisionStepInterval);
 		engine.setWorkerCount(loaded.simConfig.workerCount);
+		engine.setParallelChunkSize(loaded.simConfig.parallelChunkSize);
+		engine.setChunkPolicy(loaded.simConfig.chunkPolicy);
+		engine.setDirectSerialMaxBodies(loaded.simConfig.directSerialMaxBodies);
+		engine.setDirectParallelMaxBodies(loaded.simConfig.directParallelMaxBodies);
 		engine.setSimulationTimer(loaded.simulationTimeSeconds);
 		engine.setPaused(loaded.simConfig.paused);
 
@@ -357,7 +367,7 @@ int main() {
 				dispatchPersistenceLoad();
 				break;
 			case ui::Action::RandomScenario:
-				applyScenario(scenario::ScenarioManager::makeRandom(10000, 0.0, 0.0, 1e11));
+				applyScenario(scenario::ScenarioManager::makeRandom(100000, 0.0, 0.0, 1e11));
 				break;
 			case ui::Action::ClearScenario:
 				engine.queueClearAll();
@@ -398,6 +408,41 @@ int main() {
 		} else if (action.itemId == "sim.gravity" && action.adjustDelta != 0) {
 			engine.setGravityConstant(cfg.gravitationalConstant *
 			                          (action.adjustDelta > 0 ? 1.1 : 0.9));
+		} else if (action.itemId == "sim.direct_serial_max" && action.adjustDelta != 0) {
+			const std::size_t delta = action.adjustDelta > 0 ? 8u : 4u;
+			const std::size_t current = cfg.directSerialMaxBodies;
+			const std::size_t next = action.adjustDelta > 0
+			                             ? (current + delta)
+			                             : (current > delta ? current - delta : 0u);
+			engine.setDirectSerialMaxBodies(next);
+		} else if (action.itemId == "sim.direct_parallel_max" && action.adjustDelta != 0) {
+			const std::size_t delta = action.adjustDelta > 0 ? 256u : 128u;
+			const std::size_t current = cfg.directParallelMaxBodies;
+			const std::size_t next = action.adjustDelta > 0
+			                             ? (current + delta)
+			                             : (current > delta ? current - delta : 0u);
+			engine.setDirectParallelMaxBodies(next);
+		} else if (action.itemId == "sim.collision_interval" && action.adjustDelta != 0) {
+			const std::size_t next =
+			    action.adjustDelta > 0
+			        ? (cfg.collisionStepInterval + 1u)
+			        : (cfg.collisionStepInterval > 1 ? cfg.collisionStepInterval - 1u : 1u);
+			engine.setCollisionStepInterval(next);
+		} else if (action.itemId == "sim.chunk_size" && action.adjustDelta != 0) {
+			const std::size_t current = cfg.parallelChunkSize;
+			if (action.adjustDelta > 0) {
+				engine.setParallelChunkSize(current == 0 ? 32u : (current + 32u));
+			} else if (current == 0) {
+				engine.setParallelChunkSize(0);
+			} else if (current <= 32u) {
+				engine.setParallelChunkSize(0);
+			} else {
+				engine.setParallelChunkSize(current - 32u);
+			}
+		} else if (action.itemId == "sim.chunk_policy") {
+			engine.setChunkPolicy(cfg.chunkPolicy == sim::ChunkPolicy::DynamicClaim
+			                          ? sim::ChunkPolicy::StaticCyclic
+			                          : sim::ChunkPolicy::DynamicClaim);
 		} else if (action.itemId == "sim.workers" && action.adjustDelta != 0) {
 			const std::size_t workers = action.adjustDelta > 0
 			                                ? (cfg.workerCount + 1)
@@ -871,6 +916,17 @@ int main() {
 		     true},
 		    {"sim.gravity", "Gravity Constant (SI)", formatScientific(cfg.gravitationalConstant),
 		     true},
+		    {"sim.direct_serial_max", "Direct Serial Max Bodies",
+		     std::to_string(cfg.directSerialMaxBodies), true},
+		    {"sim.direct_parallel_max", "Direct Parallel Max Bodies",
+		     std::to_string(cfg.directParallelMaxBodies), true},
+		    {"sim.collision_interval", "Collision Step Interval",
+		     std::to_string(cfg.collisionStepInterval), true},
+		    {"sim.chunk_size", "Parallel Chunk Size (0=auto)",
+		     std::to_string(cfg.parallelChunkSize), true},
+		    {"sim.chunk_policy", "Chunk Policy",
+		     cfg.chunkPolicy == sim::ChunkPolicy::DynamicClaim ? "Dynamic claim" : "Static cyclic",
+		     false},
 		    {"sim.workers", "Worker Count (0=auto)", std::to_string(cfg.workerCount), true},
 		    {"creation.enabled", "Creation Tool", ui.creation.enabled() ? "On" : "Off", false},
 		    {"creation.density", "Creation Density (kg/m^3)", formatFixed(ui.creation.density(), 1),
@@ -1021,6 +1077,16 @@ int main() {
 		    "Workers: " + std::to_string(cfg.workerCount) + " (0=auto)" +
 		        " | UPS: " + std::to_string(round3(engine.updatesPerSecond())) +
 		        " | FPS: " + std::to_string(round3(fps)),
+		    "Direct serial<= " + std::to_string(cfg.directSerialMaxBodies) +
+		        " | Direct parallel<= " + std::to_string(cfg.directParallelMaxBodies) +
+		        " | Collision interval: " + std::to_string(cfg.collisionStepInterval) +
+		        " | Chunk: " +
+		        (cfg.parallelChunkSize == 0 ? std::string("auto")
+		                                    : std::to_string(cfg.parallelChunkSize)) +
+		        " (" +
+		        std::string(cfg.chunkPolicy == sim::ChunkPolicy::DynamicClaim ? "dynamic"
+		                                                                      : "static") +
+		        ")",
 		    "Create density(kg/m^3): " + formatFixed(ui.creation.density(), 1) +
 		        " | Negative mass: " + std::string(ui.creation.negativeMass() ? "On" : "Off") +
 		        " | Relative frame: " +
@@ -1031,14 +1097,21 @@ int main() {
 		        " | Horizon steps: " + std::to_string(ui.predictor.settings().steps),
 		};
 		if (ui.showDebugInfo) {
+			hudLines.push_back("Debug chunks: " + std::to_string(debugStats.chunkSize) + " (" +
+			                   std::string(debugStats.chunkPolicy) + ") | collision phase: " +
+			                   std::string(debugStats.collisionPhaseExecuted ? "ran" : "skipped"));
 			const double contrib0 = debugStats.avgContributionsAcc0;
 			const double contrib1 = debugStats.avgContributionsAcc1;
+			const bool isBarnesHut =
+			    std::string(debugStats.forceAlgorithm) == "barnes_hut_parallel";
 			const std::string treeLine =
-			    debugStats.usedDirectPath
-			        ? ("Debug force path: direct O(N^2) | avg contrib/body: " +
-			           formatFixed(contrib0, 1) + "/" + formatFixed(contrib1, 1))
-			        : ("Debug tree nodes cur/pred: " + std::to_string(debugStats.currentTreeNodes) +
+			    isBarnesHut
+			        ? ("Debug algo: " + std::string(debugStats.forceAlgorithm) +
+			           " | tree nodes cur/pred: " + std::to_string(debugStats.currentTreeNodes) +
 			           "/" + std::to_string(debugStats.predictedTreeNodes) +
+			           " | avg contrib/body: " + formatFixed(contrib0, 1) + "/" +
+			           formatFixed(contrib1, 1))
+			        : ("Debug algo: " + std::string(debugStats.forceAlgorithm) +
 			           " | avg contrib/body: " + formatFixed(contrib0, 1) + "/" +
 			           formatFixed(contrib1, 1));
 			hudLines.push_back(treeLine);

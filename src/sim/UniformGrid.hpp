@@ -32,19 +32,25 @@ class UniformGrid {
 		}
 	};
 
-	struct CellHash {
-		[[nodiscard]] std::size_t operator()(const Cell& cell) const {
-			const std::uint64_t ux = static_cast<std::uint64_t>(static_cast<std::uint32_t>(cell.x));
-			const std::uint64_t uy = static_cast<std::uint64_t>(static_cast<std::uint32_t>(cell.y));
-			return static_cast<std::size_t>((ux * 0x9E3779B185EBCA87ULL) ^
-			                                (uy * 0xC2B2AE3D27D4EB4FULL));
-		}
+	struct Entry {
+		std::uint64_t key = 0;
+		std::uint32_t bodyIndex = 0;
+	};
+
+	struct CellRange {
+		Cell cell{};
+		std::size_t begin = 0;
+		std::size_t end = 0;
 	};
 
 	[[nodiscard]] Cell cellFor(double x, double y) const;
+	[[nodiscard]] static std::uint64_t packCellKey(const Cell& cell);
+	[[nodiscard]] static std::uint64_t packCellKey(int x, int y);
 
 	double cellSize_ = 1.0;
-	std::unordered_map<Cell, std::vector<std::uint32_t>, CellHash> buckets_;
+	std::vector<Entry> entries_;
+	std::vector<CellRange> ranges_;
+	std::unordered_map<std::uint64_t, std::size_t> rangeByKey_;
 };
 
 }  // namespace sim
