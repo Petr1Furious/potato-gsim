@@ -4,7 +4,7 @@
 
 #include <cstddef>
 #include <mutex>
-#include <utility>
+#include <string>
 #include <vector>
 
 namespace sim {
@@ -16,18 +16,25 @@ struct SpawnCommand {
 	double vy = 0.0;
 	double mass = 1.0;
 	double radius = 1.0;
+	std::string name;
 };
 
 struct DeleteCommand {
 	BodyId id = 0;
 };
 
+struct RenameCommand {
+	BodyId id = 0;
+	std::string name;
+};
+
 struct SimCommand {
-	enum class Type { Spawn, Delete, ClearAll, ReplaceWorld };
+	enum class Type { Spawn, Delete, Rename, ClearAll, ReplaceWorld };
 
 	Type type = Type::Spawn;
 	SpawnCommand spawn;
 	DeleteCommand del;
+	RenameCommand rename;
 	std::vector<SpawnCommand> replacementBodies;
 };
 
@@ -49,6 +56,18 @@ class CommandQueue {
 		    .spawn = {},
 		    .del = DeleteCommand{.id = id},
 		    .replacementBodies = {},
+		});
+	}
+
+	void pushRename(BodyId id, const std::string& name) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		pending_.push_back(SimCommand{
+		    .type = SimCommand::Type::Rename,
+		    .rename =
+		        RenameCommand{
+		            .id = id,
+		            .name = name,
+		        },
 		});
 	}
 

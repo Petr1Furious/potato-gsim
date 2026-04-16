@@ -1,6 +1,8 @@
 #include "sim/SimulationEngine.hpp"
 
 #include <chrono>
+#include <cmath>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -58,6 +60,21 @@ bool waitForAlgorithm(sim::SimulationEngine& engine,
 	return false;
 }
 
+std::optional<sim::BodySnapshot> waitForSingleBody(
+    sim::SimulationEngine& engine,
+    const std::function<bool(const sim::BodySnapshot&)>& predicate) {
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+	std::vector<sim::BodySnapshot> bodies;
+	while (std::chrono::steady_clock::now() < deadline) {
+		engine.copyBodies(bodies);
+		if (bodies.size() == 1 && predicate(bodies.front())) {
+			return bodies.front();
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	return std::nullopt;
+}
+
 bool testBoundarySwitching() {
 	sim::SimulationConfig cfg;
 	cfg.mode = sim::SimulationMode::DeterministicFixedStep;
@@ -102,12 +119,55 @@ bool testThresholdClamping() {
 	              "direct_serial threshold must stay <= direct_parallel threshold");
 }
 
+bool testMergeSurvivorSelection() {
+	sim::SimulationConfig cfg;
+	cfg.mode = sim::SimulationMode::DeterministicFixedStep;
+	cfg.timeScale = 0.01;
+	cfg.gravitationalConstant = 0.0;
+	cfg.collisionStepInterval = 1;
+	cfg.workerCount = 0;
+	cfg.directSerialMaxBodies = 64;
+	cfg.directParallelMaxBodies = 64;
+
+	sim::SimulationEngine engine(cfg);
+	engine.start();
+	bool ok = true;
+
+	engine.queueReplaceWorld({
+	    sim::SpawnCommand{.x = 0.0, .y = 0.0, .vx = 0.0, .vy = 0.0, .mass = 5.0, .radius = 2.0},
+	    sim::SpawnCommand{.x = 0.5, .y = 0.0, .vx = 0.0, .vy = 0.0, .mass = -9.0, .radius = 2.0},
+	});
+	const std::optional<sim::BodySnapshot> heavyWinner = waitForSingleBody(
+	    engine, [](const sim::BodySnapshot& body) { return std::abs(body.mass + 4.0) < 1e-9; });
+	ok &= expect(heavyWinner.has_value(), "Expected first overlap to merge into one body");
+	if (heavyWinner.has_value()) {
+		ok &= expect(sim::bodyIdSlot(heavyWinner->id) == 1,
+		             "Merge survivor should prefer larger abs(mass)");
+	}
+
+	engine.queueReplaceWorld({
+	    sim::SpawnCommand{.x = 0.0, .y = 0.0, .vx = 0.0, .vy = 0.0, .mass = 8.0, .radius = 2.0},
+	    sim::SpawnCommand{.x = 0.5, .y = 0.0, .vx = 0.0, .vy = 0.0, .mass = 8.0, .radius = 2.0},
+	});
+	const std::optional<sim::BodySnapshot> tieWinner = waitForSingleBody(
+	    engine, [](const sim::BodySnapshot& body) { return std::abs(body.mass - 16.0) < 1e-9; });
+	ok &= expect(tieWinner.has_value(), "Expected tie overlap to merge into one body");
+	if (tieWinner.has_value()) {
+		ok &= expect(sim::bodyIdSlot(tieWinner->id) == 0,
+		             "Merge survivor tie-break should prefer lower BodyId");
+	}
+
+	engine.stop();
+	return ok;
+}
+
 }  // namespace
 
 int main() {
 	bool ok = true;
 	ok &= testBoundarySwitching();
 	ok &= testThresholdClamping();
+	ok &= testMergeSurvivorSelection();
 	if (!ok) {
 		return 1;
 	}

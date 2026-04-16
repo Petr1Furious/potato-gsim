@@ -133,6 +133,10 @@ void SimulationEngine::queueDelete(BodyId id) {
 	commandQueue_.pushDelete(id);
 }
 
+void SimulationEngine::queueRename(BodyId id, const std::string& name) {
+	commandQueue_.pushRename(id, name);
+}
+
 void SimulationEngine::queueDeleteNearest(double x, double y, double maxDistance) {
 	const std::optional<BodyId> id = findNearestBody(x, y, maxDistance);
 	if (id.has_value()) {
@@ -207,6 +211,7 @@ void SimulationEngine::copyBodies(std::vector<BodySnapshot>& out) const {
 		    .vy = state.velY[i],
 		    .mass = state.mass[i],
 		    .radius = state.radius[i],
+		    .name = state.name[i],
 		});
 	}
 }
@@ -228,6 +233,7 @@ std::optional<BodySnapshot> SimulationEngine::bodyById(BodyId id) const {
 	    .vy = state.velY[i],
 	    .mass = state.mass[i],
 	    .radius = state.radius[i],
+	    .name = state.name[i],
 	};
 }
 
@@ -612,6 +618,35 @@ void SimulationEngine::publishStepResult(int writeIndex,
 	}
 }
 
+SimulationEngine::CollisionPhaseResult SimulationEngine::runCollisionPhase(
+    BodyState& state,
+    IdIndexMap& idMap,
+    const SimulationConfig& cfg) {
+	using clock = std::chrono::steady_clock;
+	CollisionPhaseResult out{};
+	const auto collisionStart = clock::now();
+	const std::size_t n = state.size();
+	if (n <= 128) {
+		findOverlapsDirectSmall(state.posX, state.posY, state.radius, overlapPairs_);
+	} else {
+		collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
+		collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
+	}
+	const auto collisionEnd = clock::now();
+	out.collisionMs = durationMs(collisionEnd - collisionStart);
+	out.overlapPairs = overlapPairs_.size();
+
+	const auto mergeStart = clock::now();
+	const std::size_t preMergeCount = state.size();
+	if (!overlapPairs_.empty()) {
+		mergeOverlaps(state, idMap, overlapPairs_);
+	}
+	const auto mergeEnd = clock::now();
+	out.mergeMs = durationMs(mergeEnd - mergeStart);
+	out.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
+	return out;
+}
+
 void SimulationEngine::stepDirectPath(double dt,
                                       const SimulationConfig& cfg,
                                       ForceAlgorithm algorithm,
@@ -703,31 +738,11 @@ void SimulationEngine::stepDirectPath(double dt,
 	debug.integrateMs = 0.0;
 
 	if (runCollisionPhase) {
-		const auto collisionStart = clock::now();
-		if (n <= 128) {
-			findOverlapsDirectSmall(state.posX, state.posY, state.radius, overlapPairs_);
-		} else {
-			collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
-			collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
-		}
-		const auto collisionEnd = clock::now();
-		debug.collisionMs = durationMs(collisionEnd - collisionStart);
-		debug.overlapPairs = overlapPairs_.size();
-
-		const auto mergeStart = clock::now();
-		const std::size_t preMergeCount = state.size();
-		if (!overlapPairs_.empty()) {
-			mergeOverlaps(state, idMap, overlapPairs_);
-		}
-		const auto mergeEnd = clock::now();
-		debug.mergeMs = durationMs(mergeEnd - mergeStart);
-		debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
-	} else {
-		overlapPairs_.clear();
-		debug.collisionMs = 0.0;
-		debug.mergeMs = 0.0;
-		debug.overlapPairs = 0;
-		debug.mergedBodies = 0;
+		const CollisionPhaseResult collision = this->runCollisionPhase(state, idMap, cfg);
+		debug.collisionMs += collision.collisionMs;
+		debug.mergeMs += collision.mergeMs;
+		debug.overlapPairs += collision.overlapPairs;
+		debug.mergedBodies += collision.mergedBodies;
 	}
 
 	const double directContribs = static_cast<double>(n > 0 ? (n - 1) : 0);
@@ -854,31 +869,11 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 	}
 
 	if (runCollisionPhase) {
-		const auto collisionStart = clock::now();
-		if (n <= 128) {
-			findOverlapsDirectSmall(state.posX, state.posY, state.radius, overlapPairs_);
-		} else {
-			collisionGrid_.build(state.posX, state.posY, state.radius, cfg.collisionCellScale);
-			collisionGrid_.findOverlaps(state.posX, state.posY, state.radius, overlapPairs_);
-		}
-		const auto collisionEnd = clock::now();
-		debug.collisionMs = durationMs(collisionEnd - collisionStart);
-		debug.overlapPairs = overlapPairs_.size();
-
-		const auto mergeStart = clock::now();
-		const std::size_t preMergeCount = state.size();
-		if (!overlapPairs_.empty()) {
-			mergeOverlaps(state, idMap, overlapPairs_);
-		}
-		const auto mergeEnd = clock::now();
-		debug.mergeMs = durationMs(mergeEnd - mergeStart);
-		debug.mergedBodies = preMergeCount > state.size() ? (preMergeCount - state.size()) : 0;
-	} else {
-		overlapPairs_.clear();
-		debug.collisionMs = 0.0;
-		debug.mergeMs = 0.0;
-		debug.overlapPairs = 0;
-		debug.mergedBodies = 0;
+		const CollisionPhaseResult collision = this->runCollisionPhase(state, idMap, cfg);
+		debug.collisionMs += collision.collisionMs;
+		debug.mergeMs += collision.mergeMs;
+		debug.overlapPairs += collision.overlapPairs;
+		debug.mergedBodies += collision.mergedBodies;
 	}
 
 	publishStepResult(writeIndex, dt, true, stepStart, debug);
@@ -917,9 +912,17 @@ void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 
 	const auto commandsStart = clock::now();
 	commandQueue_.drainTo(drainedCommands_);
-	applyCommands(state, idMap, drainedCommands_);
+	const bool spawnedOrReplaced = applyCommands(state, idMap, drainedCommands_);
 	const auto commandsEnd = clock::now();
 	debug.commandsMs = durationMs(commandsEnd - commandsStart);
+	if (spawnedOrReplaced && state.size() > 1) {
+		const CollisionPhaseResult preCollision = runCollisionPhase(state, idMap, cfg);
+		debug.collisionMs += preCollision.collisionMs;
+		debug.mergeMs += preCollision.mergeMs;
+		debug.overlapPairs += preCollision.overlapPairs;
+		debug.mergedBodies += preCollision.mergedBodies;
+		debug.collisionPhaseExecuted = true;
+	}
 
 	const std::size_t n = state.size();
 	debug.bodyCount = n;
@@ -957,22 +960,24 @@ void SimulationEngine::removeBodyAt(BodyState& state, IdIndexMap& idMap, std::ui
 	idMap.removeDenseIndex(denseIndex);
 }
 
-void SimulationEngine::applyCommands(BodyState& state,
+bool SimulationEngine::applyCommands(BodyState& state,
                                      IdIndexMap& idMap,
                                      const std::vector<SimCommand>& commands) {
+	bool spawnedOrReplaced = false;
 	auto applySpawn = [&](const SpawnCommand& spawn) {
 		double mass = clampFinite(spawn.mass, 1.0);
 		if (std::abs(mass) < 1e-12) {
 			mass = 1.0;
 		}
-		state.pushBack(spawn.x, spawn.y, spawn.vx, spawn.vy, mass,
-		               clampPositive(spawn.radius, 1.0));
+		state.pushBack(spawn.x, spawn.y, spawn.vx, spawn.vy, mass, clampPositive(spawn.radius, 1.0),
+		               spawn.name);
 		[[maybe_unused]] const BodyId id =
 		    idMap.addAtDenseIndex(static_cast<std::uint32_t>(state.size() - 1));
 	};
 
 	for (const SimCommand& command : commands) {
 		if (command.type == SimCommand::Type::Spawn) {
+			spawnedOrReplaced = true;
 			applySpawn(command.spawn);
 			continue;
 		}
@@ -984,6 +989,7 @@ void SimulationEngine::applyCommands(BodyState& state,
 		}
 
 		if (command.type == SimCommand::Type::ReplaceWorld) {
+			spawnedOrReplaced = spawnedOrReplaced || !command.replacementBodies.empty();
 			state.clear();
 			idMap.clear();
 			state.reserve(command.replacementBodies.size());
@@ -993,11 +999,20 @@ void SimulationEngine::applyCommands(BodyState& state,
 			continue;
 		}
 
+		if (command.type == SimCommand::Type::Rename) {
+			const std::optional<std::uint32_t> idx = idMap.denseIndexFor(command.rename.id);
+			if (idx.has_value()) {
+				state.name[*idx] = command.rename.name;
+			}
+			continue;
+		}
+
 		const std::optional<std::uint32_t> idx = idMap.denseIndexFor(command.del.id);
 		if (idx.has_value()) {
 			removeBodyAt(state, idMap, *idx);
 		}
 	}
+	return spawnedOrReplaced;
 }
 
 void SimulationEngine::mergeOverlaps(BodyState& state,
@@ -1037,10 +1052,21 @@ void SimulationEngine::mergeOverlaps(BodyState& state,
 		if (liveIndices.size() < 2) {
 			continue;
 		}
-		std::sort(liveIndices.begin(), liveIndices.end());
-
-		const std::uint32_t keepIndex = liveIndices.front();
-		const BodyId keepId = idMap.idAtDenseIndex(keepIndex);
+		std::uint32_t keepIndex = liveIndices.front();
+		BodyId keepId = idMap.idAtDenseIndex(keepIndex);
+		double keepMassAbs = std::abs(state.mass[keepIndex]);
+		for (const std::uint32_t idx : liveIndices) {
+			const double massAbs = std::abs(state.mass[idx]);
+			const BodyId id = idMap.idAtDenseIndex(idx);
+			const bool betterMass = massAbs > keepMassAbs;
+			const bool massTie = std::abs(massAbs - keepMassAbs) <= 1e-12;
+			const bool betterTieBreak = massTie && id < keepId;
+			if (betterMass || betterTieBreak) {
+				keepIndex = idx;
+				keepId = id;
+				keepMassAbs = massAbs;
+			}
+		}
 
 		double totalMass = 0.0;
 		double momentumX = 0.0;

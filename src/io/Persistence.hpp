@@ -6,7 +6,6 @@
 #include <SFML/System/Vector2.hpp>
 
 #include <cstddef>
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -19,9 +18,11 @@ struct PersistedUiState {
 	bool followSelected = false;
 	bool creationRelativeFrame = false;
 	bool negativeMass = false;
+	bool alwaysShowNames = false;
 	double creationDensity = 1.0e6;
 	int predictionSteps = 220;
 	double predictionDt = 1.0 / 120.0;
+	double predictionRecalcIntervalSeconds = 0.0;
 	std::size_t presetIndex = 0;
 };
 

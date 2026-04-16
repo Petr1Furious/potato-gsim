@@ -46,14 +46,6 @@ void TraceStore::applyMergeRemap(const std::vector<std::pair<sim::BodyId, sim::B
 		if (fromIt == traces_.end()) {
 			continue;
 		}
-		auto& target = traces_[to];
-		target.insert(target.end(), fromIt->second.begin(), fromIt->second.end());
-		std::stable_sort(
-		    target.begin(), target.end(),
-		    [](const TracePoint& a, const TracePoint& b) { return a.timeSeconds < b.timeSeconds; });
-		while (target.size() > settings_.maxPointsPerBody) {
-			target.pop_front();
-		}
 		traces_.erase(fromIt);
 	}
 }

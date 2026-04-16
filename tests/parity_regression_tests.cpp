@@ -2,6 +2,7 @@
 #include "scenario/ScenarioManager.hpp"
 #include "sim/SimulationConfig.hpp"
 #include "ui/CreationTool.hpp"
+#include "ui/Predictor.hpp"
 
 #include <SFML/System/Vector2.hpp>
 
@@ -72,13 +73,29 @@ bool testPersistenceRoundTrip() {
 	world.simulationTimeSeconds = 12345.0;
 	world.ui.creationDensity = 5514.0;
 	world.ui.negativeMass = true;
+	world.ui.alwaysShowNames = true;
+	world.ui.predictionRecalcIntervalSeconds = 0.04;
 	world.camera.center = sf::Vector2f(1e11f, -2e11f);
 	world.camera.size = sf::Vector2f(5e12f, 3e12f);
 	world.bodies = {
 	    sim::SpawnCommand{
-	        .x = 0.0, .y = 0.0, .vx = 0.0, .vy = 0.0, .mass = 1.98847e30, .radius = 6.9634e8},
+	        .x = 0.0,
+	        .y = 0.0,
+	        .vx = 0.0,
+	        .vy = 0.0,
+	        .mass = 1.98847e30,
+	        .radius = 6.9634e8,
+	        .name = "Sun",
+	    },
 	    sim::SpawnCommand{
-	        .x = 1.496e11, .y = 0.0, .vx = 0.0, .vy = 2.978e4, .mass = 5.972e24, .radius = 6.371e6},
+	        .x = 1.496e11,
+	        .y = 0.0,
+	        .vx = 0.0,
+	        .vy = 2.978e4,
+	        .mass = 5.972e24,
+	        .radius = 6.371e6,
+	        .name = "Earth",
+	    },
 	};
 
 	const std::filesystem::path path =
@@ -96,6 +113,11 @@ bool testPersistenceRoundTrip() {
 		ok &= expect(std::abs(loaded.ui.creationDensity - 5514.0) < 1e-6,
 		             "Loaded creation density should round-trip");
 		ok &= expect(loaded.ui.negativeMass, "Loaded negative mass flag should round-trip");
+		ok &= expect(loaded.ui.alwaysShowNames, "Loaded always-show-names should round-trip");
+		ok &= expect(std::abs(loaded.ui.predictionRecalcIntervalSeconds - 0.04) < 1e-9,
+		             "Loaded prediction recalc interval should round-trip");
+		ok &= expect(loaded.bodies[0].name == "Sun" && loaded.bodies[1].name == "Earth",
+		             "Loaded body names should round-trip");
 	}
 	std::error_code ignore;
 	std::filesystem::remove(path, ignore);
@@ -120,6 +142,45 @@ bool testRandomScenarioMassiveOnly() {
 	return ok;
 }
 
+bool testPredictorCollisionMerge() {
+	ui::Predictor predictor;
+	ui::Predictor::Settings settings = predictor.settings();
+	settings.steps = 12;
+	settings.dt = 0.1;
+	settings.maxAttractors = 16;
+	predictor.setSettings(settings);
+
+	const std::vector<sim::BodySnapshot> bodies{
+	    sim::BodySnapshot{
+	        .id = 1,
+	        .x = -1.0,
+	        .y = 0.0,
+	        .vx = 0.0,
+	        .vy = 0.0,
+	        .mass = 1.0,
+	        .radius = 2.0,
+	    },
+	    sim::BodySnapshot{
+	        .id = 2,
+	        .x = 1.0,
+	        .y = 0.0,
+	        .vx = 0.0,
+	        .vy = 0.0,
+	        .mass = 5.0,
+	        .radius = 2.0,
+	    },
+	};
+	const std::vector<sf::Vector2f> predicted = predictor.predictForBody(bodies, 1, 0.0, 1e-6);
+	bool ok = true;
+	ok &= expect(!predicted.empty(), "Predictor should return points for merged body");
+	if (!predicted.empty()) {
+		const double expectedX = ((-1.0 * 1.0) + (1.0 * 5.0)) / 6.0;
+		ok &= expect(std::abs(static_cast<double>(predicted.front().x) - expectedX) < 1e-4,
+		             "Predictor should remap tracked id through merge and start at COM");
+	}
+	return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -128,6 +189,7 @@ int main() {
 	ok &= testCreationCancelAndDensityClamp();
 	ok &= testPersistenceRoundTrip();
 	ok &= testRandomScenarioMassiveOnly();
+	ok &= testPredictorCollisionMerge();
 
 	if (!ok) {
 		return 1;

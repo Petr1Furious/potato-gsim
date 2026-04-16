@@ -25,7 +25,6 @@ void applyZoomStep(sf::RenderWindow& window,
 
 Renderer::Renderer(sf::RenderWindow& window) : window_(window), view_(window.getDefaultView()) {
 	circle_.setFillColor(sf::Color(180, 220, 255));
-	circle_.setPointCount(12);
 	enforceAspectRatio();
 }
 
@@ -107,13 +106,23 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
 	window_.clear(sf::Color(8, 10, 16));
 
 	const float pixelsPerWorld = 1.0f / worldUnitsPerPixel();
+	const sf::Vector2f viewCenter = view_.getCenter();
+	const sf::Vector2f viewSize = view_.getSize();
+	const float viewMinX = viewCenter.x - viewSize.x * 0.5f;
+	const float viewMaxX = viewCenter.x + viewSize.x * 0.5f;
+	const float viewMinY = viewCenter.y - viewSize.y * 0.5f;
+	const float viewMaxY = viewCenter.y + viewSize.y * 0.5f;
 	sf::VertexArray points(sf::PrimitiveType::Points);
 
 	for (const sim::BodySnapshot& body : bodies) {
 		const float radiusPx = static_cast<float>(body.radius) * pixelsPerWorld;
 		const sf::Vector2f pos(static_cast<float>(body.x), static_cast<float>(body.y));
-		if (radiusPx > 2.5f) {
-			const float worldRadius = static_cast<float>(body.radius);
+		const float worldRadius = static_cast<float>(body.radius);
+		if (pos.x + worldRadius < viewMinX || pos.x - worldRadius > viewMaxX ||
+		    pos.y + worldRadius < viewMinY || pos.y - worldRadius > viewMaxY) {
+			continue;
+		}
+		if (radiusPx > 0.5f) {
 			circle_.setRadius(worldRadius);
 			circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));
 			circle_.setPosition(pos);

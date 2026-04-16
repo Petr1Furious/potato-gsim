@@ -14,7 +14,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -36,6 +38,21 @@ std::string formatFixed(double value, int precision = 3) {
 	std::ostringstream ss;
 	ss << std::fixed << std::setprecision(precision) << value;
 	return ss.str();
+}
+
+std::string previewName(const std::string& name) {
+	if (name.empty()) {
+		return "<none>";
+	}
+	constexpr std::size_t kPreviewLimit = 28;
+	if (name.size() <= kPreviewLimit) {
+		return name;
+	}
+	return name.substr(0, kPreviewLimit - 3) + "...";
+}
+
+bool isAsciiPrintable(std::uint32_t unicode) {
+	return unicode >= 32 && unicode <= 126;
 }
 
 void fitViewToBodies(render::Renderer& renderer, const std::vector<sim::SpawnCommand>& bodies) {
@@ -92,7 +109,7 @@ int main() {
 	config.softeningEpsilon = 1.0e6;
 	config.barnesHutTheta = 0.6;
 	config.collisionCellScale = 8.0;
-	config.collisionStepInterval = 2;
+	config.collisionStepInterval = 1;
 	config.workerCount = 0;
 	config.parallelChunkSize = 0;
 	config.chunkPolicy = sim::ChunkPolicy::DynamicClaim;
@@ -117,9 +134,11 @@ int main() {
 	    .steps = 220,
 	    .dt = 1.0 / 120.0,
 	    .realTimeHorizonSeconds = 5.0,
-	    .maxAttractors = 1500,
+	    .maxAttractors = 320,
+	    .predictionRecalcIntervalSeconds = 0.0,
 	});
 	engine.setDebugMetricsEnabled(ui.showDebugInfo);
+	std::string pendingCreationName;
 
 	auto applyScenario = [&](const std::vector<sim::SpawnCommand>& bodies) {
 		engine.queueReplaceWorld(bodies);
@@ -127,6 +146,7 @@ int main() {
 		ui.selection.clear();
 		ui.traces.clear();
 		ui.creation.cancel();
+		pendingCreationName.clear();
 		fitViewToBodies(renderer, bodies);
 	};
 	applyScenario(scenario::ScenarioManager::makePreset(ui.presetIndex));
@@ -150,12 +170,60 @@ int main() {
 	std::optional<sim::BodySnapshot> selectedBodyForInput;
 	std::optional<sim::BodyId> trackedFollowId;
 	std::optional<sf::Vector2f> followViewOffset;
+	enum class NamePromptTarget { NextCreation, RenameSelected };
+	struct NamePromptState {
+		bool active = false;
+		NamePromptTarget target = NamePromptTarget::NextCreation;
+		std::optional<sim::BodyId> targetId;
+		std::string buffer;
+	};
+	NamePromptState namePrompt;
 
 	auto statusUntil = std::chrono::steady_clock::now();
 	auto setStatus = [&](const std::string& message, double seconds) {
 		ui.statusMessage = message;
 		statusUntil = std::chrono::steady_clock::now() +
 		              std::chrono::milliseconds(static_cast<int>(seconds * 1000.0));
+	};
+	auto beginNamePromptForNextCreation = [&]() {
+		namePrompt.active = true;
+		namePrompt.target = NamePromptTarget::NextCreation;
+		namePrompt.targetId.reset();
+		namePrompt.buffer = pendingCreationName;
+		setStatus("Type name, Enter to apply, Esc to cancel.", 3.0);
+	};
+	auto beginNamePromptForSelectedRename = [&]() {
+		if (!selectedBodyForInput.has_value()) {
+			setStatus("Select a body first.", 2.0);
+			return;
+		}
+		namePrompt.active = true;
+		namePrompt.target = NamePromptTarget::RenameSelected;
+		namePrompt.targetId = selectedBodyForInput->id;
+		namePrompt.buffer = selectedBodyForInput->name;
+		setStatus("Rename selected body: Enter to apply.", 3.0);
+	};
+	auto cancelNamePrompt = [&]() {
+		namePrompt.active = false;
+		namePrompt.targetId.reset();
+		namePrompt.buffer.clear();
+	};
+	auto commitNamePrompt = [&]() {
+		if (!namePrompt.active) {
+			return;
+		}
+		if (namePrompt.target == NamePromptTarget::NextCreation) {
+			pendingCreationName = namePrompt.buffer;
+			setStatus("Next creation name set to " + previewName(pendingCreationName), 2.5);
+		} else if (namePrompt.target == NamePromptTarget::RenameSelected &&
+		           namePrompt.targetId.has_value()) {
+			engine.queueRename(*namePrompt.targetId, namePrompt.buffer);
+			setStatus(namePrompt.buffer.empty()
+			              ? "Body name cleared."
+			              : ("Body renamed to " + previewName(namePrompt.buffer)),
+			          2.5);
+		}
+		cancelNamePrompt();
 	};
 	ui::CreationPauseStateMachine creationPauseState;
 
@@ -186,12 +254,15 @@ int main() {
 		save.ui.trailsEnabled = ui.traces.settings().enabled;
 		save.ui.relativeTrails = ui.traces.settings().relative;
 		save.ui.predictionsEnabled = ui.showPredictions;
+		save.ui.alwaysShowNames = ui.showAlwaysNames;
 		save.ui.followSelected = ui.selection.followEnabled();
 		save.ui.creationRelativeFrame = ui.creation.relativeFrame();
 		save.ui.negativeMass = ui.creation.negativeMass();
 		save.ui.creationDensity = ui.creation.density();
 		save.ui.predictionSteps = ui.predictor.settings().steps;
 		save.ui.predictionDt = ui.predictor.settings().dt;
+		save.ui.predictionRecalcIntervalSeconds =
+		    ui.predictor.settings().predictionRecalcIntervalSeconds;
 		save.ui.presetIndex = ui.presetIndex;
 		save.camera.center = renderer.view().getCenter();
 		save.camera.size = renderer.view().getSize();
@@ -204,6 +275,7 @@ int main() {
 			    .vy = b.vy,
 			    .mass = b.mass,
 			    .radius = b.radius,
+			    .name = b.name,
 			});
 		}
 
@@ -255,6 +327,7 @@ int main() {
 		}
 		ui.selection.setFollow(loaded.ui.followSelected);
 		ui.showPredictions = loaded.ui.predictionsEnabled;
+		ui.showAlwaysNames = loaded.ui.alwaysShowNames;
 		auto traceSettings = ui.traces.settings();
 		traceSettings.enabled = loaded.ui.trailsEnabled;
 		traceSettings.relative = loaded.ui.relativeTrails;
@@ -262,12 +335,15 @@ int main() {
 		auto predictorSettings = ui.predictor.settings();
 		predictorSettings.steps = loaded.ui.predictionSteps;
 		predictorSettings.dt = loaded.ui.predictionDt;
+		predictorSettings.predictionRecalcIntervalSeconds =
+		    loaded.ui.predictionRecalcIntervalSeconds;
 		ui.predictor.setSettings(predictorSettings);
 		ui.presetIndex = loaded.ui.presetIndex;
 		renderer.setViewCenter(loaded.camera.center);
 		renderer.setViewSize(loaded.camera.size);
 		ui.selection.clear();
 		ui.traces.clear();
+		pendingCreationName.clear();
 		setStatus("Loaded " + *path, 3.5);
 	};
 
@@ -312,6 +388,9 @@ int main() {
 			case ui::Action::TogglePredictions:
 				ui.showPredictions = !ui.showPredictions;
 				break;
+			case ui::Action::ToggleSelectedPrediction:
+				ui.showSelectedBodyPrediction = !ui.showSelectedBodyPrediction;
+				break;
 			case ui::Action::ToggleLabels:
 				ui.showHoverLabels = !ui.showHoverLabels;
 				break;
@@ -354,6 +433,7 @@ int main() {
 					    .vy = b.vy - selectedBody->vy,
 					    .mass = b.mass,
 					    .radius = b.radius,
+					    .name = b.name,
 					});
 				}
 				engine.queueReplaceWorld(transformed);
@@ -456,6 +536,8 @@ int main() {
 			ui.creation.toggleNegativeMass();
 		} else if (action.itemId == "creation.relframe") {
 			ui.creation.toggleRelativeFrame();
+		} else if (action.itemId == "creation.next_name" && action.activate) {
+			beginNamePromptForNextCreation();
 		} else if (action.itemId == "trace.enabled") {
 			auto s = ui.traces.settings();
 			s.enabled = !s.enabled;
@@ -469,8 +551,12 @@ int main() {
 			ui.traces.setSettings(s);
 		} else if (action.itemId == "predict.enabled") {
 			ui.showPredictions = !ui.showPredictions;
+		} else if (action.itemId == "predict.selected") {
+			ui.showSelectedBodyPrediction = !ui.showSelectedBodyPrediction;
 		} else if (action.itemId == "labels.toggle") {
 			ui.showHoverLabels = !ui.showHoverLabels;
+		} else if (action.itemId == "labels.always") {
+			ui.showAlwaysNames = !ui.showAlwaysNames;
 		} else if (action.itemId == "debug.toggle") {
 			dispatchAction(ui::Action::ToggleDebugInfo);
 		} else if (action.itemId == "predict.realtime_window" && action.adjustDelta != 0) {
@@ -483,6 +569,17 @@ int main() {
 			auto predictorSettings = ui.predictor.settings();
 			predictorSettings.steps =
 			    std::clamp(predictorSettings.steps + (action.adjustDelta > 0 ? 20 : -20), 20, 5000);
+			ui.predictor.setSettings(predictorSettings);
+		} else if (action.itemId == "predict.interval" && action.adjustDelta != 0) {
+			auto predictorSettings = ui.predictor.settings();
+			const double step =
+			    predictorSettings.predictionRecalcIntervalSeconds < 0.1 ? 0.01 : 0.05;
+			double next =
+			    predictorSettings.predictionRecalcIntervalSeconds + action.adjustDelta * step;
+			if (next < 0.005) {
+				next = 0.0;
+			}
+			predictorSettings.predictionRecalcIntervalSeconds = std::clamp(next, 0.0, 2.0);
 			ui.predictor.setSettings(predictorSettings);
 		} else if (action.itemId == "action.save") {
 			dispatchPersistenceSave();
@@ -500,6 +597,8 @@ int main() {
 			dispatchAction(ui::Action::ResetTimer);
 		} else if (action.itemId == "action.resetframe") {
 			dispatchAction(ui::Action::AdvancedResetFrame);
+		} else if (action.itemId == "action.rename_selected" && action.activate) {
+			beginNamePromptForSelectedRename();
 		}
 	};
 
@@ -611,7 +710,10 @@ int main() {
 						const std::optional<sim::SpawnCommand> spawn = ui.creation.handleLeftClick(
 						    world, selectedBody, currentSimSecondsPerRealSecond());
 						if (spawn.has_value()) {
-							engine.queueSpawn(*spawn);
+							sim::SpawnCommand namedSpawn = *spawn;
+							namedSpawn.name = pendingCreationName;
+							engine.queueSpawn(namedSpawn);
+							pendingCreationName.clear();
 							if (ui.creation.negativeMass() && ui.showNegativeMassWarning) {
 								setStatus("Negative-mass spawn created (advanced mode).", 3.0);
 							}
@@ -654,7 +756,28 @@ int main() {
 					leftDragMaySelect = false;
 				}
 			}
+			if (const auto* textEntered = event->getIf<sf::Event::TextEntered>()) {
+				if (!namePrompt.active) {
+					continue;
+				}
+				if (isAsciiPrintable(textEntered->unicode) && namePrompt.buffer.size() < 48) {
+					namePrompt.buffer.push_back(static_cast<char>(textEntered->unicode));
+				}
+				continue;
+			}
 			if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
+				if (namePrompt.active) {
+					if (key->code == sf::Keyboard::Key::Backspace) {
+						if (!namePrompt.buffer.empty()) {
+							namePrompt.buffer.pop_back();
+						}
+					} else if (key->code == sf::Keyboard::Key::Enter) {
+						commitNamePrompt();
+					} else if (key->code == sf::Keyboard::Key::Escape) {
+						cancelNamePrompt();
+					}
+					continue;
+				}
 				if (ui.menu.active()) {
 					if (key->code == sf::Keyboard::Key::Escape) {
 						openMenu(false);
@@ -810,6 +933,8 @@ int main() {
 		predictorSettings.realTimeHorizonSeconds =
 		    std::clamp(predictorSettings.realTimeHorizonSeconds, 0.05, 120.0);
 		predictorSettings.steps = std::clamp(predictorSettings.steps, 20, 5000);
+		predictorSettings.predictionRecalcIntervalSeconds =
+		    std::max(0.0, predictorSettings.predictionRecalcIntervalSeconds);
 		const double predictWindowSimSeconds =
 		    predictorSettings.realTimeHorizonSeconds * displayTimeRate;
 		predictorSettings.dt =
@@ -829,19 +954,28 @@ int main() {
 		const std::string predictWindowDisplay =
 		    formatFixed(predictorSettings.realTimeHorizonSeconds, 2) + " s real (" +
 		    ui::formatTimeLegacy(predictWindowSimSeconds) + " sim)";
+		const std::string predictIntervalDisplay =
+		    predictorSettings.predictionRecalcIntervalSeconds <= 0.0
+		        ? "Every frame"
+		        : (formatFixed(predictorSettings.predictionRecalcIntervalSeconds, 3) + " s");
 		const std::string scaleDisplay =
 		    ui::formatDistanceLegacy(renderer.worldUnitsPerPixel()) + "/pixel";
 		const std::optional<sim::SpawnCommand> creationPreviewSpawn =
 		    ui.creation.previewSpawn(creationReferenceBody, currentSimSecondsPerRealSecond());
 
-		if (ui.showPredictions &&
-		    std::chrono::duration<double>(now - lastPredictTime).count() > 0.12) {
+		const double predictElapsedSeconds =
+		    std::chrono::duration<double>(now - lastPredictTime).count();
+		const bool shouldRefreshPrediction =
+		    ui.showPredictions &&
+		    (predictorSettings.predictionRecalcIntervalSeconds <= 0.0 ||
+		     predictElapsedSeconds >= predictorSettings.predictionRecalcIntervalSeconds);
+		if (shouldRefreshPrediction) {
 			lastPredictTime = now;
 			selectedPredictionOffsets.clear();
 			selectedPredictionBodyId.reset();
 			creationPredictionOffsets.clear();
 			creationPredictionRelativeSelectedId.reset();
-			if (selectedBody.has_value()) {
+			if (ui.showSelectedBodyPrediction && selectedBody.has_value()) {
 				const sim::SimulationConfig cfg = engine.config();
 				const std::vector<sf::Vector2f> selectedPredicted = ui.predictor.predictForBody(
 				    bodies, selectedBody->id, cfg.gravitationalConstant, cfg.softeningEpsilon);
@@ -877,7 +1011,7 @@ int main() {
 			}
 		}
 		selectedPrediction.clear();
-		if (ui.showPredictions && selectedBody.has_value() &&
+		if (ui.showPredictions && ui.showSelectedBodyPrediction && selectedBody.has_value() &&
 		    selectedPredictionBodyId.has_value() && *selectedPredictionBodyId == selectedBody->id &&
 		    !selectedPredictionOffsets.empty()) {
 			const sf::Vector2f anchor(static_cast<float>(selectedBody->x),
@@ -935,11 +1069,17 @@ int main() {
 		     ui.creation.negativeMass() ? "On" : "Off", false},
 		    {"creation.relframe", "Creation Relative Frame",
 		     ui.creation.relativeFrame() ? "Selected" : "World", false},
+		    {"creation.next_name", "Creation Name (next body)", previewName(pendingCreationName),
+		     false},
 		    {"trace.enabled", "Trails", ui.traces.settings().enabled ? "On" : "Off", false},
 		    {"trace.relative", "Relative Trails", ui.traces.settings().relative ? "On" : "Off",
 		     false},
 		    {"predict.enabled", "Predictions", ui.showPredictions ? "On" : "Off", false},
+		    {"predict.selected", "Selected Body Prediction",
+		     ui.showSelectedBodyPrediction ? "On" : "Off", false},
+		    {"predict.interval", "Prediction Recalc Interval", predictIntervalDisplay, true},
 		    {"labels.toggle", "Hover Labels", ui.showHoverLabels ? "On" : "Off", false},
+		    {"labels.always", "Always Show Names", ui.showAlwaysNames ? "On" : "Off", false},
 		    {"debug.toggle", "Debug Overlay", ui.showDebugInfo ? "On" : "Off", false},
 		    {"predict.realtime_window", "Prediction Horizon (Real Time)", predictWindowDisplay,
 		     true},
@@ -952,6 +1092,10 @@ int main() {
 		    {"action.nextpreset", "Next Preset", "F8", false},
 		    {"action.resettimer", "Reset Timer", "J", false},
 		    {"action.resetframe", "Reset Frame of Reference", "Q", false},
+		    {"action.rename_selected", "Rename Selected Body",
+		     selectedBody.has_value() ? previewName(selectedBody->name)
+		                              : std::string("Select body"),
+		     false},
 		};
 		ui.menu.setItems(menuItems);
 
@@ -1055,6 +1199,10 @@ int main() {
 			overlay.drawWorldSelection(window, hoveredBody, selectedBody, {}, std::nullopt,
 			                           displayTimeRate, false, true, worldToPixel);
 		}
+		if (ui.showAlwaysNames) {
+			overlay.drawLabels(window, bodies, ui.selection.selectedId(), worldToPixel,
+			                   std::numeric_limits<float>::max());
+		}
 
 		if (std::chrono::steady_clock::now() > statusUntil) {
 			ui.statusMessage.clear();
@@ -1094,7 +1242,11 @@ int main() {
 		    "Trails: " + std::string(ui.traces.settings().enabled ? "On" : "Off") +
 		        " | Relative trails: " + std::string(ui.traces.settings().relative ? "On" : "Off") +
 		        " | Predictions: " + std::string(ui.showPredictions ? "On" : "Off") +
-		        " | Horizon steps: " + std::to_string(ui.predictor.settings().steps),
+		        " | Selected pred: " +
+		        std::string(ui.showSelectedBodyPrediction ? "On" : "Off") +
+		        " | Horizon steps: " + std::to_string(ui.predictor.settings().steps) +
+		        " | Pred recalc: " + predictIntervalDisplay +
+		        " | Always names: " + std::string(ui.showAlwaysNames ? "On" : "Off"),
 		};
 		if (ui.showDebugInfo) {
 			hudLines.push_back("Debug chunks: " + std::to_string(debugStats.chunkSize) + " (" +
@@ -1142,6 +1294,13 @@ int main() {
 		}
 		if (ui.creation.negativeMass() && ui.showNegativeMassWarning) {
 			hudLines.push_back("Warning: Negative mass enabled (advanced mode).");
+		}
+		if (namePrompt.active) {
+			const std::string target = namePrompt.target == NamePromptTarget::NextCreation
+			                               ? "next creation"
+			                               : "selected body";
+			hudLines.push_back("Name input (" + target + "): " + namePrompt.buffer +
+			                   "  [Enter apply | Esc cancel]");
 		}
 		overlay.drawHudPanel(window, hudLines, ui.input.legendLines(ui.menu.active()), cfg.paused);
 

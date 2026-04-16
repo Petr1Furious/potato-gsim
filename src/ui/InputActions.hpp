@@ -18,6 +18,7 @@ enum class Action {
 	ToggleTrails,
 	ToggleRelativeTrails,
 	TogglePredictions,
+	ToggleSelectedPrediction,
 	ToggleLabels,
 	ToggleDebugInfo,
 	ToggleCreationTool,

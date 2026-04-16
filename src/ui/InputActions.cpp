@@ -26,6 +26,9 @@ std::optional<Action> InputActions::mapKeyPress(sf::Keyboard::Key key, bool menu
 			return menuActive ? std::nullopt : std::optional<Action>(Action::ToggleRelativeTrails);
 		case sf::Keyboard::Key::P:
 			return menuActive ? std::nullopt : std::optional<Action>(Action::TogglePredictions);
+		case sf::Keyboard::Key::O:
+			return menuActive ? std::nullopt
+			                  : std::optional<Action>(Action::ToggleSelectedPrediction);
 		case sf::Keyboard::Key::H:
 			return menuActive ? std::nullopt : std::optional<Action>(Action::ToggleLabels);
 		case sf::Keyboard::Key::F3:
@@ -121,7 +124,8 @@ std::vector<std::string> InputActions::legendLines(bool menuActive) const {
 	    "Space pause | M mode | F follow | C create | V rel-frame | N negative-mass",
 	    "WASD/Arrows move | Left/Middle drag pan | Wheel zoom",
 	    ",/. time-scale | -/= density | [/] prediction steps",
-	    "L trails | T relative trails | P predictions | H hover labels | F3 debug",
+	    "L trails | T relative trails | P predictions | O selected prediction",
+	    "H hover labels | F3 debug",
 	    "F5 random | F6 clear | F7/F8 preset | F9 save | F10 load",
 	};
 }

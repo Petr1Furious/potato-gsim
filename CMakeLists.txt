@@ -55,6 +55,7 @@ if(BUILD_TESTING)
     src/io/Persistence.cpp
     src/scenario/ScenarioManager.cpp
     src/ui/CreationTool.cpp
+    src/ui/Predictor.cpp
     src/ui/QuantityFormat.cpp
   )
   target_include_directories(parity_regression_tests PRIVATE src)

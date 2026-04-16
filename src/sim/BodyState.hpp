@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace sim {
@@ -13,6 +14,7 @@ struct BodyState {
 	std::vector<double> velY;
 	std::vector<double> mass;
 	std::vector<double> radius;
+	std::vector<std::string> name;
 
 	[[nodiscard]] std::size_t size() const { return posX.size(); }
 
@@ -25,6 +27,7 @@ struct BodyState {
 		velY.clear();
 		mass.clear();
 		radius.clear();
+		name.clear();
 	}
 
 	void reserve(std::size_t n) {
@@ -34,15 +37,23 @@ struct BodyState {
 		velY.reserve(n);
 		mass.reserve(n);
 		radius.reserve(n);
+		name.reserve(n);
 	}
 
-	void pushBack(double x, double y, double vx, double vy, double m, double r) {
+	void pushBack(double x,
+	              double y,
+	              double vx,
+	              double vy,
+	              double m,
+	              double r,
+	              const std::string& n = {}) {
 		posX.push_back(x);
 		posY.push_back(y);
 		velX.push_back(vx);
 		velY.push_back(vy);
 		mass.push_back(m);
 		radius.push_back(r);
+		name.push_back(n);
 	}
 
 	void swapRemove(std::size_t index) {
@@ -54,6 +65,7 @@ struct BodyState {
 			velY[index] = velY[last];
 			mass[index] = mass[last];
 			radius[index] = radius[last];
+			name[index] = name[last];
 		}
 		posX.pop_back();
 		posY.pop_back();
@@ -61,6 +73,7 @@ struct BodyState {
 		velY.pop_back();
 		mass.pop_back();
 		radius.pop_back();
+		name.pop_back();
 	}
 
 	void validate() const {
@@ -69,6 +82,7 @@ struct BodyState {
 		assert(velY.size() == size());
 		assert(mass.size() == size());
 		assert(radius.size() == size());
+		assert(name.size() == size());
 	}
 };
 

@@ -4,8 +4,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <numbers>
@@ -56,7 +56,8 @@ std::vector<sim::SpawnCommand> makeDeterministicWorld(std::size_t count,
 	constexpr double kEarthLikeDensity = 5514.0;
 	std::vector<sim::SpawnCommand> bodies;
 	bodies.reserve(count);
-	const std::uint64_t seed = 0x9E3779B97F4A7C15ULL ^ (static_cast<std::uint64_t>(count) * 1315423911ULL);
+	const std::uint64_t seed =
+	    0x9E3779B97F4A7C15ULL ^ (static_cast<std::uint64_t>(count) * 1315423911ULL);
 	std::mt19937_64 rng(seed);
 	std::uniform_real_distribution<double> angleDist(0.0, 2.0 * std::numbers::pi);
 	std::uniform_real_distribution<double> radialDist(0.0, 1.0);
@@ -104,12 +105,11 @@ std::vector<std::size_t> parseBodyCountsCsv(const std::string& csv) {
 }
 
 void printUsage(const char* argv0) {
-	std::cout
-	    << "Usage: " << argv0
-	    << " [--debug-step-log] [--bodies <csv>] [--bodies=<csv>] [--repeats <n>] [--help]\n"
-	    << "  --debug-step-log   Enable per-step [sim-step] debug output.\n"
-	    << "  --bodies <csv>     Comma-separated body counts, e.g. 100000 or 50000,100000.\n"
-	    << "  --repeats <n>      Number of deterministic runs per candidate (default 3).\n";
+	std::cout << "Usage: " << argv0
+	          << " [--debug-step-log] [--bodies <csv>] [--bodies=<csv>] [--repeats <n>] [--help]\n"
+	          << "  --debug-step-log   Enable per-step [sim-step] debug output.\n"
+	          << "  --bodies <csv>     Comma-separated body counts, e.g. 100000 or 50000,100000.\n"
+	          << "  --repeats <n>      Number of deterministic runs per candidate (default 3).\n";
 }
 
 bool parseArgs(int argc, char** argv, BenchmarkOptions& options) {
@@ -304,8 +304,7 @@ int main(int argc, char** argv) {
 	}
 	const std::vector<Candidate> candidates{
 	    {"direct_serial", 1, 0, std::numeric_limits<std::size_t>::max(),
-	     std::numeric_limits<std::size_t>::max(), 0, 2048,
-	     sim::ChunkPolicy::DynamicClaim},
+	     std::numeric_limits<std::size_t>::max(), 0, 2048, sim::ChunkPolicy::DynamicClaim},
 	    {"direct_parallel", 1, 0, 0, std::numeric_limits<std::size_t>::max(), 0, 32768,
 	     sim::ChunkPolicy::DynamicClaim},
 	    {"barnes_hut_parallel", 1, 0, 0, 0, 0, std::numeric_limits<std::size_t>::max(),
@@ -326,10 +325,8 @@ int main(int argc, char** argv) {
 	std::cout << "BodiesInitial, Candidate, StepsPerSecMedian, StepsPerSecIQR, BodiesFinalMedian, "
 	             "MergesMedian, Status\n";
 	for (const std::size_t n : options.bodyCounts) {
-		const double spread =
-		    1.0e12 * std::sqrt(std::max(1.0, static_cast<double>(n) / 1.0e5));
-		const std::vector<sim::SpawnCommand> world =
-		    makeDeterministicWorld(n, 0.0, 0.0, spread);
+		const double spread = 1.0e12 * std::sqrt(std::max(1.0, static_cast<double>(n) / 1.0e5));
+		const std::vector<sim::SpawnCommand> world = makeDeterministicWorld(n, 0.0, 0.0, spread);
 		for (const Candidate& candidate : candidates) {
 			const AggregatedResult result =
 			    runCaseRepeated(n, world, candidate, options.debugStepLog, options.repeats);
@@ -338,7 +335,8 @@ int main(int argc, char** argv) {
 				          << result.skipReason << '\n';
 				continue;
 			}
-			const std::size_t merges = n > result.medianFinalBodies ? (n - result.medianFinalBodies) : 0;
+			const std::size_t merges =
+			    n > result.medianFinalBodies ? (n - result.medianFinalBodies) : 0;
 			std::cout << n << ", " << candidate.name << ", " << result.medianUps << ", "
 			          << result.iqrUps << ", " << result.medianFinalBodies << ", " << merges
 			          << ", ok\n";

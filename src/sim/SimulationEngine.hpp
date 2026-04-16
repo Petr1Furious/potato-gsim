@@ -17,6 +17,7 @@
 #include <optional>
 #include <shared_mutex>
 #include <stop_token>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -31,6 +32,7 @@ struct BodySnapshot {
 	double vy = 0.0;
 	double mass = 0.0;
 	double radius = 0.0;
+	std::string name;
 };
 
 enum class ForceAlgorithm { DirectSerial, DirectParallel, BarnesHutParallel };
@@ -85,6 +87,7 @@ class SimulationEngine {
 
 	void queueSpawn(const SpawnCommand& command);
 	void queueDelete(BodyId id);
+	void queueRename(BodyId id, const std::string& name);
 	void queueDeleteNearest(double x, double y, double maxDistance);
 	void queueClearAll();
 	void queueReplaceWorld(const std::vector<SpawnCommand>& bodies);
@@ -137,6 +140,13 @@ class SimulationEngine {
 	void drainMergeRemapEvents(std::vector<std::pair<BodyId, BodyId>>& out);
 
    private:
+	struct CollisionPhaseResult {
+		double collisionMs = 0.0;
+		double mergeMs = 0.0;
+		std::size_t overlapPairs = 0;
+		std::size_t mergedBodies = 0;
+	};
+
 	void simulationLoop(std::stop_token stopToken);
 	void step(double dt, const SimulationConfig& cfg);
 	void publishStepResult(int writeIndex,
@@ -162,11 +172,14 @@ class SimulationEngine {
 	                       bool collectTraversalStats,
 	                       const std::chrono::steady_clock::time_point& stepStart,
 	                       EngineDebugStats& debug);
+	CollisionPhaseResult runCollisionPhase(BodyState& state,
+	                                       IdIndexMap& idMap,
+	                                       const SimulationConfig& cfg);
 
 	static void removeBodyAt(BodyState& state, IdIndexMap& idMap, std::uint32_t denseIndex);
-	static void applyCommands(BodyState& state,
-	                          IdIndexMap& idMap,
-	                          const std::vector<SimCommand>& commands);
+	[[nodiscard]] static bool applyCommands(BodyState& state,
+	                                        IdIndexMap& idMap,
+	                                        const std::vector<SimCommand>& commands);
 	void mergeOverlaps(BodyState& state,
 	                   IdIndexMap& idMap,
 	                   const std::vector<UniformGrid::OverlapPair>& overlaps);

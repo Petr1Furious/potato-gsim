@@ -12,9 +12,12 @@ namespace ui {
 
 namespace {
 
-std::string bodyLabel(sim::BodyId id) {
+std::string bodyLabel(const sim::BodySnapshot& body) {
+	if (!body.name.empty()) {
+		return body.name;
+	}
 	std::ostringstream ss;
-	ss << "B" << id;
+	ss << "B" << body.id;
 	return ss.str();
 }
 
@@ -158,7 +161,7 @@ void InspectorOverlay::drawBodyInfoText(
 	std::ostringstream mass;
 	mass << std::scientific << std::setprecision(3) << body.mass;
 
-	std::string textBlock = bodyLabel(body.id) + "\nm=" + mass.str() + " kg" +
+	std::string textBlock = bodyLabel(body) + "\nm=" + mass.str() + " kg" +
 	                        "\nr=" + formatDistanceLegacy(body.radius) +
 	                        "\nv=" + formatSpeedLegacy(speed);
 	if (showDistance && hasDistance) {
@@ -214,7 +217,7 @@ void InspectorOverlay::drawLabels(
 			continue;
 		}
 
-		sf::Text text(font_, bodyLabel(body.id), 12);
+		sf::Text text(font_, bodyLabel(body), 12);
 		text.setFillColor(highPriority ? sf::Color(255, 255, 255) : sf::Color(200, 200, 220));
 		text.setOutlineColor(sf::Color(12, 12, 16, 220));
 		text.setOutlineThickness(1.0f);
