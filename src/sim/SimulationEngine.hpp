@@ -19,6 +19,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -91,6 +92,10 @@ class SimulationEngine {
 	void queueDeleteNearest(double x, double y, double maxDistance);
 	void queueClearAll();
 	void queueReplaceWorld(const std::vector<SpawnCommand>& bodies);
+	void queueApplyAuthoritativeSnapshot(std::vector<AuthoritativeBody> bodies);
+	void queuePatchBodyDynamics(std::vector<BodyDynamicsPatch> patches);
+	/// Constant in-world acceleration (m/s²) for this integration step only (e.g. ship thrust).
+	void setShipThrustAccelWorld(BodyId id, double ax, double ay);
 
 	[[nodiscard]] std::optional<BodyId> findNearestBody(double x,
 	                                                    double y,
@@ -111,8 +116,6 @@ class SimulationEngine {
 	void resetSimulationTimer();
 	void setSimulationTimer(double seconds);
 
-	void setMode(SimulationMode mode);
-	void toggleMode();
 	void setPaused(bool paused);
 	[[nodiscard]] std::uint64_t requestPauseAck(bool paused);
 	[[nodiscard]] bool isPauseAcked(std::uint64_t token) const;
@@ -120,9 +123,6 @@ class SimulationEngine {
 	void setTimeScale(double timeScale);
 	void scaleTimeBy(double factor);
 	void setFixedDt(double fixedDtSeconds);
-	void setRealtimeDtOutlierClamp(std::size_t windowSize,
-	                               double spikeClampMultiplier,
-	                               std::size_t warmupSamples);
 	void setGravityConstant(double gravitationalConstant);
 	void setCollisionCellScale(double cellScale);
 	void setCollisionStepInterval(std::size_t stepInterval);
@@ -138,6 +138,10 @@ class SimulationEngine {
 
 	void seedCircularCloud(std::size_t count, double centerX, double centerY, double spreadRadius);
 	void drainMergeRemapEvents(std::vector<std::pair<BodyId, BodyId>>& out);
+
+	/// Single-threaded integration step (headless server / multiplayer client without
+	/// `start()` background loop). Not used while `simulationLoop` is driving `step`.
+	void advanceFixedStep(double dt, const SimulationConfig& cfg);
 
    private:
 	struct CollisionPhaseResult {
@@ -219,6 +223,8 @@ class SimulationEngine {
 	std::vector<double> predY_;
 	std::vector<double> acc1X_;
 	std::vector<double> acc1Y_;
+	std::vector<double> thrustX_;
+	std::vector<double> thrustY_;
 	std::vector<BarnesHutTree::TraversalStats> traversalAcc0_;
 	std::vector<BarnesHutTree::TraversalStats> traversalAcc1_;
 
@@ -239,6 +245,11 @@ class SimulationEngine {
 	std::mutex mergeMutex_;
 	std::vector<std::pair<BodyId, BodyId>> mergeRemapEvents_;
 	mutable std::mutex lifecycleMutex_;
+
+	mutable std::mutex thrustMutex_;
+	std::unordered_map<BodyId, std::pair<double, double>> pendingThrustAccel_;
+
+	void fillThrustArrays(const BodyState& state, const IdIndexMap& idMap);
 };
 
 }  // namespace sim

@@ -11,7 +11,6 @@ namespace ui {
 enum class Action {
 	ToggleMenu,
 	TogglePause,
-	ToggleMode,
 	ToggleFullscreen,
 	ResetView,
 	ToggleFollow,
@@ -26,8 +25,6 @@ enum class Action {
 	ToggleNegativeMass,
 	ResetTimer,
 	AdvancedResetFrame,
-	SaveWorld,
-	LoadWorld,
 	RandomScenario,
 	ClearScenario,
 	NextPreset,
@@ -45,7 +42,9 @@ struct HoldAdjustments {
 class InputActions {
    public:
 	[[nodiscard]] std::optional<Action> mapKeyPress(sf::Keyboard::Key key, bool menuActive) const;
-	[[nodiscard]] HoldAdjustments computeHolds(double dtSeconds, bool enabled) const;
+	[[nodiscard]] HoldAdjustments computeHolds(double dtSeconds,
+	                                           bool enabled,
+	                                           bool keyboardPanKeys = true) const;
 
 	[[nodiscard]] std::vector<std::string> legendLines(bool menuActive) const;
 };

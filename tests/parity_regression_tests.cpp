@@ -66,7 +66,6 @@ bool testCreationCancelAndDensityClamp() {
 
 bool testPersistenceRoundTrip() {
 	io::PersistedWorldState world;
-	world.simConfig.mode = sim::SimulationMode::RealTimeVariableStep;
 	world.simConfig.timeScale = 86400.0;
 	world.simConfig.gravitationalConstant = 6.67430e-11;
 	world.simConfig.softeningEpsilon = 1.0e6;

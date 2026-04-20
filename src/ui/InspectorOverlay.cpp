@@ -81,12 +81,12 @@ void InspectorOverlay::drawWorldSelection(
     double arrowScale,
     bool drawHighlightSquare,
     bool showDistanceToReference,
-    const std::function<sf::Vector2i(const sf::Vector2f&)>& worldToPixel) const {
+    const std::function<sf::Vector2f(double, double)>& worldToRenderLocal,
+    const std::function<sf::Vector2i(double, double)>& worldToPixel) const {
 	if (!body.has_value()) {
 		return;
 	}
-	const sf::Vector2f center(static_cast<float>(body->x), static_cast<float>(body->y));
-	const float radius = static_cast<float>(body->radius);
+	const sf::Vector2f centerR = worldToRenderLocal(body->x, body->y);
 
 	double relVx = body->vx;
 	double relVy = body->vy;
@@ -94,14 +94,17 @@ void InspectorOverlay::drawWorldSelection(
 		relVx -= referenceBody->vx;
 		relVy -= referenceBody->vy;
 	}
-	const sf::Vector2f velocityTarget = creationVelocityTarget.value_or(
-	    center + sf::Vector2f(static_cast<float>(relVx * arrowScale),
-	                          static_cast<float>(relVy * arrowScale)));
-	drawArrow(window, center, velocityTarget);
+	sf::Vector2f velocityTargetR =
+	    creationVelocityTarget.has_value()
+	        ? worldToRenderLocal(static_cast<double>(creationVelocityTarget->x),
+	                             static_cast<double>(creationVelocityTarget->y))
+	        : worldToRenderLocal(body->x + relVx * arrowScale, body->y + relVy * arrowScale);
+	drawArrow(window, centerR, velocityTargetR);
 
 	if (drawHighlightSquare) {
-		const sf::Vector2i centerPx = worldToPixel(center);
-		const sf::Vector2i edgePx = worldToPixel(center + sf::Vector2f(radius, 0.0f));
+		const sf::Vector2i centerPx = worldToPixel(body->x, body->y);
+		const sf::Vector2i edgePx =
+		    worldToPixel(body->x + static_cast<double>(body->radius), body->y);
 		const float radiusPx = std::max(1.0f, static_cast<float>(std::abs(edgePx.x - centerPx.x)));
 		const float delta = radiusPx + 5.0f;
 		sf::RectangleShape box(sf::Vector2f(delta * 2.0f, delta * 2.0f));
@@ -119,7 +122,8 @@ void InspectorOverlay::drawWorldSelection(
 	if (selectedPrediction.size() >= 2) {
 		sf::VertexArray strip(sf::PrimitiveType::LineStrip, selectedPrediction.size());
 		for (std::size_t i = 0; i < selectedPrediction.size(); ++i) {
-			strip[i].position = selectedPrediction[i];
+			strip[i].position = worldToRenderLocal(static_cast<double>(selectedPrediction[i].x),
+			                                       static_cast<double>(selectedPrediction[i].y));
 			strip[i].color = sf::Color(0, 255, 0, 90);
 		}
 		window.draw(strip);
@@ -133,15 +137,13 @@ void InspectorOverlay::drawBodyInfoText(
     const sim::BodySnapshot& body,
     const std::optional<sim::BodySnapshot>& referenceBody,
     bool showDistance,
-    const std::function<sf::Vector2i(const sf::Vector2f&)>& worldToPixel) const {
+    const std::function<sf::Vector2i(double, double)>& worldToPixel) const {
 	if (!fontReady_) {
 		return;
 	}
 
-	const sf::Vector2f center(static_cast<float>(body.x), static_cast<float>(body.y));
-	const sf::Vector2i centerPx = worldToPixel(center);
-	const sf::Vector2i edgePx =
-	    worldToPixel(center + sf::Vector2f(static_cast<float>(body.radius), 0.0f));
+	const sf::Vector2i centerPx = worldToPixel(body.x, body.y);
+	const sf::Vector2i edgePx = worldToPixel(body.x + static_cast<double>(body.radius), body.y);
 	const float radiusPx = std::max(1.0f, static_cast<float>(std::abs(edgePx.x - centerPx.x)));
 
 	double relVx = body.vx;
@@ -184,12 +186,11 @@ void InspectorOverlay::drawBodyInfoText(
 	window.setView(oldView);
 }
 
-void InspectorOverlay::drawLabels(
-    sf::RenderWindow& window,
-    const std::vector<sim::BodySnapshot>& bodies,
-    const std::optional<sim::BodyId>& selectedId,
-    const std::function<sf::Vector2i(const sf::Vector2f&)>& worldToPixel,
-    float maxScreenRadiusPx) const {
+void InspectorOverlay::drawLabels(sf::RenderWindow& window,
+                                  const std::vector<sim::BodySnapshot>& bodies,
+                                  const std::optional<sim::BodyId>& selectedId,
+                                  const std::function<sf::Vector2i(double, double)>& worldToPixel,
+                                  float maxScreenRadiusPx) const {
 	if (!fontReady_) {
 		return;
 	}
@@ -206,8 +207,7 @@ void InspectorOverlay::drawLabels(
 	std::vector<LabelEntry> labels;
 	labels.reserve(128);
 	for (const sim::BodySnapshot& body : bodies) {
-		const sf::Vector2f worldPos(static_cast<float>(body.x), static_cast<float>(body.y));
-		const sf::Vector2i pixel = worldToPixel(worldPos);
+		const sf::Vector2i pixel = worldToPixel(body.x, body.y);
 		if (selectedId.has_value() && (*selectedId == body.id)) {
 			// Selected body already has inspector text; avoid duplicate label.
 			continue;

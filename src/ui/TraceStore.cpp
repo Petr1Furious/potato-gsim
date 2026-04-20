@@ -1,41 +1,46 @@
 #include "ui/TraceStore.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace ui {
 
-sf::Vector2f TraceStore::interpolatePosition(const std::deque<TracePoint>& trail,
-                                             double timeSeconds) {
+namespace {
+
+std::pair<double, double> interpolateWorld(const std::deque<TraceStore::TracePoint>& trail,
+                                           double timeSeconds) {
 	if (trail.empty()) {
-		return sf::Vector2f(0.0f, 0.0f);
+		return {0.0, 0.0};
 	}
 	if (timeSeconds <= trail.front().timeSeconds) {
-		return trail.front().worldPos;
+		return {trail.front().worldX, trail.front().worldY};
 	}
 	if (timeSeconds >= trail.back().timeSeconds) {
-		return trail.back().worldPos;
+		return {trail.back().worldX, trail.back().worldY};
 	}
 
-	const auto upper =
-	    std::lower_bound(trail.begin(), trail.end(), timeSeconds,
-	                     [](const TracePoint& point, double t) { return point.timeSeconds < t; });
+	const auto upper = std::lower_bound(
+	    trail.begin(), trail.end(), timeSeconds,
+	    [](const TraceStore::TracePoint& point, double t) { return point.timeSeconds < t; });
 	if (upper == trail.begin()) {
-		return upper->worldPos;
+		return {upper->worldX, upper->worldY};
 	}
 	if (upper == trail.end()) {
-		return trail.back().worldPos;
+		return {trail.back().worldX, trail.back().worldY};
 	}
 
 	const auto lower = upper - 1;
 	const double dt = upper->timeSeconds - lower->timeSeconds;
 	if (dt <= 1e-12) {
-		return upper->worldPos;
+		return {upper->worldX, upper->worldY};
 	}
 	const double alpha = std::clamp((timeSeconds - lower->timeSeconds) / dt, 0.0, 1.0);
-	return sf::Vector2f(
-	    static_cast<float>(lower->worldPos.x + (upper->worldPos.x - lower->worldPos.x) * alpha),
-	    static_cast<float>(lower->worldPos.y + (upper->worldPos.y - lower->worldPos.y) * alpha));
+	const double wx = lower->worldX + (upper->worldX - lower->worldX) * alpha;
+	const double wy = lower->worldY + (upper->worldY - lower->worldY) * alpha;
+	return {wx, wy};
 }
+
+}  // namespace
 
 void TraceStore::applyMergeRemap(const std::vector<std::pair<sim::BodyId, sim::BodyId>>& remap) {
 	for (const auto& [from, to] : remap) {
@@ -57,7 +62,8 @@ void TraceStore::ingest(const std::vector<sim::BodySnapshot>& bodies, double tim
 	for (const sim::BodySnapshot& body : bodies) {
 		auto& trail = traces_[body.id];
 		trail.push_back(TracePoint{
-		    .worldPos = sf::Vector2f(static_cast<float>(body.x), static_cast<float>(body.y)),
+		    .worldX = body.x,
+		    .worldY = body.y,
 		    .timeSeconds = timeSeconds,
 		});
 		while (trail.size() > settings_.maxPointsPerBody) {
@@ -67,24 +73,35 @@ void TraceStore::ingest(const std::vector<sim::BodySnapshot>& bodies, double tim
 }
 
 void TraceStore::draw(sf::RenderWindow& window,
-                      const std::optional<sim::BodySnapshot>& selectedBody) const {
+                      const std::optional<sim::BodySnapshot>& selectedBody,
+                      double renderOriginX,
+                      double renderOriginY,
+                      bool useRenderOrigin) const {
 	if (!settings_.enabled) {
 		return;
 	}
 
+	const double ox = useRenderOrigin ? renderOriginX : 0.0;
+	const double oy = useRenderOrigin ? renderOriginY : 0.0;
+
+	auto toLocal = [&](double wx, double wy) {
+		return sf::Vector2f(static_cast<float>(wx - ox), static_cast<float>(wy - oy));
+	};
+
 	bool relativeMode = settings_.relative && selectedBody.has_value();
-	sf::Vector2f selectedCurrent(0.0f, 0.0f);
 	const std::deque<TracePoint>* selectedTrail = nullptr;
 	if (relativeMode) {
-		selectedCurrent =
-		    sf::Vector2f(static_cast<float>(selectedBody->x), static_cast<float>(selectedBody->y));
-		const auto selectedIt = traces_.find(selectedBody->id);
+		const auto selectedIt =
+		    selectedBody.has_value() ? traces_.find(selectedBody->id) : traces_.end();
 		if (selectedIt != traces_.end() && !selectedIt->second.empty()) {
 			selectedTrail = &selectedIt->second;
 		} else {
 			relativeMode = false;
 		}
 	}
+
+	const double selX = selectedBody.has_value() ? selectedBody->x : 0.0;
+	const double selY = selectedBody.has_value() ? selectedBody->y : 0.0;
 
 	for (const auto& [id, trail] : traces_) {
 		if (trail.size() < 2) {
@@ -93,13 +110,14 @@ void TraceStore::draw(sf::RenderWindow& window,
 		sf::VertexArray strip(sf::PrimitiveType::LineStrip, trail.size());
 		const bool highlight = selectedBody.has_value() && selectedBody->id == id;
 		for (std::size_t i = 0; i < trail.size(); ++i) {
-			sf::Vector2f drawPos = trail[i].worldPos;
+			double wx = trail[i].worldX;
+			double wy = trail[i].worldY;
 			if (relativeMode && selectedTrail != nullptr) {
-				const sf::Vector2f selectedAtTime =
-				    interpolatePosition(*selectedTrail, trail[i].timeSeconds);
-				drawPos = drawPos - selectedAtTime + selectedCurrent;
+				const auto [sx, sy] = interpolateWorld(*selectedTrail, trail[i].timeSeconds);
+				wx = wx - sx + selX;
+				wy = wy - sy + selY;
 			}
-			strip[i].position = drawPos;
+			strip[i].position = toLocal(wx, wy);
 			strip[i].color =
 			    highlight ? sf::Color(255, 240, 180, 180) : sf::Color(130, 160, 255, 95);
 		}

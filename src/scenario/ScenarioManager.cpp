@@ -18,7 +18,7 @@ double radiusFromMass(double mass) {
 
 std::vector<sim::SpawnCommand> makeSolarLike() {
 	std::vector<sim::SpawnCommand> bodies;
-	bodies.reserve(9);
+	bodies.reserve(11);
 	bodies.push_back(sim::SpawnCommand{
 	    .x = 0.0,
 	    .y = 0.0,
@@ -26,22 +26,25 @@ std::vector<sim::SpawnCommand> makeSolarLike() {
 	    .vy = 0.0,
 	    .mass = 1.98847e30,
 	    .radius = 6.9634e8,
+	    .name = "Sun",
 	});
 	const struct Orbit {
 		double r;
 		double mass;
 		double radius;
 		double speed;
+		const char* name;
 	} planets[] = {
-	    {5.790905e10, 3.3011e23, 2.4397e6, 4.736e4},  // Mercury
-	    {1.08208e11, 4.8675e24, 6.0518e6, 3.502e4},   // Venus
-	    {1.49598e11, 5.97237e24, 6.371e6, 2.978e4},   // Earth
-	    {2.27939e11, 6.4171e23, 3.3895e6, 2.407e4},   // Mars
-	    {7.7857e11, 1.8982e27, 6.9911e7, 1.307e4},    // Jupiter
-	    {1.43353e12, 5.6834e26, 5.8232e7, 9.68e3},    // Saturn
-	    {2.87246e12, 8.6810e25, 2.5362e7, 6.80e3},    // Uranus
-	    {4.49506e12, 1.02413e26, 2.4622e7, 5.43e3},   // Neptune
+	    {5.790905e10, 3.3011e23, 2.4397e6, 4.736e4, "Mercury"},
+	    {1.08208e11, 4.8675e24, 6.0518e6, 3.502e4, "Venus"},
+	    {1.49598e11, 5.97237e24, 6.371e6, 2.978e4, "Earth"},
+	    {2.27939e11, 6.4171e23, 3.3895e6, 2.407e4, "Mars"},
+	    {7.7857e11, 1.8982e27, 6.9911e7, 1.307e4, "Jupiter"},
+	    {1.43353e12, 5.6834e26, 5.8232e7, 9.68e3, "Saturn"},
+	    {2.87246e12, 8.6810e25, 2.5362e7, 6.80e3, "Uranus"},
+	    {4.49506e12, 1.02413e26, 2.4622e7, 5.43e3, "Neptune"},
 	};
+	std::size_t index = 0;
 	for (const Orbit& p : planets) {
 		bodies.push_back(sim::SpawnCommand{
 		    .x = p.r,
@@ -50,7 +53,26 @@ std::vector<sim::SpawnCommand> makeSolarLike() {
 		    .vy = p.speed,
 		    .mass = p.mass,
 		    .radius = p.radius,
+		    .name = p.name,
 		});
+		// Moon: mean distance ~384400 km; v = sqrt(G*M_earth / a); velocity added in +y (Sun
+		// frame).
+		if (index == 2) {
+			constexpr double moonSemiMajorAxis = 3.844e8;
+			constexpr double moonMass = 7.342e22;
+			constexpr double moonRadius = 1.7371e6;
+			const double vMoon = std::sqrt(kG * p.mass / moonSemiMajorAxis);
+			bodies.push_back(sim::SpawnCommand{
+			    .x = p.r + moonSemiMajorAxis,
+			    .y = 0.0,
+			    .vx = 0.0,
+			    .vy = p.speed + vMoon,
+			    .mass = moonMass,
+			    .radius = moonRadius,
+			    .name = "Moon",
+			});
+		}
+		++index;
 	}
 	return bodies;
 }

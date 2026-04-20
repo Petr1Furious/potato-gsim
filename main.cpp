@@ -1,5 +1,7 @@
-#include "io/NativeFileDialog.hpp"
-#include "io/Persistence.hpp"
+#include "net/MpClient.hpp"
+#include "net/MpConstants.hpp"
+#include "net/MpReplay.hpp"
+#include "net/Protocol.hpp"
 #include "render/Renderer.hpp"
 #include "scenario/ScenarioManager.hpp"
 #include "sim/SimulationEngine.hpp"
@@ -10,16 +12,25 @@
 
 #include <SFML/Graphics.hpp>
 
+#include <enet/enet.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -69,11 +80,12 @@ void fitViewToBodies(render::Renderer& renderer, const std::vector<sim::SpawnCom
 		minY = std::min(minY, b.y - b.radius);
 		maxY = std::max(maxY, b.y + b.radius);
 	}
-	const float cx = static_cast<float>((minX + maxX) * 0.5);
-	const float cy = static_cast<float>((minY + maxY) * 0.5);
+	const double cx = (minX + maxX) * 0.5;
+	const double cy = (minY + maxY) * 0.5;
 	const float sx = static_cast<float>(std::max(1.0, (maxX - minX) * 1.25));
 	const float sy = static_cast<float>(std::max(1.0, (maxY - minY) * 1.25));
-	renderer.setViewCenter(sf::Vector2f(cx, cy));
+	renderer.setWorldOriginForRendering(cx, cy);
+	renderer.setCameraWorldCenterDouble(cx, cy);
 	renderer.setViewSize(sf::Vector2f(sx, sy));
 }
 
@@ -90,21 +102,122 @@ void setWindowFullscreen(sf::RenderWindow& window, bool fullscreen) {
 	window.setFramerateLimit(0);
 }
 
+struct MpShipReplica {
+	float facing = 0.f;
+	std::uint8_t thrustForward = 0;
+	std::uint8_t thrustReverse = 0;
+	std::uint64_t lastTick = 0;
+};
+
+void collectReplicaThrustSamples(const std::unordered_map<sim::BodyId, MpShipReplica>& replicas,
+                                 std::vector<net::ShipThrustSample>& out) {
+	out.clear();
+	for (const auto& [id, rep] : replicas) {
+		const double f = static_cast<double>(rep.facing);
+		const double ca = std::cos(f);
+		const double sa = std::sin(f);
+		double ax = 0.0;
+		double ay = 0.0;
+		if (rep.thrustForward) {
+			ax += net::kShipThrustAccel * ca;
+			ay += net::kShipThrustAccel * sa;
+		}
+		if (rep.thrustReverse) {
+			ax -= net::kShipThrustAccel * ca * 0.5;
+			ay -= net::kShipThrustAccel * sa * 0.5;
+		}
+		out.push_back(net::ShipThrustSample{.id = id, .ax = ax, .ay = ay});
+	}
+}
+
+bool rewindReplayAuthority(net::MpReplayBuffer& replay,
+                           sim::SimulationEngine& engine,
+                           const std::uint64_t S,
+                           const std::uint64_t H,
+                           const sim::SimulationConfig& physicsCfg,
+                           std::vector<sim::BodyDynamicsPatch> patchesAtS) {
+	if (S >= H) {
+		return false;
+	}
+	std::vector<std::pair<std::uint64_t, std::vector<net::ShipThrustSample>>> thrustsByStep;
+	if (!replay.extractThrustsBetween(S, H, thrustsByStep)) {
+		std::fprintf(stderr, "potato_gsim: MP rewind missing thrust history (S=%llu H=%llu)\n",
+		             static_cast<unsigned long long>(S), static_cast<unsigned long long>(H));
+		return false;
+	}
+	replay.popFramesAfter(S);
+	net::ReplayFrame atS{};
+	if (!replay.findFrame(S, atS)) {
+		std::fprintf(stderr, "potato_gsim: MP rewind missing checkpoint at S=%llu\n",
+		             static_cast<unsigned long long>(S));
+		return false;
+	}
+	engine.queueApplyAuthoritativeSnapshot(std::move(atS.bodiesAfter));
+	if (!patchesAtS.empty()) {
+		engine.queuePatchBodyDynamics(std::move(patchesAtS));
+	}
+	const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
+	                      ? physicsCfg.timeScale
+	                      : 1.0;
+	const double dtSim = net::simulationDtFromTimeScale(ts);
+	for (const auto& pr : thrustsByStep) {
+		const std::uint64_t g = pr.first;
+		net::applyShipThrustSamples(engine, pr.second);
+		engine.advanceFixedStep(dtSim, physicsCfg);
+		std::vector<sim::AuthoritativeBody> bodiesAfter;
+		net::copyBodiesToAuthoritative(engine, bodiesAfter);
+		replay.recordAfterPhysicsStep(g, std::move(bodiesAfter),
+		                              std::vector<net::ShipThrustSample>(pr.second));
+	}
+	return true;
+}
+
+void catchUpPhysicsHead(net::MpReplayBuffer& replay,
+                        sim::SimulationEngine& engine,
+                        std::uint64_t steps,
+                        const sim::SimulationConfig& physicsCfg,
+                        const std::unordered_map<sim::BodyId, MpShipReplica>& replicas,
+                        std::uint64_t& headRef) {
+	if (steps == 0) {
+		return;
+	}
+	const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
+	                      ? physicsCfg.timeScale
+	                      : 1.0;
+	const double dtSim = net::simulationDtFromTimeScale(ts);
+	for (std::uint64_t k = 0; k < steps; ++k) {
+		std::vector<net::ShipThrustSample> thrust;
+		collectReplicaThrustSamples(replicas, thrust);
+		net::applyShipThrustSamples(engine, thrust);
+		engine.advanceFixedStep(dtSim, physicsCfg);
+		++headRef;
+		std::vector<sim::AuthoritativeBody> bodiesAfter;
+		net::copyBodiesToAuthoritative(engine, bodiesAfter);
+		replay.recordAfterPhysicsStep(headRef, std::move(bodiesAfter),
+		                              std::vector<net::ShipThrustSample>(thrust));
+	}
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+	bool multiplayer = false;
+	const char* mpHost = "127.0.0.1";
+	std::uint16_t mpPort = 27777;
+	if (argc >= 4 && std::string_view(argv[1]) == "--connect") {
+		multiplayer = true;
+		mpHost = argv[2];
+		mpPort = static_cast<std::uint16_t>(std::strtoul(argv[3], nullptr, 10));
+	}
+
 	sf::RenderWindow window(sf::VideoMode({1400, 900}), "potato_gsim", sf::Style::Default,
 	                        sf::State::Windowed);
 	window.setVerticalSyncEnabled(true);
 	window.setFramerateLimit(0);
 
 	sim::SimulationConfig config;
-	config.mode = sim::SimulationMode::RealTimeVariableStep;
 	config.timeScale = 3600.0;
-	config.fixedDtSeconds = 1.0 / 240.0;
-	config.realtimeDtWindowSize = 120;
-	config.realtimeDtSpikeClampMultiplier = 6.0;
-	config.realtimeDtClampWarmupSamples = 16;
+	config.fixedDtSeconds = net::kRealSecondsPerPhysicsStep;
 	config.gravitationalConstant = 6.67430e-11;
 	config.softeningEpsilon = 1.0e6;
 	config.barnesHutTheta = 0.6;
@@ -115,9 +228,48 @@ int main() {
 	config.chunkPolicy = sim::ChunkPolicy::DynamicClaim;
 	config.directSerialMaxBodies = 224;
 	config.directParallelMaxBodies = 768;
+	if (multiplayer) {
+		// Default until JoinAccept; matches server default (1 sim s / real s).
+		config.timeScale = 1.0;
+	}
 
 	sim::SimulationEngine engine(config);
-	engine.start();
+
+	std::optional<net::MpClient> mpClient;
+	std::uint64_t mpHudServerTick = 0;
+	sim::BodyId mpOwnShipId = 0;
+	bool mpSessionJoined = false;
+	bool mpJoinRequestSent = false;
+	std::uint32_t mpInputSeq = 0;
+	double mpWallPhysicsDebt = 0.0;
+	std::uint64_t mpClientPhysicsHead = 0;
+	std::uint64_t mpLastConfirmedAuthorityStep = 0;
+	net::MpReplayBuffer mpReplay;
+	bool mpPendingWorldHad = false;
+	std::uint64_t mpPendingWorldTick = 0;
+	std::uint64_t mpPendingWorldGlobalStep = 0;
+	std::vector<sim::BodyId> mpPendingWorldIds;
+	std::vector<double> mpPendingWorldPx;
+	std::vector<double> mpPendingWorldPy;
+	std::vector<double> mpPendingWorldVx;
+	std::vector<double> mpPendingWorldVy;
+	std::vector<net::MpClient::ShipNetSample> mpInboundShips;
+	std::unordered_map<sim::BodyId, MpShipReplica> mpShipReplica;
+
+	if (multiplayer) {
+		if (enet_initialize() != 0) {
+			return 1;
+		}
+		mpClient.emplace();
+		if (!mpClient->connect(std::string(mpHost), mpPort)) {
+			std::fprintf(stderr, "potato_gsim: could not connect to %s:%u\n", mpHost,
+			             static_cast<unsigned>(mpPort));
+			enet_deinitialize();
+			return 1;
+		}
+	} else {
+		engine.start();
+	}
 
 	render::Renderer renderer(window);
 	ui::InspectorOverlay overlay;
@@ -149,7 +301,9 @@ int main() {
 		pendingCreationName.clear();
 		fitViewToBodies(renderer, bodies);
 	};
-	applyScenario(scenario::ScenarioManager::makePreset(ui.presetIndex));
+	if (!multiplayer) {
+		applyScenario(scenario::ScenarioManager::makePreset(ui.presetIndex));
+	}
 
 	bool middlePanning = false;
 	sf::Vector2i lastPanPixel{0, 0};
@@ -169,7 +323,8 @@ int main() {
 	std::optional<sim::BodyId> creationPredictionRelativeSelectedId;
 	std::optional<sim::BodySnapshot> selectedBodyForInput;
 	std::optional<sim::BodyId> trackedFollowId;
-	std::optional<sf::Vector2f> followViewOffset;
+	std::optional<std::pair<double, double>> followViewOffset;
+	bool wasFollowCamera = false;
 	enum class NamePromptTarget { NextCreation, RenameSelected };
 	struct NamePromptState {
 		bool active = false;
@@ -240,113 +395,6 @@ int main() {
 		ui.menu.setActive(active);
 	};
 
-	auto dispatchPersistenceSave = [&]() {
-		const std::optional<std::string> path =
-		    io::NativeFileDialog::pickSavePath("Save Simulation", "world", "pgsim");
-		if (!path.has_value()) {
-			return;
-		}
-
-		engine.copyBodies(bodies);
-		io::PersistedWorldState save;
-		save.simConfig = engine.config();
-		save.simulationTimeSeconds = engine.simulationTimeSeconds();
-		save.ui.trailsEnabled = ui.traces.settings().enabled;
-		save.ui.relativeTrails = ui.traces.settings().relative;
-		save.ui.predictionsEnabled = ui.showPredictions;
-		save.ui.alwaysShowNames = ui.showAlwaysNames;
-		save.ui.followSelected = ui.selection.followEnabled();
-		save.ui.creationRelativeFrame = ui.creation.relativeFrame();
-		save.ui.negativeMass = ui.creation.negativeMass();
-		save.ui.creationDensity = ui.creation.density();
-		save.ui.predictionSteps = ui.predictor.settings().steps;
-		save.ui.predictionDt = ui.predictor.settings().dt;
-		save.ui.predictionRecalcIntervalSeconds =
-		    ui.predictor.settings().predictionRecalcIntervalSeconds;
-		save.ui.presetIndex = ui.presetIndex;
-		save.camera.center = renderer.view().getCenter();
-		save.camera.size = renderer.view().getSize();
-		save.bodies.reserve(bodies.size());
-		for (const sim::BodySnapshot& b : bodies) {
-			save.bodies.push_back(sim::SpawnCommand{
-			    .x = b.x,
-			    .y = b.y,
-			    .vx = b.vx,
-			    .vy = b.vy,
-			    .mass = b.mass,
-			    .radius = b.radius,
-			    .name = b.name,
-			});
-		}
-
-		std::string error;
-		if (io::Persistence::save(*path, save, error)) {
-			setStatus("Saved to " + *path, 3.5);
-		} else {
-			setStatus("Save failed: " + error, 4.5);
-		}
-	};
-
-	auto dispatchPersistenceLoad = [&]() {
-		const std::optional<std::string> path =
-		    io::NativeFileDialog::pickOpenPath("Load Simulation", "pgsim");
-		if (!path.has_value()) {
-			return;
-		}
-		io::PersistedWorldState loaded;
-		std::string error;
-		if (!io::Persistence::load(*path, loaded, error)) {
-			setStatus("Load failed: " + error, 4.5);
-			return;
-		}
-
-		engine.queueReplaceWorld(loaded.bodies);
-		engine.setMode(loaded.simConfig.mode);
-		engine.setTimeScale(loaded.simConfig.timeScale);
-		engine.setFixedDt(loaded.simConfig.fixedDtSeconds);
-		engine.setRealtimeDtOutlierClamp(loaded.simConfig.realtimeDtWindowSize,
-		                                 loaded.simConfig.realtimeDtSpikeClampMultiplier,
-		                                 loaded.simConfig.realtimeDtClampWarmupSamples);
-		engine.setGravityConstant(loaded.simConfig.gravitationalConstant);
-		engine.setSoftening(loaded.simConfig.softeningEpsilon);
-		engine.setTheta(loaded.simConfig.barnesHutTheta);
-		engine.setCollisionCellScale(loaded.simConfig.collisionCellScale);
-		engine.setCollisionStepInterval(loaded.simConfig.collisionStepInterval);
-		engine.setWorkerCount(loaded.simConfig.workerCount);
-		engine.setParallelChunkSize(loaded.simConfig.parallelChunkSize);
-		engine.setChunkPolicy(loaded.simConfig.chunkPolicy);
-		engine.setDirectSerialMaxBodies(loaded.simConfig.directSerialMaxBodies);
-		engine.setDirectParallelMaxBodies(loaded.simConfig.directParallelMaxBodies);
-		engine.setSimulationTimer(loaded.simulationTimeSeconds);
-		engine.setPaused(loaded.simConfig.paused);
-
-		ui.creation.setDensity(loaded.ui.creationDensity);
-		ui.creation.setNegativeMass(loaded.ui.negativeMass);
-		if (ui.creation.relativeFrame() != loaded.ui.creationRelativeFrame) {
-			ui.creation.toggleRelativeFrame();
-		}
-		ui.selection.setFollow(loaded.ui.followSelected);
-		ui.showPredictions = loaded.ui.predictionsEnabled;
-		ui.showAlwaysNames = loaded.ui.alwaysShowNames;
-		auto traceSettings = ui.traces.settings();
-		traceSettings.enabled = loaded.ui.trailsEnabled;
-		traceSettings.relative = loaded.ui.relativeTrails;
-		ui.traces.setSettings(traceSettings);
-		auto predictorSettings = ui.predictor.settings();
-		predictorSettings.steps = loaded.ui.predictionSteps;
-		predictorSettings.dt = loaded.ui.predictionDt;
-		predictorSettings.predictionRecalcIntervalSeconds =
-		    loaded.ui.predictionRecalcIntervalSeconds;
-		ui.predictor.setSettings(predictorSettings);
-		ui.presetIndex = loaded.ui.presetIndex;
-		renderer.setViewCenter(loaded.camera.center);
-		renderer.setViewSize(loaded.camera.size);
-		ui.selection.clear();
-		ui.traces.clear();
-		pendingCreationName.clear();
-		setStatus("Loaded " + *path, 3.5);
-	};
-
 	auto dispatchAction = [&](ui::Action action) {
 		switch (action) {
 			case ui::Action::ToggleMenu:
@@ -357,9 +405,6 @@ int main() {
 					break;
 				}
 				engine.togglePaused();
-				break;
-			case ui::Action::ToggleMode:
-				engine.toggleMode();
 				break;
 			case ui::Action::ToggleFullscreen:
 				fullscreen = !fullscreen;
@@ -440,27 +485,33 @@ int main() {
 				ui.selection.clear();
 				ui.traces.clear();
 			} break;
-			case ui::Action::SaveWorld:
-				dispatchPersistenceSave();
-				break;
-			case ui::Action::LoadWorld:
-				dispatchPersistenceLoad();
-				break;
 			case ui::Action::RandomScenario:
+				if (multiplayer) {
+					break;
+				}
 				applyScenario(scenario::ScenarioManager::makeRandom(100000, 0.0, 0.0, 1e11));
 				break;
 			case ui::Action::ClearScenario:
+				if (multiplayer) {
+					break;
+				}
 				engine.queueClearAll();
 				ui.selection.clear();
 				ui.traces.clear();
 				break;
 			case ui::Action::NextPreset:
+				if (multiplayer) {
+					break;
+				}
 				if (!ui.presetNames.empty()) {
 					ui.presetIndex = (ui.presetIndex + 1) % ui.presetNames.size();
 					applyScenario(scenario::ScenarioManager::makePreset(ui.presetIndex));
 				}
 				break;
 			case ui::Action::PrevPreset:
+				if (multiplayer) {
+					break;
+				}
 				if (!ui.presetNames.empty()) {
 					ui.presetIndex =
 					    (ui.presetIndex + ui.presetNames.size() - 1) % ui.presetNames.size();
@@ -477,10 +528,15 @@ int main() {
 				return;
 			}
 			engine.togglePaused();
-		} else if (action.itemId == "sim.mode") {
-			engine.toggleMode();
 		} else if (action.itemId == "sim.timescale" && action.adjustDelta != 0) {
-			engine.scaleTimeBy(action.adjustDelta > 0 ? 1.2 : (1.0 / 1.2));
+			if (multiplayer) {
+				setStatus(
+				    "Multiplayer: time scale is set on the server (potato_gsim_server [port] "
+				    "[timeScale]).",
+				    4.0);
+			} else {
+				engine.scaleTimeBy(action.adjustDelta > 0 ? 1.2 : (1.0 / 1.2));
+			}
 		} else if (action.itemId == "sim.theta" && action.adjustDelta != 0) {
 			engine.setTheta(cfg.barnesHutTheta + action.adjustDelta * 0.03);
 		} else if (action.itemId == "sim.softening" && action.adjustDelta != 0) {
@@ -581,18 +637,22 @@ int main() {
 			}
 			predictorSettings.predictionRecalcIntervalSeconds = std::clamp(next, 0.0, 2.0);
 			ui.predictor.setSettings(predictorSettings);
-		} else if (action.itemId == "action.save") {
-			dispatchPersistenceSave();
-		} else if (action.itemId == "action.load") {
-			dispatchPersistenceLoad();
 		} else if (action.itemId == "action.random") {
-			dispatchAction(ui::Action::RandomScenario);
+			if (!multiplayer) {
+				dispatchAction(ui::Action::RandomScenario);
+			}
 		} else if (action.itemId == "action.clear") {
-			dispatchAction(ui::Action::ClearScenario);
+			if (!multiplayer) {
+				dispatchAction(ui::Action::ClearScenario);
+			}
 		} else if (action.itemId == "action.prevpreset") {
-			dispatchAction(ui::Action::PrevPreset);
+			if (!multiplayer) {
+				dispatchAction(ui::Action::PrevPreset);
+			}
 		} else if (action.itemId == "action.nextpreset") {
-			dispatchAction(ui::Action::NextPreset);
+			if (!multiplayer) {
+				dispatchAction(ui::Action::NextPreset);
+			}
 		} else if (action.itemId == "action.resettimer") {
 			dispatchAction(ui::Action::ResetTimer);
 		} else if (action.itemId == "action.resetframe") {
@@ -607,8 +667,6 @@ int main() {
 	double fps = 0.0;
 	const auto currentSimSecondsPerRealSecond = [&engine]() {
 		const sim::SimulationConfig liveCfg = engine.config();
-		// While paused, measured throughput is stale by definition; always derive
-		// from current config so time-scale edits immediately affect UI/tools.
 		if (!liveCfg.paused) {
 			const double measured = engine.simulatedSecondsPerRealSecond();
 			if (std::isfinite(measured) && measured > 0.0) {
@@ -618,9 +676,6 @@ int main() {
 		if (!std::isfinite(liveCfg.timeScale) || liveCfg.timeScale <= 0.0) {
 			return 1.0;
 		}
-		if (liveCfg.mode == sim::SimulationMode::DeterministicFixedStep) {
-			return liveCfg.timeScale * std::max(1.0, engine.updatesPerSecond());
-		}
 		return liveCfg.timeScale;
 	};
 	const auto panView = [&](const sf::Vector2i& pixelDelta) {
@@ -628,7 +683,8 @@ int main() {
 		renderer.panByPixels(pixelDelta);
 		if (ui.selection.followEnabled() && followViewOffset.has_value()) {
 			const sf::Vector2f after = renderer.view().getCenter();
-			*followViewOffset += (after - before);
+			followViewOffset->first += static_cast<double>(after.x - before.x);
+			followViewOffset->second += static_cast<double>(after.y - before.y);
 		}
 	};
 
@@ -672,7 +728,9 @@ int main() {
 						leftDragMaySelect = false;
 					}
 				}
-				ui.creation.updateCursor(renderer.screenToWorld(moved->position));
+				const render::Renderer::WorldCoordsD mw = renderer.screenToWorldD(moved->position);
+				ui.creation.updateCursor(
+				    sf::Vector2f(static_cast<float>(mw.x), static_cast<float>(mw.y)));
 			}
 			if (const auto* mousePressed = event->getIf<sf::Event::MouseButtonPressed>()) {
 				if (ui.menu.active()) {
@@ -692,7 +750,9 @@ int main() {
 					continue;
 				}
 
-				const sf::Vector2f world = renderer.screenToWorld(mousePressed->position);
+				const render::Renderer::WorldCoordsD wd =
+				    renderer.screenToWorldD(mousePressed->position);
+				const sf::Vector2f world(static_cast<float>(wd.x), static_cast<float>(wd.y));
 				if (mousePressed->button == sf::Mouse::Button::Left) {
 					if (ui.creation.enabled()) {
 						if (creationPauseState.onCreationClickStart(
@@ -710,12 +770,16 @@ int main() {
 						const std::optional<sim::SpawnCommand> spawn = ui.creation.handleLeftClick(
 						    world, selectedBody, currentSimSecondsPerRealSecond());
 						if (spawn.has_value()) {
-							sim::SpawnCommand namedSpawn = *spawn;
-							namedSpawn.name = pendingCreationName;
-							engine.queueSpawn(namedSpawn);
-							pendingCreationName.clear();
-							if (ui.creation.negativeMass() && ui.showNegativeMassWarning) {
-								setStatus("Negative-mass spawn created (advanced mode).", 3.0);
+							if (multiplayer) {
+								setStatus("Creation is disabled in multiplayer.", 2.0);
+							} else {
+								sim::SpawnCommand namedSpawn = *spawn;
+								namedSpawn.name = pendingCreationName;
+								engine.queueSpawn(namedSpawn);
+								pendingCreationName.clear();
+								if (ui.creation.negativeMass() && ui.showNegativeMassWarning) {
+									setStatus("Negative-mass spawn created (advanced mode).", 3.0);
+								}
 							}
 						}
 					} else {
@@ -725,8 +789,11 @@ int main() {
 						leftDownPixel = mousePressed->position;
 					}
 				} else if (mousePressed->button == sf::Mouse::Button::Right) {
-					const double pickRadius = std::max(1.0f, renderer.worldUnitsPerPixel() * 20.0f);
-					engine.queueDeleteNearest(world.x, world.y, pickRadius);
+					if (!multiplayer) {
+						const double pickRadius =
+						    std::max(1.0f, renderer.worldUnitsPerPixel() * 20.0f);
+						engine.queueDeleteNearest(world.x, world.y, pickRadius);
+					}
 				}
 			}
 			if (const auto* mouseReleased = event->getIf<sf::Event::MouseButtonReleased>()) {
@@ -736,10 +803,15 @@ int main() {
 				if (mouseReleased->button == sf::Mouse::Button::Left) {
 					if (leftPanning && leftDragMaySelect && !ui.menu.active() &&
 					    !ui.creation.enabled()) {
-						const sf::Vector2f world = renderer.screenToWorld(mouseReleased->position);
+						const render::Renderer::WorldCoordsD wrel =
+						    renderer.screenToWorldD(mouseReleased->position);
+						const sf::Vector2f world(static_cast<float>(wrel.x),
+						                         static_cast<float>(wrel.y));
 						const auto worldToScreenDistance = [&](const sf::Vector2f& delta) -> float {
-							const sf::Vector2i p0 = renderer.worldToPixel(sf::Vector2f(0.0f, 0.0f));
-							const sf::Vector2i p1 = renderer.worldToPixel(delta);
+							const sf::Vector2i p0 = renderer.worldToPixelD(wrel.x, wrel.y);
+							const sf::Vector2i p1 =
+							    renderer.worldToPixelD(wrel.x + static_cast<double>(delta.x),
+							                           wrel.y + static_cast<double>(delta.y));
 							const sf::Vector2f diff(static_cast<float>(p1.x - p0.x),
 							                        static_cast<float>(p1.y - p0.y));
 							return std::sqrt(diff.x * diff.x + diff.y * diff.y);
@@ -819,8 +891,9 @@ int main() {
 		const bool creationInProgress = ui.creation.enabled() && ui.creation.isInProgress();
 		creationPauseState.tick(ui.creation.enabled(), creationInProgress, engine);
 
-		const ui::HoldAdjustments holds = ui.input.computeHolds(frameDt, !ui.menu.active());
-		if (holds.timeScaleFactor != 1.0) {
+		const ui::HoldAdjustments holds =
+		    ui.input.computeHolds(frameDt, !ui.menu.active(), !multiplayer);
+		if (holds.timeScaleFactor != 1.0 && !multiplayer) {
 			engine.scaleTimeBy(holds.timeScaleFactor);
 		}
 		if (holds.densityFactor != 1.0) {
@@ -837,7 +910,228 @@ int main() {
 		renderer.update(frameDt);
 		if (ui.selection.followEnabled() && followViewOffset.has_value()) {
 			const sf::Vector2f viewCenterAfterUpdate = renderer.view().getCenter();
-			*followViewOffset += (viewCenterAfterUpdate - viewCenterBeforeUpdate);
+			followViewOffset->first +=
+			    static_cast<double>(viewCenterAfterUpdate.x - viewCenterBeforeUpdate.x);
+			followViewOffset->second +=
+			    static_cast<double>(viewCenterAfterUpdate.y - viewCenterBeforeUpdate.y);
+		}
+
+		if (multiplayer && mpClient.has_value()) {
+			mpClient->service(0);
+			if (!mpJoinRequestSent && mpClient->isPeerConnected()) {
+				mpClient->sendJoinRequest();
+				mpJoinRequestSent = true;
+			}
+			std::uint64_t joinTick = 0;
+			std::uint64_t joinGlobalPhysicsStep = 0;
+			std::vector<sim::AuthoritativeBody> joinBodies;
+			sim::BodyId joinOwn = 0;
+			double joinTimeScale = 1.0;
+			mpClient->takeJoinAccept(joinTick, joinGlobalPhysicsStep, joinBodies, joinOwn,
+			                         joinTimeScale);
+			if (!joinBodies.empty()) {
+				std::vector<sim::AuthoritativeBody> joinReplaySeed = joinBodies;
+				engine.queueApplyAuthoritativeSnapshot(std::move(joinBodies));
+				engine.setTimeScale(joinTimeScale);
+				mpOwnShipId = joinOwn;
+				mpSessionJoined = true;
+				if (mpOwnShipId != 0) {
+					ui.selection.setSelected(mpOwnShipId);
+				}
+				engine.copyBodies(bodies);
+				std::vector<sim::SpawnCommand> fitBodies;
+				fitBodies.reserve(bodies.size());
+				for (const sim::BodySnapshot& b : bodies) {
+					fitBodies.push_back(sim::SpawnCommand{
+					    .x = b.x,
+					    .y = b.y,
+					    .vx = b.vx,
+					    .vy = b.vy,
+					    .mass = b.mass,
+					    .radius = b.radius,
+					    .name = b.name,
+					});
+				}
+				fitViewToBodies(renderer, fitBodies);
+				mpHudServerTick = joinTick;
+				mpWallPhysicsDebt = 0.0;
+				mpClientPhysicsHead = joinGlobalPhysicsStep;
+				mpLastConfirmedAuthorityStep = joinGlobalPhysicsStep;
+				mpReplay.seedAfterJoin(joinGlobalPhysicsStep, std::move(joinReplaySeed));
+				setStatus("Joined multiplayer session.", 2.5);
+			}
+			if (mpSessionJoined) {
+				bool hadMerge = false;
+				std::uint64_t mergeTick = 0;
+				std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
+				mpClient->takeMergeRemaps(mergeTick, netMerges, hadMerge);
+				if (hadMerge) {
+					for (const auto& pr : netMerges) {
+						engine.queueDelete(pr.first);
+					}
+					ui.selection.applyMergeRemap(netMerges);
+					ui.traces.applyMergeRemap(netMerges);
+					mpReplay.clear();
+				}
+
+				mpClient->takeShipSamples(mpInboundShips);
+				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
+					MpShipReplica& rep = mpShipReplica[s.bodyId];
+					rep.facing = s.facingRadians;
+					rep.thrustForward = s.thrustForward;
+					rep.thrustReverse = s.thrustReverse;
+					rep.lastTick = s.serverTick;
+				}
+
+				mpPendingWorldHad = false;
+				mpClient->takeWorldSnapshot(mpPendingWorldTick, mpPendingWorldGlobalStep,
+				                            mpPendingWorldIds, mpPendingWorldPx, mpPendingWorldPy,
+				                            mpPendingWorldVx, mpPendingWorldVy, mpPendingWorldHad);
+
+				if (mpOwnShipId != 0) {
+					double facing = 0.0;
+					if (const std::optional<sim::BodySnapshot> self =
+					        engine.bodyById(mpOwnShipId)) {
+						const render::Renderer::WorldCoordsD mouseWorld =
+						    renderer.screenToWorldD(sf::Mouse::getPosition(window));
+						facing = std::atan2(mouseWorld.y - self->y, mouseWorld.x - self->x);
+					} else if (const auto it = mpShipReplica.find(mpOwnShipId);
+					           it != mpShipReplica.end()) {
+						facing = static_cast<double>(it->second.facing);
+					}
+					net::ClientInputPayload in{};
+					in.seq = ++mpInputSeq;
+					in.thrustForward = static_cast<std::uint8_t>(
+					    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ||
+					            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)
+					        ? 1
+					        : 0);
+					in.thrustReverse = static_cast<std::uint8_t>(
+					    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ||
+					            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down)
+					        ? 1
+					        : 0);
+					in.facingRadians = static_cast<float>(facing);
+					mpClient->sendInput(in);
+				}
+			}
+		}
+
+		if (multiplayer && mpSessionJoined) {
+			const sim::SimulationConfig physicsCfg = engine.config();
+			if (!physicsCfg.paused) {
+				const double ts =
+				    (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
+				        ? physicsCfg.timeScale
+				        : 1.0;
+				const double dtSim = net::simulationDtFromTimeScale(ts);
+
+				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
+					mpHudServerTick = std::max(mpHudServerTick, s.serverTick);
+				}
+				if (mpPendingWorldHad) {
+					mpHudServerTick = std::max(mpHudServerTick, mpPendingWorldTick);
+				}
+
+				std::unordered_set<sim::BodyId> shipDynamicsFromNet;
+				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
+					shipDynamicsFromNet.insert(s.bodyId);
+				}
+				for (const auto& idRep : mpShipReplica) {
+					shipDynamicsFromNet.insert(idRep.first);
+				}
+				if (mpOwnShipId != 0) {
+					shipDynamicsFromNet.insert(mpOwnShipId);
+				}
+
+				std::map<std::uint64_t, std::vector<sim::BodyDynamicsPatch>> stepPatches;
+				if (mpPendingWorldHad) {
+					auto& into = stepPatches[mpPendingWorldGlobalStep];
+					for (std::size_t i = 0; i < mpPendingWorldIds.size(); ++i) {
+						if (shipDynamicsFromNet.count(mpPendingWorldIds[i]) != 0) {
+							continue;
+						}
+						into.push_back(sim::BodyDynamicsPatch{
+						    .id = mpPendingWorldIds[i],
+						    .x = mpPendingWorldPx[i],
+						    .y = mpPendingWorldPy[i],
+						    .vx = mpPendingWorldVx[i],
+						    .vy = mpPendingWorldVy[i],
+						});
+					}
+				}
+				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
+					stepPatches[s.globalPhysicsStep].push_back(sim::BodyDynamicsPatch{
+					    .id = s.bodyId,
+					    .x = s.px,
+					    .y = s.py,
+					    .vx = s.vx,
+					    .vy = s.vy,
+					});
+				}
+
+				std::vector<std::uint64_t> stepKeys;
+				stepKeys.reserve(stepPatches.size());
+				for (const auto& pr : stepPatches) {
+					stepKeys.push_back(pr.first);
+				}
+				std::sort(stepKeys.begin(), stepKeys.end());
+				for (const std::uint64_t S : stepKeys) {
+					const auto itSp = stepPatches.find(S);
+					if (itSp == stepPatches.end()) {
+						continue;
+					}
+					std::vector<sim::BodyDynamicsPatch> patches = std::move(itSp->second);
+					const std::uint64_t H = mpClientPhysicsHead;
+					if (S < H) {
+						if (!rewindReplayAuthority(mpReplay, engine, S, H, physicsCfg,
+						                           std::move(patches))) {
+							std::fprintf(
+							    stderr,
+							    "potato_gsim: MP replay horizon exceeded; resyncing buffer\n");
+							std::vector<sim::AuthoritativeBody> snap;
+							net::copyBodiesToAuthoritative(engine, snap);
+							mpReplay.clear();
+							mpReplay.seedAfterJoin(mpClientPhysicsHead, std::move(snap));
+						} else {
+							mpClientPhysicsHead = H;
+						}
+					} else if (S > H) {
+						catchUpPhysicsHead(mpReplay, engine, S - H, physicsCfg, mpShipReplica,
+						                   mpClientPhysicsHead);
+						if (!patches.empty()) {
+							engine.queuePatchBodyDynamics(std::move(patches));
+						}
+					} else {
+						if (!patches.empty()) {
+							engine.queuePatchBodyDynamics(std::move(patches));
+						}
+					}
+					mpLastConfirmedAuthorityStep = std::max(mpLastConfirmedAuthorityStep, S);
+				}
+
+				mpWallPhysicsDebt += frameDt;
+				mpWallPhysicsDebt = std::min(mpWallPhysicsDebt, net::kMaxWallPhysicsDebtSeconds);
+				int stepBudget = 0;
+				while (mpWallPhysicsDebt >= net::kRealSecondsPerPhysicsStep &&
+				       stepBudget < net::kMaxCatchUpPhysicsStepsPerFrame) {
+					if (mpClientPhysicsHead >=
+					    mpLastConfirmedAuthorityStep + net::kMaxPredictionLeadPhysicsSteps) {
+						break;
+					}
+					std::vector<net::ShipThrustSample> thrust;
+					collectReplicaThrustSamples(mpShipReplica, thrust);
+					net::applyShipThrustSamples(engine, thrust);
+					engine.advanceFixedStep(dtSim, physicsCfg);
+					++mpClientPhysicsHead;
+					std::vector<sim::AuthoritativeBody> bodiesAfter;
+					net::copyBodiesToAuthoritative(engine, bodiesAfter);
+					mpReplay.recordAfterPhysicsStep(mpClientPhysicsHead, std::move(bodiesAfter),
+					                                std::vector<net::ShipThrustSample>(thrust));
+					mpWallPhysicsDebt -= net::kRealSecondsPerPhysicsStep;
+					++stepBudget;
+				}
+			}
 		}
 
 		const sim::SimulationConfig cfg = engine.config();
@@ -866,19 +1160,27 @@ int main() {
 		     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
 		        ? selectedBody
 		        : std::nullopt;
-		if (ui.selection.followEnabled() && selectedBody.has_value()) {
-			const sf::Vector2f currentSelectedPos(static_cast<float>(selectedBody->x),
-			                                      static_cast<float>(selectedBody->y));
+		const bool followCamNow = ui.selection.followEnabled() && selectedBody.has_value();
+		if (followCamNow) {
+			renderer.setWorldOriginForRendering(selectedBody->x, selectedBody->y);
+			const double sx = selectedBody->x;
+			const double sy = selectedBody->y;
 			if (!trackedFollowId.has_value() || *trackedFollowId != selectedBody->id ||
 			    !followViewOffset.has_value()) {
-				followViewOffset = renderer.view().getCenter() - currentSelectedPos;
+				const render::Renderer::WorldCoordsD cc = renderer.cameraWorldCenter();
+				followViewOffset = {cc.x - sx, cc.y - sy};
 			}
-			renderer.setViewCenter(currentSelectedPos + *followViewOffset);
+			renderer.setCameraWorldCenterDouble(sx + followViewOffset->first,
+			                                    sy + followViewOffset->second);
 			trackedFollowId = selectedBody->id;
 		} else {
+			if (wasFollowCamera) {
+				renderer.clearWorldRenderingOrigin();
+			}
 			trackedFollowId.reset();
 			followViewOffset.reset();
 		}
+		wasFollowCamera = followCamNow;
 		const std::optional<sim::BodySnapshot> selectedForCreation =
 		    (selectedBody.has_value() &&
 		     (ui.creation.relativeFrame() || ui.selection.followEnabled()))
@@ -887,15 +1189,22 @@ int main() {
 		if (const std::optional<sf::Vector2i> autoStartPixel =
 		        creationPauseState.consumeAutoStartPixel();
 		    autoStartPixel.has_value() && !ui.creation.isInProgress()) {
-			const sf::Vector2f startWorld = renderer.screenToWorld(*autoStartPixel);
+			const render::Renderer::WorldCoordsD sw = renderer.screenToWorldD(*autoStartPixel);
+			const sf::Vector2f startWorld(static_cast<float>(sw.x), static_cast<float>(sw.y));
 			(void)ui.creation.handleLeftClick(startWorld, selectedForCreation,
 			                                  currentSimSecondsPerRealSecond());
 		}
-		ui.creation.updateCursor(renderer.screenToWorld(sf::Mouse::getPosition(window)),
-		                         selectedForCreation);
+		{
+			const render::Renderer::WorldCoordsD cw =
+			    renderer.screenToWorldD(sf::Mouse::getPosition(window));
+			ui.creation.updateCursor(
+			    sf::Vector2f(static_cast<float>(cw.x), static_cast<float>(cw.y)),
+			    selectedForCreation);
+		}
 		selectedBodyForInput = selectedBody;
 		ui.traces.ingest(bodies, engine.simulationTimeSeconds());
-		const sf::Vector2f cursorWorld = renderer.screenToWorld(sf::Mouse::getPosition(window));
+		const render::Renderer::WorldCoordsD cursorWorldD =
+		    renderer.screenToWorldD(sf::Mouse::getPosition(window));
 		std::optional<sim::BodySnapshot> hoveredBody;
 		const double worldUnitsPerPixel =
 		    std::max(1e-9, static_cast<double>(renderer.worldUnitsPerPixel()));
@@ -906,8 +1215,8 @@ int main() {
 			if (selectedBody.has_value() && b.id == selectedBody->id) {
 				continue;
 			}
-			const double dx = b.x - cursorWorld.x;
-			const double dy = b.y - cursorWorld.y;
+			const double dx = b.x - cursorWorldD.x;
+			const double dy = b.y - cursorWorldD.y;
 			const double centerDistance = std::sqrt(dx * dx + dy * dy);
 			const double surfaceDistancePx =
 			    std::max(0.0, centerDistance - b.radius) / worldUnitsPerPixel;
@@ -943,14 +1252,9 @@ int main() {
 		const double simSecondsPerUpdate =
 		    (engine.simulatedSecondsPerUpdate() > 0.0)
 		        ? engine.simulatedSecondsPerUpdate()
-		        : ((cfg.mode == sim::SimulationMode::DeterministicFixedStep)
-		               ? cfg.timeScale
-		               : predictorSettings.dt);
-		const std::string timeScaleDisplay =
-		    (cfg.mode == sim::SimulationMode::DeterministicFixedStep)
-		        ? (ui::formatTimeLegacy(displayTimeRate) + "/s (" +
-		           ui::formatTimeLegacy(simSecondsPerUpdate) + "/U)")
-		        : (ui::formatTimeLegacy(cfg.timeScale) + "/s");
+		        : ((std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale : 1.0);
+		const std::string timeScaleDisplay = ui::formatTimeLegacy(displayTimeRate) + "/s (" +
+		                                     ui::formatTimeLegacy(simSecondsPerUpdate) + "/U)";
 		const std::string predictWindowDisplay =
 		    formatFixed(predictorSettings.realTimeHorizonSeconds, 2) + " s real (" +
 		    ui::formatTimeLegacy(predictWindowSimSeconds) + " sim)";
@@ -1040,10 +1344,6 @@ int main() {
 
 		std::vector<ui::MenuItem> menuItems{
 		    {"sim.pause", "Simulation Paused", cfg.paused ? "On" : "Off", false},
-		    {"sim.mode", "Mode",
-		     cfg.mode == sim::SimulationMode::DeterministicFixedStep ? "Deterministic"
-		                                                             : "Real-time",
-		     false},
 		    {"sim.timescale", "Time Speed", timeScaleDisplay, true},
 		    {"sim.theta", "Barnes-Hut Theta", formatFixed(cfg.barnesHutTheta), true},
 		    {"sim.softening", "Softening Epsilon", ui::formatDistanceLegacy(cfg.softeningEpsilon),
@@ -1084,8 +1384,6 @@ int main() {
 		    {"predict.realtime_window", "Prediction Horizon (Real Time)", predictWindowDisplay,
 		     true},
 		    {"predict.steps", "Prediction Steps", std::to_string(predictorSettings.steps), true},
-		    {"action.save", "Save World", "F9", false},
-		    {"action.load", "Load World", "F10", false},
 		    {"action.random", "Random Scenario", "F5", false},
 		    {"action.clear", "Clear World", "F6", false},
 		    {"action.prevpreset", "Previous Preset", "F7", false},
@@ -1100,23 +1398,33 @@ int main() {
 		ui.menu.setItems(menuItems);
 
 		renderer.draw(bodies);
-		ui.traces.draw(window, selectedBody);
+		{
+			double rox = 0.0;
+			double roy = 0.0;
+			bool useRo = false;
+			renderer.worldRenderingOrigin(rox, roy, useRo);
+			ui.traces.draw(window, selectedBody, rox, roy, useRo);
+		}
 
 		if (ui.creation.enabled() && ui.creation.isInProgress()) {
 			sf::Vector2f anchor = ui.creation.anchor();
 			const float radius = ui.creation.previewRadius();
 			sf::Vector2f cursor = ui.creation.cursor();
+			const sf::Vector2f anchorL = renderer.worldToRenderLocal(static_cast<double>(anchor.x),
+			                                                         static_cast<double>(anchor.y));
+			const sf::Vector2f cursorL = renderer.worldToRenderLocal(static_cast<double>(cursor.x),
+			                                                         static_cast<double>(cursor.y));
 			sf::CircleShape ghost(radius);
 			ghost.setOrigin(sf::Vector2f(radius, radius));
-			ghost.setPosition(anchor);
+			ghost.setPosition(anchorL);
 			ghost.setFillColor(sf::Color(255, 255, 255, 35));
 			ghost.setOutlineColor(sf::Color(230, 230, 255, 160));
 			ghost.setOutlineThickness(std::max(0.04f, radius * 0.08f));
 			window.draw(ghost);
 
 			sf::VertexArray arrow(sf::PrimitiveType::Lines, 2);
-			arrow[0].position = anchor;
-			arrow[1].position = cursor;
+			arrow[0].position = anchorL;
+			arrow[1].position = cursorL;
 			arrow[0].color = sf::Color(255, 170, 120, 210);
 			arrow[1].color = sf::Color(255, 170, 120, 210);
 			window.draw(arrow);
@@ -1124,7 +1432,9 @@ int main() {
 			if (ui.showPredictions && !creationPrediction.empty()) {
 				sf::VertexArray strip(sf::PrimitiveType::LineStrip, creationPrediction.size());
 				for (std::size_t i = 0; i < creationPrediction.size(); ++i) {
-					strip[i].position = creationPrediction[i];
+					strip[i].position =
+					    renderer.worldToRenderLocal(static_cast<double>(creationPrediction[i].x),
+					                                static_cast<double>(creationPrediction[i].y));
 					strip[i].color = sf::Color(255, 220, 120, 150);
 				}
 				window.draw(strip);
@@ -1168,9 +1478,9 @@ int main() {
 					previewInfo += "\nd=" + ui::formatDistanceLegacy(distanceToSelected);
 				}
 
-				const sf::Vector2i anchorPx = renderer.worldToPixel(anchor);
+				const sf::Vector2i anchorPx = renderer.worldToPixelD(previewX, previewY);
 				const sf::Vector2i radiusEdgePx =
-				    renderer.worldToPixel(anchor + sf::Vector2f(radius, 0.0f));
+				    renderer.worldToPixelD(previewX + static_cast<double>(radius), previewY);
 				const float radiusPx =
 				    std::max(1.0f, static_cast<float>(std::abs(radiusEdgePx.x - anchorPx.x)));
 				sf::Text text(*infoFont, previewInfo, 12);
@@ -1190,14 +1500,17 @@ int main() {
 			}
 		}
 
-		const auto worldToPixel = [&](const sf::Vector2f& world) {
-			return renderer.worldToPixel(world);
+		const auto worldToRenderLocal = [&](double x, double y) {
+			return renderer.worldToRenderLocal(x, y);
 		};
+		const auto worldToPixel = [&](double x, double y) { return renderer.worldToPixelD(x, y); };
 		overlay.drawWorldSelection(window, selectedBody, std::nullopt, selectedPrediction,
-		                           std::nullopt, displayTimeRate, true, false, worldToPixel);
+		                           std::nullopt, displayTimeRate, true, false, worldToRenderLocal,
+		                           worldToPixel);
 		if (ui.showHoverLabels) {
 			overlay.drawWorldSelection(window, hoveredBody, selectedBody, {}, std::nullopt,
-			                           displayTimeRate, false, true, worldToPixel);
+			                           displayTimeRate, false, true, worldToRenderLocal,
+			                           worldToPixel);
 		}
 		if (ui.showAlwaysNames) {
 			overlay.drawLabels(window, bodies, ui.selection.selectedId(), worldToPixel,
@@ -1207,47 +1520,36 @@ int main() {
 		if (std::chrono::steady_clock::now() > statusUntil) {
 			ui.statusMessage.clear();
 		}
-		std::vector<std::string> hudLines{
-		    "Bodies: " + std::to_string(engine.bodyCount()) + " | Preset: " +
-		        (ui.presetNames.empty() ? std::string("n/a")
-		                                : ui.presetNames[ui.presetIndex % ui.presetNames.size()]),
-		    "Mode: " +
-		        std::string(cfg.mode == sim::SimulationMode::DeterministicFixedStep
-		                        ? "Deterministic"
-		                        : "Real-time") +
-		        " | Time speed: " + timeScaleDisplay +
-		        " | Timer: " + ui::formatTimeLegacy(engine.simulationTimeSeconds()) + " (" +
-		        formatScientific(engine.simulationTimeSeconds()) + " s)",
-		    "Scale: " + scaleDisplay + " | Predict time: " + predictWindowDisplay,
-		    "Theta: " + formatFixed(cfg.barnesHutTheta) +
-		        " | Epsilon: " + ui::formatDistanceLegacy(cfg.softeningEpsilon) +
-		        " | G: " + formatScientific(cfg.gravitationalConstant),
-		    "Workers: " + std::to_string(cfg.workerCount) + " (0=auto)" +
-		        " | UPS: " + std::to_string(round3(engine.updatesPerSecond())) +
-		        " | FPS: " + std::to_string(round3(fps)),
-		    "Direct serial<= " + std::to_string(cfg.directSerialMaxBodies) +
-		        " | Direct parallel<= " + std::to_string(cfg.directParallelMaxBodies) +
-		        " | Collision interval: " + std::to_string(cfg.collisionStepInterval) +
-		        " | Chunk: " +
-		        (cfg.parallelChunkSize == 0 ? std::string("auto")
-		                                    : std::to_string(cfg.parallelChunkSize)) +
-		        " (" +
-		        std::string(cfg.chunkPolicy == sim::ChunkPolicy::DynamicClaim ? "dynamic"
-		                                                                      : "static") +
-		        ")",
-		    "Create density(kg/m^3): " + formatFixed(ui.creation.density(), 1) +
-		        " | Negative mass: " + std::string(ui.creation.negativeMass() ? "On" : "Off") +
-		        " | Relative frame: " +
-		        std::string(ui.creation.relativeFrame() ? "Selected" : "World"),
-		    "Trails: " + std::string(ui.traces.settings().enabled ? "On" : "Off") +
-		        " | Relative trails: " + std::string(ui.traces.settings().relative ? "On" : "Off") +
-		        " | Predictions: " + std::string(ui.showPredictions ? "On" : "Off") +
-		        " | Selected pred: " +
-		        std::string(ui.showSelectedBodyPrediction ? "On" : "Off") +
-		        " | Horizon steps: " + std::to_string(ui.predictor.settings().steps) +
-		        " | Pred recalc: " + predictIntervalDisplay +
-		        " | Always names: " + std::string(ui.showAlwaysNames ? "On" : "Off"),
-		};
+		std::vector<std::string> hudLines;
+		if (multiplayer) {
+			if (!mpSessionJoined) {
+				hudLines.push_back("Multiplayer: connecting to " + std::string(mpHost) + ":" +
+				                   std::to_string(static_cast<unsigned>(mpPort)) + "…");
+			} else {
+				const sim::SimulationConfig liveCfg = engine.config();
+				const double ts = (std::isfinite(liveCfg.timeScale) && liveCfg.timeScale > 0.0)
+				                      ? liveCfg.timeScale
+				                      : 1.0;
+				hudLines.push_back("Multiplayer: tick " + std::to_string(mpHudServerTick) +
+				                   " | ship id " + std::to_string(mpOwnShipId) + " | sim speed " +
+				                   ui::formatTimeLegacy(ts) +
+				                   "/s real | 240 phys steps/s wall, Δt_sim=scale/240 (server: "
+				                   "potato_gsim_server …)");
+			}
+		}
+		hudLines.push_back("Bodies: " + std::to_string(engine.bodyCount()) + " | Preset: " +
+		                   (ui.presetNames.empty()
+		                        ? std::string("n/a")
+		                        : ui.presetNames[ui.presetIndex % ui.presetNames.size()]));
+		hudLines.push_back("Time speed: " + timeScaleDisplay +
+		                   " | Timer: " + ui::formatTimeLegacy(engine.simulationTimeSeconds()) +
+		                   " (" + formatScientific(engine.simulationTimeSeconds()) + " s)");
+		hudLines.push_back("Scale: " + scaleDisplay + " | Predict: " + predictWindowDisplay +
+		                   " | UPS: " + std::to_string(round3(engine.updatesPerSecond())) +
+		                   " | FPS: " + std::to_string(round3(fps)));
+		hudLines.push_back("Trails: " + std::string(ui.traces.settings().enabled ? "On" : "Off") +
+		                   " | Predictions: " + std::string(ui.showPredictions ? "On" : "Off") +
+		                   " | Labels: " + std::string(ui.showHoverLabels ? "On" : "Off"));
 		if (ui.showDebugInfo) {
 			hudLines.push_back("Debug chunks: " + std::to_string(debugStats.chunkSize) + " (" +
 			                   std::string(debugStats.chunkPolicy) + ") | collision phase: " +
@@ -1314,6 +1616,10 @@ int main() {
 		window.display();
 	}
 
+	if (multiplayer) {
+		mpClient.reset();
+		enet_deinitialize();
+	}
 	engine.stop();
 	return 0;
 }

@@ -8,7 +8,6 @@
 
 int main() {
 	sim::SimulationConfig cfg;
-	cfg.mode = sim::SimulationMode::DeterministicFixedStep;
 	cfg.timeScale = 3600.0;
 	cfg.fixedDtSeconds = 1.0 / 240.0;
 	cfg.gravitationalConstant = 6.67430e-11;

@@ -12,3 +12,6 @@ CMakeCache.txt
 CmakeFiles/
 cmake_install.cmake
 Makefile
+DartConfiguration.tcl
+CTestTestfile.cmake
+_deps/

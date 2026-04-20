@@ -37,7 +37,8 @@ void UniformGrid::build(const std::vector<double>& posX,
 	double maxRadius = 0.0;
 	for (double r : radius) {
 		avgRadius += r;
-		if (r > maxRadius) maxRadius = r;
+		if (r > maxRadius)
+			maxRadius = r;
 	}
 	avgRadius /= static_cast<double>(radius.size());
 	cellSize_ = std::max({1.0, avgRadius * std::max(1.0, cellScale), 2.0 * maxRadius});

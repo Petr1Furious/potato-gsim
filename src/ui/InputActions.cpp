@@ -14,8 +14,6 @@ std::optional<Action> InputActions::mapKeyPress(sf::Keyboard::Key key, bool menu
 			return Action::ToggleFullscreen;
 		case sf::Keyboard::Key::Space:
 			return menuActive ? std::nullopt : std::optional<Action>(Action::TogglePause);
-		case sf::Keyboard::Key::M:
-			return menuActive ? std::nullopt : std::optional<Action>(Action::ToggleMode);
 		case sf::Keyboard::Key::R:
 			return menuActive ? std::nullopt : std::optional<Action>(Action::ResetView);
 		case sf::Keyboard::Key::F:
@@ -52,16 +50,14 @@ std::optional<Action> InputActions::mapKeyPress(sf::Keyboard::Key key, bool menu
 			return menuActive ? std::nullopt : std::optional<Action>(Action::PrevPreset);
 		case sf::Keyboard::Key::F8:
 			return menuActive ? std::nullopt : std::optional<Action>(Action::NextPreset);
-		case sf::Keyboard::Key::F9:
-			return menuActive ? std::nullopt : std::optional<Action>(Action::SaveWorld);
-		case sf::Keyboard::Key::F10:
-			return menuActive ? std::nullopt : std::optional<Action>(Action::LoadWorld);
 		default:
 			return std::nullopt;
 	}
 }
 
-HoldAdjustments InputActions::computeHolds(double dtSeconds, bool enabled) const {
+HoldAdjustments InputActions::computeHolds(const double dtSeconds,
+                                           const bool enabled,
+                                           const bool keyboardPanKeys) const {
 	HoldAdjustments out{};
 	if (!enabled) {
 		return out;
@@ -96,21 +92,23 @@ HoldAdjustments InputActions::computeHolds(double dtSeconds, bool enabled) const
 		out.predictionFactor /= base;
 	}
 
-	if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A) ||
-	    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Left)) {
-		out.panPixelsX += panSpeedPxPerSecond * dtSeconds;
-	}
-	if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D) ||
-	    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Right)) {
-		out.panPixelsX -= panSpeedPxPerSecond * dtSeconds;
-	}
-	if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ||
-	    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)) {
-		out.panPixelsY += panSpeedPxPerSecond * dtSeconds;
-	}
-	if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ||
-	    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down)) {
-		out.panPixelsY -= panSpeedPxPerSecond * dtSeconds;
+	if (keyboardPanKeys) {
+		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A) ||
+		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Left)) {
+			out.panPixelsX += panSpeedPxPerSecond * dtSeconds;
+		}
+		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D) ||
+		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Right)) {
+			out.panPixelsX -= panSpeedPxPerSecond * dtSeconds;
+		}
+		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ||
+		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)) {
+			out.panPixelsY += panSpeedPxPerSecond * dtSeconds;
+		}
+		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ||
+		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down)) {
+			out.panPixelsY -= panSpeedPxPerSecond * dtSeconds;
+		}
 	}
 	return out;
 }
@@ -121,12 +119,12 @@ std::vector<std::string> InputActions::legendLines(bool menuActive) const {
 	}
 	return {
 	    "Esc close menu | Up/Down select | Enter apply | Left/Right adjust",
-	    "Space pause | M mode | F follow | C create | V rel-frame | N negative-mass",
+	    "Space pause | F follow | C create | V rel-frame | N negative-mass",
 	    "WASD/Arrows move | Left/Middle drag pan | Wheel zoom",
 	    ",/. time-scale | -/= density | [/] prediction steps",
 	    "L trails | T relative trails | P predictions | O selected prediction",
 	    "H hover labels | F3 debug",
-	    "F5 random | F6 clear | F7/F8 preset | F9 save | F10 load",
+	    "F5 random | F6 clear | F7/F8 preset",
 	};
 }
 

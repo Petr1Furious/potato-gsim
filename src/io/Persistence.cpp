@@ -11,7 +11,7 @@ namespace io {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x5047534D;  // PGSM
-constexpr std::uint32_t kVersion = 5;
+constexpr std::uint32_t kVersion = 6;
 constexpr std::uint32_t kMaxBodies = 1'000'000;
 constexpr std::uint32_t kMaxBodyNameBytes = 512;
 
@@ -85,18 +85,15 @@ bool Persistence::save(const std::string& path,
 	}
 
 	const sim::SimulationConfig& cfg = world.simConfig;
-	const std::uint32_t mode = static_cast<std::uint32_t>(cfg.mode);
 	const std::uint32_t chunkPolicy = static_cast<std::uint32_t>(cfg.chunkPolicy);
 	const std::uint8_t paused = cfg.paused ? 1u : 0u;
-	if (!writeRaw(out, mode) || !writeRaw(out, paused) || !writeRaw(out, cfg.timeScale) ||
-	    !writeRaw(out, cfg.fixedDtSeconds) || !writeRaw(out, cfg.realtimeDtWindowSize) ||
-	    !writeRaw(out, cfg.realtimeDtSpikeClampMultiplier) ||
-	    !writeRaw(out, cfg.realtimeDtClampWarmupSamples) ||
-	    !writeRaw(out, cfg.gravitationalConstant) || !writeRaw(out, cfg.softeningEpsilon) ||
-	    !writeRaw(out, cfg.barnesHutTheta) || !writeRaw(out, cfg.collisionCellScale) ||
-	    !writeRaw(out, cfg.collisionStepInterval) || !writeRaw(out, cfg.workerCount) ||
-	    !writeRaw(out, cfg.parallelChunkSize) || !writeRaw(out, chunkPolicy) ||
-	    !writeRaw(out, cfg.directSerialMaxBodies) || !writeRaw(out, cfg.directParallelMaxBodies) ||
+	if (!writeRaw(out, paused) || !writeRaw(out, cfg.timeScale) ||
+	    !writeRaw(out, cfg.fixedDtSeconds) || !writeRaw(out, cfg.gravitationalConstant) ||
+	    !writeRaw(out, cfg.softeningEpsilon) || !writeRaw(out, cfg.barnesHutTheta) ||
+	    !writeRaw(out, cfg.collisionCellScale) || !writeRaw(out, cfg.collisionStepInterval) ||
+	    !writeRaw(out, cfg.workerCount) || !writeRaw(out, cfg.parallelChunkSize) ||
+	    !writeRaw(out, chunkPolicy) || !writeRaw(out, cfg.directSerialMaxBodies) ||
+	    !writeRaw(out, cfg.directParallelMaxBodies) ||
 	    !writeRaw(out, world.simulationTimeSeconds)) {
 		errorOut = "Failed writing simulation metadata";
 		return false;
@@ -158,7 +155,7 @@ bool Persistence::load(const std::string& path,
 		errorOut = "Invalid file magic";
 		return false;
 	}
-	if (version != kVersion) {
+	if (version != kVersion && version != 5) {
 		errorOut = "Unsupported file version";
 		return false;
 	}
@@ -174,28 +171,51 @@ bool Persistence::load(const std::string& path,
 	}
 
 	PersistedWorldState loaded{};
-	std::uint32_t mode = 0;
 	std::uint32_t chunkPolicy = 0;
 	std::uint8_t paused = 0;
-	if (!readRaw(in, mode) || !readRaw(in, paused) || !readRaw(in, loaded.simConfig.timeScale) ||
-	    !readRaw(in, loaded.simConfig.fixedDtSeconds) ||
-	    !readRaw(in, loaded.simConfig.realtimeDtWindowSize) ||
-	    !readRaw(in, loaded.simConfig.realtimeDtSpikeClampMultiplier) ||
-	    !readRaw(in, loaded.simConfig.realtimeDtClampWarmupSamples) ||
-	    !readRaw(in, loaded.simConfig.gravitationalConstant) ||
-	    !readRaw(in, loaded.simConfig.softeningEpsilon) ||
-	    !readRaw(in, loaded.simConfig.barnesHutTheta) ||
-	    !readRaw(in, loaded.simConfig.collisionCellScale) ||
-	    !readRaw(in, loaded.simConfig.collisionStepInterval) ||
-	    !readRaw(in, loaded.simConfig.workerCount) ||
-	    !readRaw(in, loaded.simConfig.parallelChunkSize) || !readRaw(in, chunkPolicy) ||
-	    !readRaw(in, loaded.simConfig.directSerialMaxBodies) ||
-	    !readRaw(in, loaded.simConfig.directParallelMaxBodies) ||
-	    !readRaw(in, loaded.simulationTimeSeconds)) {
-		errorOut = "Failed reading simulation metadata";
-		return false;
+	if (version == 6) {
+		if (!readRaw(in, paused) || !readRaw(in, loaded.simConfig.timeScale) ||
+		    !readRaw(in, loaded.simConfig.fixedDtSeconds) ||
+		    !readRaw(in, loaded.simConfig.gravitationalConstant) ||
+		    !readRaw(in, loaded.simConfig.softeningEpsilon) ||
+		    !readRaw(in, loaded.simConfig.barnesHutTheta) ||
+		    !readRaw(in, loaded.simConfig.collisionCellScale) ||
+		    !readRaw(in, loaded.simConfig.collisionStepInterval) ||
+		    !readRaw(in, loaded.simConfig.workerCount) ||
+		    !readRaw(in, loaded.simConfig.parallelChunkSize) || !readRaw(in, chunkPolicy) ||
+		    !readRaw(in, loaded.simConfig.directSerialMaxBodies) ||
+		    !readRaw(in, loaded.simConfig.directParallelMaxBodies) ||
+		    !readRaw(in, loaded.simulationTimeSeconds)) {
+			errorOut = "Failed reading simulation metadata";
+			return false;
+		}
+	} else {
+		std::uint32_t mode = 0;
+		std::size_t legacyRealtimeWindow = 0;
+		double legacySpike = 0.0;
+		std::size_t legacyWarmup = 0;
+		if (!readRaw(in, mode) || !readRaw(in, paused) ||
+		    !readRaw(in, loaded.simConfig.timeScale) ||
+		    !readRaw(in, loaded.simConfig.fixedDtSeconds) || !readRaw(in, legacyRealtimeWindow) ||
+		    !readRaw(in, legacySpike) || !readRaw(in, legacyWarmup) ||
+		    !readRaw(in, loaded.simConfig.gravitationalConstant) ||
+		    !readRaw(in, loaded.simConfig.softeningEpsilon) ||
+		    !readRaw(in, loaded.simConfig.barnesHutTheta) ||
+		    !readRaw(in, loaded.simConfig.collisionCellScale) ||
+		    !readRaw(in, loaded.simConfig.collisionStepInterval) ||
+		    !readRaw(in, loaded.simConfig.workerCount) ||
+		    !readRaw(in, loaded.simConfig.parallelChunkSize) || !readRaw(in, chunkPolicy) ||
+		    !readRaw(in, loaded.simConfig.directSerialMaxBodies) ||
+		    !readRaw(in, loaded.simConfig.directParallelMaxBodies) ||
+		    !readRaw(in, loaded.simulationTimeSeconds)) {
+			errorOut = "Failed reading simulation metadata";
+			return false;
+		}
+		(void)mode;
+		(void)legacyRealtimeWindow;
+		(void)legacySpike;
+		(void)legacyWarmup;
 	}
-	loaded.simConfig.mode = static_cast<sim::SimulationMode>(mode);
 	loaded.simConfig.chunkPolicy = static_cast<sim::ChunkPolicy>(chunkPolicy);
 	loaded.simConfig.paused = paused != 0;
 
@@ -247,11 +267,6 @@ bool Persistence::load(const std::string& path,
 
 	if (!finiteOrFail(loaded.simulationTimeSeconds) || !finiteOrFail(loaded.simConfig.timeScale) ||
 	    !finiteOrFail(loaded.simConfig.fixedDtSeconds) ||
-	    loaded.simConfig.realtimeDtWindowSize < 1 ||
-	    loaded.simConfig.realtimeDtClampWarmupSamples < 1 ||
-	    loaded.simConfig.realtimeDtClampWarmupSamples > loaded.simConfig.realtimeDtWindowSize ||
-	    !finiteOrFail(loaded.simConfig.realtimeDtSpikeClampMultiplier) ||
-	    loaded.simConfig.realtimeDtSpikeClampMultiplier < 1.0 ||
 	    !finiteOrFail(loaded.simConfig.gravitationalConstant) ||
 	    !finiteOrFail(loaded.simConfig.softeningEpsilon) ||
 	    !finiteOrFail(loaded.simConfig.barnesHutTheta) ||

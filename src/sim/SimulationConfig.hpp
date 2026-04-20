@@ -6,19 +6,10 @@
 
 namespace sim {
 
-enum class SimulationMode { DeterministicFixedStep, RealTimeVariableStep };
-
 struct SimulationConfig {
-	SimulationMode mode = SimulationMode::DeterministicFixedStep;
+	/// Wall-clock seconds × timeScale = simulated seconds per integration step (simple clamp).
 	double timeScale = 1.0;
-
-	// Deterministic mode
 	double fixedDtSeconds = 1.0 / 120.0;
-
-	// Real-time mode (wall-dt outlier clamping)
-	std::size_t realtimeDtWindowSize = 120;
-	double realtimeDtSpikeClampMultiplier = 6.0;
-	std::size_t realtimeDtClampWarmupSamples = 16;
 
 	// Gravity and Barnes-Hut controls
 	double gravitationalConstant = 6.67430e-11;

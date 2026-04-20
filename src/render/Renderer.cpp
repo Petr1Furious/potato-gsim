@@ -26,10 +26,46 @@ void applyZoomStep(sf::RenderWindow& window,
 Renderer::Renderer(sf::RenderWindow& window) : window_(window), view_(window.getDefaultView()) {
 	circle_.setFillColor(sf::Color(180, 220, 255));
 	enforceAspectRatio();
+	refreshCameraWorldFromView();
+}
+
+void Renderer::refreshCameraWorldFromView() {
+	const sf::Vector2f lc = view_.getCenter();
+	const double ox = useWorldOrigin_ ? worldOriginX_ : 0.0;
+	const double oy = useWorldOrigin_ ? worldOriginY_ : 0.0;
+	cameraWorldX_ = static_cast<double>(lc.x) + ox;
+	cameraWorldY_ = static_cast<double>(lc.y) + oy;
+}
+
+void Renderer::setWorldOriginForRendering(double ox, double oy) {
+	useWorldOrigin_ = true;
+	worldOriginX_ = ox;
+	worldOriginY_ = oy;
+	view_.setCenter(sf::Vector2f(static_cast<float>(cameraWorldX_ - ox),
+	                             static_cast<float>(cameraWorldY_ - oy)));
+}
+
+void Renderer::clearWorldRenderingOrigin() {
+	useWorldOrigin_ = false;
+	worldOriginX_ = worldOriginY_ = 0.0;
+	view_.setCenter(
+	    sf::Vector2f(static_cast<float>(cameraWorldX_), static_cast<float>(cameraWorldY_)));
+}
+
+void Renderer::setCameraWorldCenterDouble(double cx, double cy) {
+	cameraWorldX_ = cx;
+	cameraWorldY_ = cy;
+	const double ox = useWorldOrigin_ ? worldOriginX_ : 0.0;
+	const double oy = useWorldOrigin_ ? worldOriginY_ : 0.0;
+	view_.setCenter(sf::Vector2f(static_cast<float>(cx - ox), static_cast<float>(cy - oy)));
 }
 
 void Renderer::resetView() {
 	view_ = window_.getDefaultView();
+	enforceAspectRatio();
+	useWorldOrigin_ = false;
+	worldOriginX_ = worldOriginY_ = 0.0;
+	refreshCameraWorldFromView();
 }
 
 void Renderer::onResize(const sf::Vector2u& size) {
@@ -81,20 +117,44 @@ void Renderer::update(double dtSeconds) {
 	const float appliedSteps = zoomPendingSteps_ * smoothing;
 	zoomPendingSteps_ -= appliedSteps;
 	applyZoomStep(window_, view_, zoomAnchorPixel_, appliedSteps);
+	refreshCameraWorldFromView();
 }
 
 void Renderer::panByPixels(const sf::Vector2i& pixelDelta) {
 	const float scaleX = view_.getSize().x / static_cast<float>(window_.getSize().x);
 	const float scaleY = view_.getSize().y / static_cast<float>(window_.getSize().y);
 	view_.move(sf::Vector2f(-pixelDelta.x * scaleX, -pixelDelta.y * scaleY));
+	refreshCameraWorldFromView();
+}
+
+Renderer::WorldCoordsD Renderer::screenToWorldD(const sf::Vector2i& pixel) const {
+	const sf::Vector2f local = window_.mapPixelToCoords(pixel, view_);
+	const double ox = useWorldOrigin_ ? worldOriginX_ : 0.0;
+	const double oy = useWorldOrigin_ ? worldOriginY_ : 0.0;
+	return {static_cast<double>(local.x) + ox, static_cast<double>(local.y) + oy};
 }
 
 sf::Vector2f Renderer::screenToWorld(const sf::Vector2i& pixel) const {
-	return window_.mapPixelToCoords(pixel, view_);
+	const WorldCoordsD w = screenToWorldD(pixel);
+	return {static_cast<float>(w.x), static_cast<float>(w.y)};
+}
+
+sf::Vector2i Renderer::worldToPixelD(double worldX, double worldY) const {
+	const double ox = useWorldOrigin_ ? worldOriginX_ : 0.0;
+	const double oy = useWorldOrigin_ ? worldOriginY_ : 0.0;
+	const float lx = static_cast<float>(worldX - ox);
+	const float ly = static_cast<float>(worldY - oy);
+	return window_.mapCoordsToPixel(sf::Vector2f(lx, ly), view_);
 }
 
 sf::Vector2i Renderer::worldToPixel(const sf::Vector2f& world) const {
-	return window_.mapCoordsToPixel(world, view_);
+	return worldToPixelD(static_cast<double>(world.x), static_cast<double>(world.y));
+}
+
+sf::Vector2f Renderer::worldToRenderLocal(double worldX, double worldY) const {
+	const double ox = useWorldOrigin_ ? worldOriginX_ : 0.0;
+	const double oy = useWorldOrigin_ ? worldOriginY_ : 0.0;
+	return {static_cast<float>(worldX - ox), static_cast<float>(worldY - oy)};
 }
 
 float Renderer::worldUnitsPerPixel() const {
@@ -104,6 +164,9 @@ float Renderer::worldUnitsPerPixel() const {
 void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
 	window_.setView(view_);
 	window_.clear(sf::Color(8, 10, 16));
+
+	const double ox = useWorldOrigin_ ? worldOriginX_ : 0.0;
+	const double oy = useWorldOrigin_ ? worldOriginY_ : 0.0;
 
 	const float pixelsPerWorld = 1.0f / worldUnitsPerPixel();
 	const sf::Vector2f viewCenter = view_.getCenter();
@@ -116,7 +179,9 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
 
 	for (const sim::BodySnapshot& body : bodies) {
 		const float radiusPx = static_cast<float>(body.radius) * pixelsPerWorld;
-		const sf::Vector2f pos(static_cast<float>(body.x), static_cast<float>(body.y));
+		const float px = static_cast<float>(body.x - ox);
+		const float py = static_cast<float>(body.y - oy);
+		const sf::Vector2f pos(px, py);
 		const float worldRadius = static_cast<float>(body.radius);
 		if (pos.x + worldRadius < viewMinX || pos.x - worldRadius > viewMaxX ||
 		    pos.y + worldRadius < viewMinY || pos.y - worldRadius > viewMaxY) {

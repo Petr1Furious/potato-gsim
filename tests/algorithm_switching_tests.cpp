@@ -77,7 +77,6 @@ std::optional<sim::BodySnapshot> waitForSingleBody(
 
 bool testBoundarySwitching() {
 	sim::SimulationConfig cfg;
-	cfg.mode = sim::SimulationMode::DeterministicFixedStep;
 	cfg.timeScale = 1.0;
 	cfg.gravitationalConstant = 0.0;
 	cfg.collisionStepInterval = 8;
@@ -121,7 +120,6 @@ bool testThresholdClamping() {
 
 bool testMergeSurvivorSelection() {
 	sim::SimulationConfig cfg;
-	cfg.mode = sim::SimulationMode::DeterministicFixedStep;
 	cfg.timeScale = 0.01;
 	cfg.gravitationalConstant = 0.0;
 	cfg.collisionStepInterval = 1;

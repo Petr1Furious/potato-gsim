@@ -273,36 +273,6 @@ void SimulationEngine::setSimulationTimer(double seconds) {
 	simulatedSeconds_ = std::max(0.0, seconds);
 }
 
-void SimulationEngine::setMode(SimulationMode mode) {
-	updateConfig([this, mode](SimulationConfig& cfg) {
-		if (cfg.mode == mode) {
-			return;
-		}
-		double ups = updatesPerSecond_.load(std::memory_order_relaxed);
-		if (!std::isfinite(ups) || ups < 1.0) {
-			ups = 1.0;
-		}
-		if (cfg.mode == SimulationMode::RealTimeVariableStep &&
-		    mode == SimulationMode::DeterministicFixedStep) {
-			cfg.timeScale /= ups;
-		} else if (cfg.mode == SimulationMode::DeterministicFixedStep &&
-		           mode == SimulationMode::RealTimeVariableStep) {
-			cfg.timeScale *= ups;
-		}
-		if (!std::isfinite(cfg.timeScale) || cfg.timeScale <= 0.0) {
-			cfg.timeScale = 1.0;
-		}
-		cfg.mode = mode;
-	});
-}
-
-void SimulationEngine::toggleMode() {
-	const SimulationConfig cfg = currentConfig();
-	setMode(cfg.mode == SimulationMode::DeterministicFixedStep
-	            ? SimulationMode::RealTimeVariableStep
-	            : SimulationMode::DeterministicFixedStep);
-}
-
 void SimulationEngine::setPaused(bool paused) {
 	updateConfig([paused](SimulationConfig& cfg) { cfg.paused = paused; });
 }
@@ -346,21 +316,6 @@ void SimulationEngine::setFixedDt(double fixedDtSeconds) {
 		if (std::isfinite(fixedDtSeconds) && fixedDtSeconds > 0.0) {
 			cfg.fixedDtSeconds = fixedDtSeconds;
 		}
-	});
-}
-
-void SimulationEngine::setRealtimeDtOutlierClamp(std::size_t windowSize,
-                                                 double spikeClampMultiplier,
-                                                 std::size_t warmupSamples) {
-	updateConfig([windowSize, spikeClampMultiplier, warmupSamples](SimulationConfig& cfg) {
-		const std::size_t safeWindow = std::max<std::size_t>(1, windowSize);
-		const std::size_t safeWarmup =
-		    std::min(safeWindow, std::max<std::size_t>(1, warmupSamples));
-		if (std::isfinite(spikeClampMultiplier) && spikeClampMultiplier >= 1.0) {
-			cfg.realtimeDtSpikeClampMultiplier = spikeClampMultiplier;
-		}
-		cfg.realtimeDtWindowSize = safeWindow;
-		cfg.realtimeDtClampWarmupSamples = safeWarmup;
 	});
 }
 
@@ -473,11 +428,6 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 	std::uint64_t lastPauseAckedSeq = pauseAckSeq_.load(std::memory_order_relaxed);
 	std::size_t stepsSinceUpsSample = 0;
 	double simulatedSecondsSinceSample = 0.0;
-	SimulationMode lastMode = currentConfig().mode;
-	std::vector<double> realtimeDtWindow;
-	std::size_t realtimeDtWrite = 0;
-	std::size_t realtimeDtCount = 0;
-	double realtimeDtSum = 0.0;
 
 	while (!stopToken.stop_requested()) {
 		const SimulationConfig cfg = currentConfig();
@@ -493,20 +443,6 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 		const double elapsed = std::chrono::duration<double>(now - lastTick).count();
 		lastTick = now;
 
-		if (cfg.mode != lastMode) {
-			lastMode = cfg.mode;
-			stepsSinceUpsSample = 0;
-			simulatedSecondsSinceSample = 0.0;
-			lastUpsSample = now;
-			realtimeDtWrite = 0;
-			realtimeDtCount = 0;
-			realtimeDtSum = 0.0;
-			realtimeDtWindow.clear();
-			updatesPerSecond_.store(0.0, std::memory_order_relaxed);
-			simulatedSecondsPerRealSecond_.store(0.0, std::memory_order_relaxed);
-			simulatedSecondsPerUpdate_.store(0.0, std::memory_order_relaxed);
-		}
-
 		if (!running_.load(std::memory_order_acquire)) {
 			break;
 		}
@@ -516,63 +452,21 @@ void SimulationEngine::simulationLoop(std::stop_token stopToken) {
 			continue;
 		}
 
-		if (cfg.mode == SimulationMode::DeterministicFixedStep) {
-			// Legacy-accurate mode: fixed simulation seconds per update.
-			const double dt =
-			    std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0 ? cfg.timeScale : 1.0;
-			step(dt, cfg);
-			++stepsSinceUpsSample;
-			simulatedSecondsSinceSample += dt;
-		} else {
-			const std::size_t windowSize = std::max<std::size_t>(1, cfg.realtimeDtWindowSize);
-			if (realtimeDtWindow.size() != windowSize) {
-				realtimeDtWindow.assign(windowSize, 0.0);
-				realtimeDtWrite = 0;
-				realtimeDtCount = 0;
-				realtimeDtSum = 0.0;
-			}
-
-			double wallDt = std::max(0.0, elapsed);
-			if (!std::isfinite(wallDt) || wallDt <= 0.0) {
-				continue;
-			}
-
-			double avgDt = wallDt;
-			if (realtimeDtCount > 0) {
-				avgDt = realtimeDtSum / static_cast<double>(realtimeDtCount);
-			}
-			const std::size_t warmup =
-			    std::min(windowSize, std::max<std::size_t>(1, cfg.realtimeDtClampWarmupSamples));
-			const double spikeMultiplier = (std::isfinite(cfg.realtimeDtSpikeClampMultiplier) &&
-			                                cfg.realtimeDtSpikeClampMultiplier >= 1.0)
-			                                   ? cfg.realtimeDtSpikeClampMultiplier
-			                                   : 1.0;
-			const bool hasFullRealtimeDtWindow = realtimeDtCount >= windowSize;
-			if (hasFullRealtimeDtWindow && realtimeDtCount >= warmup) {
-				wallDt = std::min(wallDt, avgDt * spikeMultiplier);
-			}
-
-			if (realtimeDtCount < windowSize) {
-				realtimeDtWindow[realtimeDtWrite] = wallDt;
-				realtimeDtSum += wallDt;
-				++realtimeDtCount;
-			} else {
-				realtimeDtSum -= realtimeDtWindow[realtimeDtWrite];
-				realtimeDtWindow[realtimeDtWrite] = wallDt;
-				realtimeDtSum += wallDt;
-			}
-			realtimeDtWrite = (realtimeDtWrite + 1) % windowSize;
-
-			const double dt =
-			    wallDt *
-			    (std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0 ? cfg.timeScale : 1.0);
-			if (!std::isfinite(dt) || dt <= 0.0) {
-				continue;
-			}
-			step(dt, cfg);
-			++stepsSinceUpsSample;
-			simulatedSecondsSinceSample += dt;
+		double wallDt = std::max(0.0, elapsed);
+		if (!std::isfinite(wallDt) || wallDt <= 0.0) {
+			continue;
 		}
+		const double ts =
+		    (std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale : 1.0;
+		// Single-step wall scaling (no rolling window). Cap dt to limit hitches.
+		constexpr double kMaxSimStepSeconds = 0.25;
+		const double dt = std::min(wallDt * ts, kMaxSimStepSeconds);
+		if (!std::isfinite(dt) || dt <= 0.0) {
+			continue;
+		}
+		step(dt, cfg);
+		++stepsSinceUpsSample;
+		simulatedSecondsSinceSample += dt;
 
 		const double sampleWindow =
 		    std::chrono::duration<double>(clock::now() - lastUpsSample).count();
@@ -727,8 +621,10 @@ void SimulationEngine::stepDirectPath(double dt,
 			}
 			acc1X_[i] = ax1;
 			acc1Y_[i] = ay1;
-			state.velX[i] += (acc0X_[i] + ax1) * halfDt;
-			state.velY[i] += (acc0Y_[i] + ay1) * halfDt;
+			const double tx = i < thrustX_.size() ? thrustX_[i] : 0.0;
+			const double ty = i < thrustY_.size() ? thrustY_[i] : 0.0;
+			state.velX[i] += (acc0X_[i] + ax1) * halfDt + tx * dt;
+			state.velY[i] += (acc0Y_[i] + ay1) * halfDt + ty * dt;
 			state.posX[i] = xi;
 			state.posY[i] = yi;
 		}
@@ -832,8 +728,10 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 			                                   cfg.gravitationalConstant, ax, ay, stats);
 			acc1X_[i] = ax;
 			acc1Y_[i] = ay;
-			state.velX[i] += (acc0X_[i] + ax) * halfDt;
-			state.velY[i] += (acc0Y_[i] + ay) * halfDt;
+			const double tx = i < thrustX_.size() ? thrustX_[i] : 0.0;
+			const double ty = i < thrustY_.size() ? thrustY_[i] : 0.0;
+			state.velX[i] += (acc0X_[i] + ax) * halfDt + tx * dt;
+			state.velY[i] += (acc0Y_[i] + ay) * halfDt + ty * dt;
 			state.posX[i] = predX_[i];
 			state.posY[i] = predY_[i];
 		}
@@ -877,6 +775,10 @@ void SimulationEngine::stepBarnesHutPath(double dt,
 	}
 
 	publishStepResult(writeIndex, dt, true, stepStart, debug);
+}
+
+void SimulationEngine::advanceFixedStep(const double dt, const SimulationConfig& cfg) {
+	step(dt, cfg);
 }
 
 void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
@@ -938,6 +840,7 @@ void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	predY_.resize(n);
 	acc1X_.resize(n);
 	acc1Y_.resize(n);
+	fillThrustArrays(state, idMap);
 
 	const bool runCollisionPhase = debug.collisionPhaseExecuted;
 	++stepCounter_;
@@ -960,6 +863,37 @@ void SimulationEngine::removeBodyAt(BodyState& state, IdIndexMap& idMap, std::ui
 	idMap.removeDenseIndex(denseIndex);
 }
 
+void SimulationEngine::fillThrustArrays(const BodyState& state, const IdIndexMap& idMap) {
+	const std::size_t n = state.size();
+	thrustX_.assign(n, 0.0);
+	thrustY_.assign(n, 0.0);
+	std::lock_guard<std::mutex> lock(thrustMutex_);
+	for (const auto& [id, a] : pendingThrustAccel_) {
+		const std::optional<std::uint32_t> d = idMap.denseIndexFor(id);
+		if (d.has_value() && *d < n) {
+			thrustX_[*d] += a.first;
+			thrustY_[*d] += a.second;
+		}
+	}
+	pendingThrustAccel_.clear();
+}
+
+void SimulationEngine::setShipThrustAccelWorld(BodyId id, double ax, double ay) {
+	if (id == 0) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(thrustMutex_);
+	pendingThrustAccel_[id] = {ax, ay};
+}
+
+void SimulationEngine::queueApplyAuthoritativeSnapshot(std::vector<AuthoritativeBody> bodies) {
+	commandQueue_.pushApplyAuthoritativeSnapshot(std::move(bodies));
+}
+
+void SimulationEngine::queuePatchBodyDynamics(std::vector<BodyDynamicsPatch> patches) {
+	commandQueue_.pushPatchDynamics(std::move(patches));
+}
+
 bool SimulationEngine::applyCommands(BodyState& state,
                                      IdIndexMap& idMap,
                                      const std::vector<SimCommand>& commands) {
@@ -979,6 +913,18 @@ bool SimulationEngine::applyCommands(BodyState& state,
 		if (command.type == SimCommand::Type::Spawn) {
 			spawnedOrReplaced = true;
 			applySpawn(command.spawn);
+			continue;
+		}
+
+		if (command.type == SimCommand::Type::ApplyAuthoritativeSnapshot) {
+			spawnedOrReplaced = true;
+			state.clear();
+			idMap.clear();
+			state.reserve(command.authoritativeBodies.size());
+			for (const AuthoritativeBody& b : command.authoritativeBodies) {
+				state.pushBack(b.x, b.y, b.vx, b.vy, b.mass, b.radius, b.name);
+				idMap.pushServerBody(b.id);
+			}
 			continue;
 		}
 
@@ -1007,9 +953,27 @@ bool SimulationEngine::applyCommands(BodyState& state,
 			continue;
 		}
 
-		const std::optional<std::uint32_t> idx = idMap.denseIndexFor(command.del.id);
-		if (idx.has_value()) {
-			removeBodyAt(state, idMap, *idx);
+		if (command.type == SimCommand::Type::PatchDynamics) {
+			for (const BodyDynamicsPatch& p : command.dynamicPatches) {
+				const std::optional<std::uint32_t> idx = idMap.denseIndexFor(p.id);
+				if (!idx.has_value() || *idx >= state.size()) {
+					continue;
+				}
+				const std::uint32_t i = *idx;
+				state.posX[i] = p.x;
+				state.posY[i] = p.y;
+				state.velX[i] = p.vx;
+				state.velY[i] = p.vy;
+			}
+			continue;
+		}
+
+		if (command.type == SimCommand::Type::Delete) {
+			const std::optional<std::uint32_t> idx = idMap.denseIndexFor(command.del.id);
+			if (idx.has_value()) {
+				removeBodyAt(state, idMap, *idx);
+			}
+			continue;
 		}
 	}
 	return spawnedOrReplaced;

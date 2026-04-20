@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(potato_gsim LANGUAGES CXX)
+project(potato_gsim LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,11 +11,24 @@ endif()
 
 find_package(SFML 3 REQUIRED COMPONENTS Graphics Window System)
 
+include(FetchContent)
+FetchContent_Declare(
+  enet
+  GIT_REPOSITORY https://github.com/lsalzman/enet.git
+  GIT_TAG        v1.3.18
+)
+set(BUILD_SHARED_LIBS OFF)
+FetchContent_MakeAvailable(enet)
+
+# ENet's CMakeLists uses directory-scoped include_directories; propagate for dependents.
+set(POTATO_GSIM_ENET_INCLUDE "${enet_SOURCE_DIR}/include")
+
 add_executable(
   potato_gsim
   main.cpp
-  src/io/NativeFileDialog.cpp
-  src/io/Persistence.cpp
+  src/net/MpClient.cpp
+  src/net/MpReplay.cpp
+  src/net/Protocol.cpp
   src/render/Renderer.cpp
   src/scenario/ScenarioManager.cpp
   src/sim/QuadTree.cpp
@@ -32,8 +45,31 @@ add_executable(
   src/ui/SelectionState.cpp
   src/ui/TraceStore.cpp
 )
-target_include_directories(potato_gsim PRIVATE src)
-target_link_libraries(potato_gsim PRIVATE SFML::Graphics SFML::Window SFML::System)
+target_include_directories(potato_gsim PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}")
+target_link_libraries(potato_gsim PRIVATE SFML::Graphics SFML::Window SFML::System enet)
+
+add_executable(
+  potato_gsim_server
+  src/server/main_server.cpp
+  src/net/Protocol.cpp
+  src/scenario/ScenarioManager.cpp
+  src/sim/QuadTree.cpp
+  src/sim/SimulationEngine.cpp
+  src/sim/ThreadPool.cpp
+  src/sim/UniformGrid.cpp
+)
+target_include_directories(potato_gsim_server PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}")
+target_link_libraries(potato_gsim_server PRIVATE enet)
+if(APPLE)
+  find_library(CF_LIBRARY CoreFoundation REQUIRED)
+  target_link_libraries(potato_gsim_server PRIVATE ${CF_LIBRARY})
+endif()
+if(UNIX AND NOT APPLE)
+  target_link_libraries(potato_gsim_server PRIVATE m)
+endif()
+if(WIN32)
+  target_link_libraries(potato_gsim_server PRIVATE winmm ws2_32)
+endif()
 
 if(MSVC)
   target_compile_options(potato_gsim PRIVATE /W4 /permissive-)
@@ -99,4 +135,12 @@ if(BUILD_TESTING)
   add_test(NAME parity_regression_tests COMMAND parity_regression_tests)
   add_test(NAME high_load_smoke COMMAND high_load_smoke)
   add_test(NAME algorithm_switching_tests COMMAND algorithm_switching_tests)
+
+  add_executable(
+    mp_protocol_v3_tests
+    tests/mp_protocol_v3_tests.cpp
+    src/net/Protocol.cpp
+  )
+  target_include_directories(mp_protocol_v3_tests PRIVATE src)
+  add_test(NAME mp_protocol_v3_tests COMMAND mp_protocol_v3_tests)
 endif()

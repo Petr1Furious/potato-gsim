@@ -60,6 +60,21 @@ class IdIndexMap {
 		return makeBodyId(slot, generation_[slot]);
 	}
 
+	/// Register a server-assigned `BodyId` for the next dense index (= current `size()`).
+	/// Used when rebuilding world from an authoritative snapshot (dense order matches push order).
+	void pushServerBody(BodyId id) {
+		const std::uint32_t dense = static_cast<std::uint32_t>(slotByIndex_.size());
+		const std::uint32_t slot = bodyIdSlot(id);
+		const std::uint32_t gen = bodyIdGeneration(id);
+		if (slot >= generation_.size()) {
+			generation_.resize(slot + 1, 0u);
+			indexBySlot_.resize(slot + 1, kInvalidIndex);
+		}
+		generation_[slot] = gen;
+		indexBySlot_[slot] = dense;
+		slotByIndex_.push_back(slot);
+	}
+
 	void removeDenseIndex(std::uint32_t denseIndex) {
 		const std::uint32_t lastDense = static_cast<std::uint32_t>(slotByIndex_.size() - 1);
 		const std::uint32_t removedSlot = slotByIndex_[denseIndex];

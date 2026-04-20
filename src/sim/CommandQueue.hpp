@@ -28,14 +28,43 @@ struct RenameCommand {
 	std::string name;
 };
 
+struct AuthoritativeBody {
+	BodyId id = 0;
+	double x = 0.0;
+	double y = 0.0;
+	double vx = 0.0;
+	double vy = 0.0;
+	double mass = 1.0;
+	double radius = 1.0;
+	std::string name;
+};
+
+struct BodyDynamicsPatch {
+	BodyId id = 0;
+	double x = 0.0;
+	double y = 0.0;
+	double vx = 0.0;
+	double vy = 0.0;
+};
+
 struct SimCommand {
-	enum class Type { Spawn, Delete, Rename, ClearAll, ReplaceWorld };
+	enum class Type {
+		Spawn,
+		Delete,
+		Rename,
+		ClearAll,
+		ReplaceWorld,
+		ApplyAuthoritativeSnapshot,
+		PatchDynamics
+	};
 
 	Type type = Type::Spawn;
 	SpawnCommand spawn;
 	DeleteCommand del;
 	RenameCommand rename;
 	std::vector<SpawnCommand> replacementBodies;
+	std::vector<AuthoritativeBody> authoritativeBodies;
+	std::vector<BodyDynamicsPatch> dynamicPatches{};
 };
 
 class CommandQueue {
@@ -88,6 +117,33 @@ class CommandQueue {
 		    .spawn = {},
 		    .del = {},
 		    .replacementBodies = bodies,
+		});
+	}
+
+	void pushApplyAuthoritativeSnapshot(std::vector<AuthoritativeBody> bodies) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		pending_.push_back(SimCommand{
+		    .type = SimCommand::Type::ApplyAuthoritativeSnapshot,
+		    .spawn = {},
+		    .del = {},
+		    .replacementBodies = {},
+		    .authoritativeBodies = std::move(bodies),
+		    .dynamicPatches = {},
+		});
+	}
+
+	void pushPatchDynamics(std::vector<BodyDynamicsPatch> patches) {
+		if (patches.empty()) {
+			return;
+		}
+		std::lock_guard<std::mutex> lock(mutex_);
+		pending_.push_back(SimCommand{
+		    .type = SimCommand::Type::PatchDynamics,
+		    .spawn = {},
+		    .del = {},
+		    .replacementBodies = {},
+		    .authoritativeBodies = {},
+		    .dynamicPatches = std::move(patches),
 		});
 	}
 
