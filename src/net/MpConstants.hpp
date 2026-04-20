@@ -20,7 +20,7 @@ inline double simulationDtFromTimeScale(const double timeScale) {
 }
 
 /// Must match server and client integration (m/s²).
-inline constexpr double kShipThrustAccel = 0.1;
+inline constexpr double kShipThrustAccel = 0.02;
 
 /// Legacy name: same as `kRealSecondsPerPhysicsStep` (fixed wall cadence).
 inline constexpr double kPhysicsDt = kRealSecondsPerPhysicsStep;

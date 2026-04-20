@@ -161,7 +161,9 @@ float Renderer::worldUnitsPerPixel() const {
 	return view_.getSize().x / std::max(1.0f, static_cast<float>(window_.getSize().x));
 }
 
-void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
+void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
+                    const std::optional<sim::BodyId> playerShipId,
+                    const std::optional<float> playerFacingRadians) {
 	window_.setView(view_);
 	window_.clear(sf::Color(8, 10, 16));
 
@@ -178,6 +180,7 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
 	sf::VertexArray points(sf::PrimitiveType::Points);
 
 	for (const sim::BodySnapshot& body : bodies) {
+		const bool isPlayer = playerShipId.has_value() && body.id == *playerShipId;
 		const float radiusPx = static_cast<float>(body.radius) * pixelsPerWorld;
 		const float px = static_cast<float>(body.x - ox);
 		const float py = static_cast<float>(body.y - oy);
@@ -187,7 +190,30 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies) {
 		    pos.y + worldRadius < viewMinY || pos.y - worldRadius > viewMaxY) {
 			continue;
 		}
-		if (radiusPx > 0.5f) {
+		if (isPlayer) {
+			const float facing = playerFacingRadians.value_or(0.0f);
+			const float minShipPx = 10.0f;
+			const float shipPx = std::max(minShipPx, std::max(radiusPx * 2.0f, 6.0f));
+			const float shipWorldRadius = shipPx * worldUnitsPerPixel() * 0.5f;
+			const sf::Vector2f tip(pos.x + std::cos(facing) * shipWorldRadius * 1.8f,
+			                       pos.y + std::sin(facing) * shipWorldRadius * 1.8f);
+			const sf::Vector2f back(pos.x - std::cos(facing) * shipWorldRadius * 1.0f,
+			                        pos.y - std::sin(facing) * shipWorldRadius * 1.0f);
+			const sf::Vector2f left(
+			    back.x + std::cos(facing + 1.5707963f) * shipWorldRadius * 0.9f,
+			    back.y + std::sin(facing + 1.5707963f) * shipWorldRadius * 0.9f);
+			const sf::Vector2f right(
+			    back.x + std::cos(facing - 1.5707963f) * shipWorldRadius * 0.9f,
+			    back.y + std::sin(facing - 1.5707963f) * shipWorldRadius * 0.9f);
+			sf::ConvexShape ship(3);
+			ship.setPoint(0, tip);
+			ship.setPoint(1, right);
+			ship.setPoint(2, left);
+			ship.setFillColor(sf::Color(255, 225, 150, 230));
+			ship.setOutlineColor(sf::Color(20, 20, 28, 230));
+			ship.setOutlineThickness(1.0f * worldUnitsPerPixel());
+			window_.draw(ship);
+		} else if (radiusPx > 0.5f) {
 			circle_.setRadius(worldRadius);
 			circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));
 			circle_.setPosition(pos);

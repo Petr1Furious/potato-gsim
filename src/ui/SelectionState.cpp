@@ -37,6 +37,7 @@ std::optional<sim::BodyId> SelectionState::pick(
     const sim::SimulationEngine& engine,
     const sf::Vector2f& worldPoint,
     const std::function<float(const sf::Vector2f&)>& worldToScreenDistance,
+    const std::optional<sim::BodyId> excludedBodyId,
     float maxScreenDistancePx) const {
 	std::optional<sim::BodyId> bestId;
 	float bestScreenDistance = maxScreenDistancePx;
@@ -44,6 +45,10 @@ std::optional<sim::BodyId> SelectionState::pick(
 
 	engine.withReadSnapshot([&](const sim::BodyState& state, const sim::IdIndexMap& idMap) {
 		for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(state.size()); ++i) {
+			const sim::BodyId currentId = idMap.idAtDenseIndex(i);
+			if (excludedBodyId.has_value() && currentId == *excludedBodyId) {
+				continue;
+			}
 			const sf::Vector2f pos(static_cast<float>(state.posX[i]),
 			                       static_cast<float>(state.posY[i]));
 			const float distPx = worldToScreenDistance(pos - worldPoint);
@@ -63,7 +68,7 @@ std::optional<sim::BodyId> SelectionState::pick(
 			if (betterDistance || betterMassTieBreak) {
 				bestScreenDistance = surfaceDist;
 				bestMass = massAbs;
-				bestId = idMap.idAtDenseIndex(i);
+				bestId = currentId;
 			}
 		}
 	});

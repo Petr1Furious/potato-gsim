@@ -75,7 +75,8 @@ void InspectorOverlay::drawArrow(sf::RenderWindow& window,
 void InspectorOverlay::drawWorldSelection(
     sf::RenderWindow& window,
     const std::optional<sim::BodySnapshot>& body,
-    const std::optional<sim::BodySnapshot>& referenceBody,
+    const std::optional<sim::BodySnapshot>& velocityReferenceBody,
+    const std::optional<sim::BodySnapshot>& distanceReferenceBody,
     const std::vector<sf::Vector2f>& selectedPrediction,
     const std::optional<sf::Vector2f>& creationVelocityTarget,
     double arrowScale,
@@ -90,9 +91,9 @@ void InspectorOverlay::drawWorldSelection(
 
 	double relVx = body->vx;
 	double relVy = body->vy;
-	if (referenceBody.has_value()) {
-		relVx -= referenceBody->vx;
-		relVy -= referenceBody->vy;
+	if (velocityReferenceBody.has_value()) {
+		relVx -= velocityReferenceBody->vx;
+		relVy -= velocityReferenceBody->vy;
 	}
 	sf::Vector2f velocityTargetR =
 	    creationVelocityTarget.has_value()
@@ -129,13 +130,15 @@ void InspectorOverlay::drawWorldSelection(
 		window.draw(strip);
 	}
 
-	drawBodyInfoText(window, *body, referenceBody, showDistanceToReference, worldToPixel);
+	drawBodyInfoText(window, *body, velocityReferenceBody, distanceReferenceBody,
+	                 showDistanceToReference, worldToPixel);
 }
 
 void InspectorOverlay::drawBodyInfoText(
     sf::RenderWindow& window,
     const sim::BodySnapshot& body,
-    const std::optional<sim::BodySnapshot>& referenceBody,
+    const std::optional<sim::BodySnapshot>& velocityReferenceBody,
+    const std::optional<sim::BodySnapshot>& distanceReferenceBody,
     bool showDistance,
     const std::function<sf::Vector2i(double, double)>& worldToPixel) const {
 	if (!fontReady_) {
@@ -148,13 +151,15 @@ void InspectorOverlay::drawBodyInfoText(
 
 	double relVx = body.vx;
 	double relVy = body.vy;
+	if (velocityReferenceBody.has_value()) {
+		relVx -= velocityReferenceBody->vx;
+		relVy -= velocityReferenceBody->vy;
+	}
 	double distance = 0.0;
 	bool hasDistance = false;
-	if (referenceBody.has_value()) {
-		relVx -= referenceBody->vx;
-		relVy -= referenceBody->vy;
-		const double dx = body.x - referenceBody->x;
-		const double dy = body.y - referenceBody->y;
+	if (distanceReferenceBody.has_value()) {
+		const double dx = body.x - distanceReferenceBody->x;
+		const double dy = body.y - distanceReferenceBody->y;
 		distance = std::sqrt(dx * dx + dy * dy);
 		hasDistance = true;
 	}

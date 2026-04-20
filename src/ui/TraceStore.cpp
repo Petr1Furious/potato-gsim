@@ -1,43 +1,38 @@
 #include "ui/TraceStore.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace ui {
 
 namespace {
 
-std::pair<double, double> interpolateWorld(const std::deque<TraceStore::TracePoint>& trail,
-                                           double timeSeconds) {
-	if (trail.empty()) {
-		return {0.0, 0.0};
-	}
-	if (timeSeconds <= trail.front().timeSeconds) {
-		return {trail.front().worldX, trail.front().worldY};
-	}
-	if (timeSeconds >= trail.back().timeSeconds) {
-		return {trail.back().worldX, trail.back().worldY};
+bool shouldCollapseMiddle(const TraceStore::TracePoint& a,
+                          const TraceStore::TracePoint& b,
+                          const TraceStore::TracePoint& c) {
+	constexpr double kMinDtForTurnCheck = 1e-5;
+	constexpr double kMaxStraightTurnRadians = 0.04;  // ~2.29 deg
+	constexpr double kMinSegmentLength = 1e-9;
+	const double kStraightCosThreshold = std::cos(kMaxStraightTurnRadians);
+
+	if ((b.timeSeconds - a.timeSeconds) < kMinDtForTurnCheck ||
+	    (c.timeSeconds - b.timeSeconds) < kMinDtForTurnCheck) {
+		return true;
 	}
 
-	const auto upper = std::lower_bound(
-	    trail.begin(), trail.end(), timeSeconds,
-	    [](const TraceStore::TracePoint& point, double t) { return point.timeSeconds < t; });
-	if (upper == trail.begin()) {
-		return {upper->worldX, upper->worldY};
-	}
-	if (upper == trail.end()) {
-		return {trail.back().worldX, trail.back().worldY};
+	const double abx = b.worldX - a.worldX;
+	const double aby = b.worldY - a.worldY;
+	const double bcx = c.worldX - b.worldX;
+	const double bcy = c.worldY - b.worldY;
+	const double abLen = std::hypot(abx, aby);
+	const double bcLen = std::hypot(bcx, bcy);
+	if (abLen < kMinSegmentLength || bcLen < kMinSegmentLength) {
+		return true;
 	}
 
-	const auto lower = upper - 1;
-	const double dt = upper->timeSeconds - lower->timeSeconds;
-	if (dt <= 1e-12) {
-		return {upper->worldX, upper->worldY};
-	}
-	const double alpha = std::clamp((timeSeconds - lower->timeSeconds) / dt, 0.0, 1.0);
-	const double wx = lower->worldX + (upper->worldX - lower->worldX) * alpha;
-	const double wy = lower->worldY + (upper->worldY - lower->worldY) * alpha;
-	return {wx, wy};
+	const double cosAngle = std::clamp((abx * bcx + aby * bcy) / (abLen * bcLen), -1.0, 1.0);
+	return cosAngle >= kStraightCosThreshold;
 }
 
 }  // namespace
@@ -60,12 +55,18 @@ void TraceStore::ingest(const std::vector<sim::BodySnapshot>& bodies, double tim
 		return;
 	}
 	for (const sim::BodySnapshot& body : bodies) {
-		auto& trail = traces_[body.id];
-		trail.push_back(TracePoint{
+		const TracePoint p{
 		    .worldX = body.x,
 		    .worldY = body.y,
 		    .timeSeconds = timeSeconds,
-		});
+		};
+		auto& trail = traces_[body.id];
+		if (settings_.simplify && trail.size() >= 2 &&
+		    shouldCollapseMiddle(trail[trail.size() - 2], trail[trail.size() - 1], p)) {
+			trail.back() = p;
+		} else {
+			trail.push_back(p);
+		}
 		while (trail.size() > settings_.maxPointsPerBody) {
 			trail.pop_front();
 		}
@@ -74,6 +75,8 @@ void TraceStore::ingest(const std::vector<sim::BodySnapshot>& bodies, double tim
 
 void TraceStore::draw(sf::RenderWindow& window,
                       const std::optional<sim::BodySnapshot>& selectedBody,
+                      const std::optional<sim::BodyId> relativeReferenceId,
+                      const std::optional<std::pair<double, double>>& relativeReferenceAnchor,
                       double renderOriginX,
                       double renderOriginY,
                       bool useRenderOrigin) const {
@@ -88,40 +91,76 @@ void TraceStore::draw(sf::RenderWindow& window,
 		return sf::Vector2f(static_cast<float>(wx - ox), static_cast<float>(wy - oy));
 	};
 
-	bool relativeMode = settings_.relative && selectedBody.has_value();
-	const std::deque<TracePoint>* selectedTrail = nullptr;
-	if (relativeMode) {
-		const auto selectedIt =
-		    selectedBody.has_value() ? traces_.find(selectedBody->id) : traces_.end();
-		if (selectedIt != traces_.end() && !selectedIt->second.empty()) {
-			selectedTrail = &selectedIt->second;
-		} else {
-			relativeMode = false;
-		}
-	}
-
-	const double selX = selectedBody.has_value() ? selectedBody->x : 0.0;
-	const double selY = selectedBody.has_value() ? selectedBody->y : 0.0;
+	const bool relativeMode = settings_.relative && relativeReferenceId.has_value() &&
+	                          relativeReferenceAnchor.has_value();
+	const auto refIt = (relativeMode ? traces_.find(*relativeReferenceId) : traces_.end());
+	const bool haveRefTrail = (refIt != traces_.end() && !refIt->second.empty());
+	const auto* refTrail = (haveRefTrail ? &refIt->second : nullptr);
+	const double anchorX =
+	    relativeReferenceAnchor.has_value() ? relativeReferenceAnchor->first : 0.0;
+	const double anchorY =
+	    relativeReferenceAnchor.has_value() ? relativeReferenceAnchor->second : 0.0;
 
 	for (const auto& [id, trail] : traces_) {
 		if (trail.size() < 2) {
 			continue;
 		}
-		sf::VertexArray strip(sf::PrimitiveType::LineStrip, trail.size());
 		const bool highlight = selectedBody.has_value() && selectedBody->id == id;
-		for (std::size_t i = 0; i < trail.size(); ++i) {
-			double wx = trail[i].worldX;
-			double wy = trail[i].worldY;
-			if (relativeMode && selectedTrail != nullptr) {
-				const auto [sx, sy] = interpolateWorld(*selectedTrail, trail[i].timeSeconds);
-				wx = wx - sx + selX;
-				wy = wy - sy + selY;
+		sf::VertexArray strip(sf::PrimitiveType::LineStrip);
+		strip.resize(0);
+		strip.clear();
+
+		if (relativeMode && haveRefTrail && refTrail != nullptr) {
+			if (refTrail->size() < 2) {
+				continue;
 			}
-			strip[i].position = toLocal(wx, wy);
-			strip[i].color =
-			    highlight ? sf::Color(255, 240, 180, 180) : sf::Color(130, 160, 255, 95);
+			const double refT0 = refTrail->front().timeSeconds;
+			const double refT1 = refTrail->back().timeSeconds;
+			std::size_t refIdx = 0;
+			for (const TracePoint& p : trail) {
+				const double t = p.timeSeconds;
+				// Skip out-of-domain points to avoid first/last-segment artifacts.
+				if (t < refT0 || t > refT1) {
+					continue;
+				}
+				while (refIdx + 1 < refTrail->size() && (*refTrail)[refIdx + 1].timeSeconds < t) {
+					++refIdx;
+				}
+				const TracePoint& a = (*refTrail)[refIdx];
+				const TracePoint& b = (refIdx + 1 < refTrail->size()) ? (*refTrail)[refIdx + 1] : a;
+				double rx = a.worldX;
+				double ry = a.worldY;
+				const double dt = b.timeSeconds - a.timeSeconds;
+				if (dt > 1e-12) {
+					const double alpha = std::clamp((t - a.timeSeconds) / dt, 0.0, 1.0);
+					rx = a.worldX + (b.worldX - a.worldX) * alpha;
+					ry = a.worldY + (b.worldY - a.worldY) * alpha;
+				}
+
+				const double wx = p.worldX - rx + anchorX;
+				const double wy = p.worldY - ry + anchorY;
+				strip.append(sf::Vertex{
+				    toLocal(wx, wy),
+				    highlight ? sf::Color(255, 240, 180, 180) : sf::Color(130, 160, 255, 95),
+				});
+			}
+		} else {
+			for (const TracePoint& p : trail) {
+				double wx = p.worldX;
+				double wy = p.worldY;
+				if (relativeMode) {
+					wx -= anchorX;
+					wy -= anchorY;
+				}
+				strip.append(sf::Vertex{
+				    toLocal(wx, wy),
+				    highlight ? sf::Color(255, 240, 180, 180) : sf::Color(130, 160, 255, 95),
+				});
+			}
 		}
-		window.draw(strip);
+		if (strip.getVertexCount() >= 2) {
+			window.draw(strip);
+		}
 	}
 }
 

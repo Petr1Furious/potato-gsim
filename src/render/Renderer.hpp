@@ -4,6 +4,8 @@
 
 #include <SFML/Graphics.hpp>
 
+#include <optional>
+
 namespace render {
 
 class Renderer {
@@ -43,7 +45,9 @@ class Renderer {
 	[[nodiscard]] const sf::View& view() const { return view_; }
 	void setViewSize(const sf::Vector2f& size);
 
-	void draw(const std::vector<sim::BodySnapshot>& bodies);
+	void draw(const std::vector<sim::BodySnapshot>& bodies,
+	          std::optional<sim::BodyId> playerShipId = std::nullopt,
+	          std::optional<float> playerFacingRadians = std::nullopt);
 	void draw(const sim::SimulationEngine& engine);
 
    private:

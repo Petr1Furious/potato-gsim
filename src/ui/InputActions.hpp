@@ -10,31 +10,15 @@ namespace ui {
 
 enum class Action {
 	ToggleMenu,
-	TogglePause,
 	ToggleFullscreen,
 	ResetView,
-	ToggleFollow,
+	ToggleFollowMode,
 	ToggleTrails,
 	ToggleRelativeTrails,
-	TogglePredictions,
-	ToggleSelectedPrediction,
-	ToggleLabels,
-	ToggleDebugInfo,
-	ToggleCreationTool,
-	ToggleRelativeCreationFrame,
-	ToggleNegativeMass,
-	ResetTimer,
-	AdvancedResetFrame,
-	RandomScenario,
-	ClearScenario,
-	NextPreset,
-	PrevPreset
+	ToggleShipPrediction
 };
 
 struct HoldAdjustments {
-	double timeScaleFactor = 1.0;
-	double densityFactor = 1.0;
-	double predictionFactor = 1.0;
 	double panPixelsX = 0.0;
 	double panPixelsY = 0.0;
 };

@@ -30,13 +30,10 @@ add_executable(
   src/net/MpReplay.cpp
   src/net/Protocol.cpp
   src/render/Renderer.cpp
-  src/scenario/ScenarioManager.cpp
   src/sim/QuadTree.cpp
   src/sim/SimulationEngine.cpp
   src/sim/ThreadPool.cpp
   src/sim/UniformGrid.cpp
-  src/ui/CreationTool.cpp
-  src/ui/CreationPauseStateMachine.cpp
   src/ui/InputActions.cpp
   src/ui/InspectorOverlay.cpp
   src/ui/MenuOverlay.cpp

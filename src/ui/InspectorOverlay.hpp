@@ -17,7 +17,8 @@ class InspectorOverlay {
 
 	void drawWorldSelection(sf::RenderWindow& window,
 	                        const std::optional<sim::BodySnapshot>& body,
-	                        const std::optional<sim::BodySnapshot>& referenceBody,
+	                        const std::optional<sim::BodySnapshot>& velocityReferenceBody,
+	                        const std::optional<sim::BodySnapshot>& distanceReferenceBody,
 	                        const std::vector<sf::Vector2f>& selectedPrediction,
 	                        const std::optional<sf::Vector2f>& creationVelocityTarget,
 	                        double arrowScale,
@@ -47,7 +48,8 @@ class InspectorOverlay {
 	               const sf::Vector2f& to) const;
 	void drawBodyInfoText(sf::RenderWindow& window,
 	                      const sim::BodySnapshot& body,
-	                      const std::optional<sim::BodySnapshot>& referenceBody,
+	                      const std::optional<sim::BodySnapshot>& velocityReferenceBody,
+	                      const std::optional<sim::BodySnapshot>& distanceReferenceBody,
 	                      bool showDistance,
 	                      const std::function<sf::Vector2i(double, double)>& worldToPixel) const;
 

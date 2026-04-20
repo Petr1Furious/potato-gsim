@@ -22,7 +22,8 @@ class TraceStore {
 
 	struct Settings {
 		bool enabled = false;
-		bool relative = false;
+		bool relative = true;
+		bool simplify = true;
 		std::size_t maxPointsPerBody = 240;
 	};
 
@@ -35,6 +36,8 @@ class TraceStore {
 
 	void draw(sf::RenderWindow& window,
 	          const std::optional<sim::BodySnapshot>& selectedBody,
+	          std::optional<sim::BodyId> relativeReferenceId,
+	          const std::optional<std::pair<double, double>>& relativeReferenceAnchor,
 	          double renderOriginX,
 	          double renderOriginY,
 	          bool useRenderOrigin) const;

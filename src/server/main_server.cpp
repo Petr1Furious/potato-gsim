@@ -27,6 +27,7 @@ struct ClientSlot {
 	sim::BodyId shipId = 0;
 	bool hasShip = false;
 	bool needJoinSnapshot = true;
+	bool loggedShipId = false;
 };
 
 void logErr(const char* msg) {
@@ -142,7 +143,7 @@ int main(int argc, char** argv) {
 				    .vx = 0.0,
 				    .vy = 2.9e4,
 				    .mass = 2e4,
-				    .radius = 8e5,
+				    .radius = 15.0,
 				    .name = shipName,
 				});
 				ClientSlot slot;
@@ -235,6 +236,11 @@ int main(int argc, char** argv) {
 				if (const std::optional<sim::BodyId> id = findBodyIdByName(snaps, c.shipName)) {
 					c.shipId = *id;
 					c.hasShip = true;
+					if (!c.loggedShipId) {
+						std::fprintf(stderr, "assigned %s id=%llu\n", c.shipName.c_str(),
+						             static_cast<unsigned long long>(c.shipId));
+						c.loggedShipId = true;
+					}
 				}
 			}
 		}
