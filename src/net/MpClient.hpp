@@ -72,6 +72,7 @@ class MpClient {
 	void takeMergeRemaps(std::uint64_t& tickOut,
 	                     std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut,
 	                     bool& hadOneOut);
+	void takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bodiesOut, bool& hadOneOut);
 
    private:
 	enum class OutboundKind : std::uint8_t { JoinReliable, InputUnreliable };
@@ -115,6 +116,9 @@ class MpClient {
 	std::uint64_t pendingMergeTick_ = 0;
 	std::vector<std::pair<sim::BodyId, sim::BodyId>> pendingMerges_;
 	bool haveMerge_ = false;
+
+	std::vector<sim::AuthoritativeBody> pendingAuthoritativeUpserts_;
+	bool haveAuthoritativeUpserts_ = false;
 };
 
 }  // namespace net

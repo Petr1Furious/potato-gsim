@@ -87,5 +87,30 @@ int main() {
 		assert(std::abs(vyOut[0] - 0.3) < 1e-12);
 	}
 
+	{
+		std::vector<AuthoritativeBody> bodiesIn;
+		bodiesIn.push_back(AuthoritativeBody{
+		    .id = 11,
+		    .x = 1.0,
+		    .y = 2.0,
+		    .vx = 3.0,
+		    .vy = 4.0,
+		    .mass = 5.0,
+		    .radius = 6.0,
+		    .name = "late",
+		});
+		std::vector<std::uint8_t> buf;
+		assert(net::writeAuthoritativeBodyUpsert(9, 8000, bodiesIn, buf));
+		std::uint64_t tickOut = 0;
+		std::uint64_t stepOut = 0;
+		std::vector<AuthoritativeBody> bodiesOut;
+		assert(net::readAuthoritativeBodyUpsert(buf.data(), buf.size(), tickOut, stepOut, bodiesOut));
+		assert(tickOut == 9);
+		assert(stepOut == 8000);
+		assert(bodiesOut.size() == 1);
+		assert(bodiesOut[0].id == 11);
+		assert(bodiesOut[0].name == "late");
+	}
+
 	return EXIT_SUCCESS;
 }

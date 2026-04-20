@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <iterator>
 #include <thread>
 #include <vector>
 
@@ -78,6 +79,8 @@ void MpClient::disconnect() {
 	pendingWorldVx_.clear();
 	pendingWorldVy_.clear();
 	pendingMerges_.clear();
+	pendingAuthoritativeUpserts_.clear();
+	haveAuthoritativeUpserts_ = false;
 }
 
 void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
@@ -137,6 +140,19 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 				pendingMergeTick_ = tick;
 				pendingMerges_ = std::move(pairs);
 				haveMerge_ = true;
+			}
+		} break;
+		case MsgType::AuthoritativeBodyUpsert: {
+			std::uint64_t tick = 0;
+			std::uint64_t step = 0;
+			std::vector<sim::AuthoritativeBody> bodies;
+			if (readAuthoritativeBodyUpsert(d, len, tick, step, bodies)) {
+				(void)tick;
+				(void)step;
+				pendingAuthoritativeUpserts_.insert(pendingAuthoritativeUpserts_.end(),
+				                                    std::make_move_iterator(bodies.begin()),
+				                                    std::make_move_iterator(bodies.end()));
+				haveAuthoritativeUpserts_ = true;
 			}
 		} break;
 		default:
@@ -347,6 +363,18 @@ void MpClient::takeMergeRemaps(std::uint64_t& tickOut,
 	tickOut = pendingMergeTick_;
 	pairsOut = std::move(pendingMerges_);
 	haveMerge_ = false;
+}
+
+void MpClient::takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bodiesOut,
+                                        bool& hadOneOut) {
+	if (!haveAuthoritativeUpserts_) {
+		hadOneOut = false;
+		bodiesOut.clear();
+		return;
+	}
+	hadOneOut = true;
+	bodiesOut = std::move(pendingAuthoritativeUpserts_);
+	haveAuthoritativeUpserts_ = false;
 }
 
 }  // namespace net

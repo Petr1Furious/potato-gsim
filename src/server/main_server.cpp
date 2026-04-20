@@ -28,6 +28,8 @@ struct ClientSlot {
 	bool hasShip = false;
 	bool needJoinSnapshot = true;
 	bool loggedShipId = false;
+	/// One-time broadcast so existing clients register this slot's ship in their IdIndexMap.
+	bool shipAuthoritativeUpsertSent = false;
 };
 
 void logErr(const char* msg) {
@@ -243,6 +245,35 @@ int main(int argc, char** argv) {
 						c.loggedShipId = true;
 					}
 				}
+			}
+		}
+
+		for (ClientSlot& c : clients) {
+			if (!c.hasShip || c.shipId == 0 || c.shipAuthoritativeUpsertSent) {
+				continue;
+			}
+			for (const sim::BodySnapshot& b : snaps) {
+				if (b.id != c.shipId) {
+					continue;
+				}
+				std::vector<sim::AuthoritativeBody> one;
+				one.push_back(sim::AuthoritativeBody{
+				    .id = b.id,
+				    .x = b.x,
+				    .y = b.y,
+				    .vx = b.vx,
+				    .vy = b.vy,
+				    .mass = b.mass,
+				    .radius = b.radius,
+				    .name = b.name,
+				});
+				std::vector<std::uint8_t> payload;
+				net::writeAuthoritativeBodyUpsert(serverTick, globalPhysicsStep, one, payload);
+				ENetPacket* packet =
+				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
+				enet_host_broadcast(host, 1, packet);
+				c.shipAuthoritativeUpsertSent = true;
+				break;
 			}
 		}
 

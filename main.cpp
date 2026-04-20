@@ -533,6 +533,13 @@ int main(int argc, char** argv) {
 					}
 				}
 
+				std::vector<sim::AuthoritativeBody> mpAuthoritativeUpserts;
+				bool hadAuthoritativeUpsert = false;
+				mpClient->takeAuthoritativeUpserts(mpAuthoritativeUpserts, hadAuthoritativeUpsert);
+				if (hadAuthoritativeUpsert && mpSim.has_value()) {
+					mpSim->postAuthoritativeUpserts(std::move(mpAuthoritativeUpserts));
+				}
+
 				mpClient->takeShipSamples(mpInboundShips);
 				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
 					MpShipReplica& rep = mpShipReplica[s.bodyId];

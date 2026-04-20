@@ -60,6 +60,9 @@ class MpClientSim {
 	/// posted in the same frame.
 	void postMergeDeletes(std::vector<std::pair<sim::BodyId, sim::BodyId>> remaps);
 
+	/// Main thread: register new server bodies or refresh existing (e.g. late-joining player ships).
+	void postAuthoritativeUpserts(std::vector<sim::AuthoritativeBody> bodies);
+
 	/// Main thread: enqueue dynamics patches (world + ship); may be empty.
 	void postDynamicsPatches(std::vector<sim::BodyDynamicsPatch> patches);
 

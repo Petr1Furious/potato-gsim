@@ -55,7 +55,8 @@ struct SimCommand {
 		ClearAll,
 		ReplaceWorld,
 		ApplyAuthoritativeSnapshot,
-		PatchDynamics
+		PatchDynamics,
+		UpsertAuthoritative
 	};
 
 	Type type = Type::Spawn;
@@ -65,6 +66,7 @@ struct SimCommand {
 	std::vector<SpawnCommand> replacementBodies;
 	std::vector<AuthoritativeBody> authoritativeBodies;
 	std::vector<BodyDynamicsPatch> dynamicPatches{};
+	std::vector<AuthoritativeBody> upsertBodies{};
 };
 
 class CommandQueue {
@@ -144,6 +146,22 @@ class CommandQueue {
 		    .replacementBodies = {},
 		    .authoritativeBodies = {},
 		    .dynamicPatches = std::move(patches),
+		});
+	}
+
+	void pushUpsertAuthoritative(std::vector<AuthoritativeBody> bodies) {
+		if (bodies.empty()) {
+			return;
+		}
+		std::lock_guard<std::mutex> lock(mutex_);
+		pending_.push_back(SimCommand{
+		    .type = SimCommand::Type::UpsertAuthoritative,
+		    .spawn = {},
+		    .del = {},
+		    .replacementBodies = {},
+		    .authoritativeBodies = {},
+		    .dynamicPatches = {},
+		    .upsertBodies = std::move(bodies),
 		});
 	}
 

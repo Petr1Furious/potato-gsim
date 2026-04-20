@@ -1,5 +1,6 @@
 #include "net/Protocol.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -409,6 +410,76 @@ bool readMergeRemapBatch(const std::uint8_t* data,
 			return false;
 		}
 		pairsOut[i] = {a, b};
+	}
+	return p == end;
+}
+
+bool writeAuthoritativeBodyUpsert(const std::uint64_t serverTick,
+                                  const std::uint64_t globalPhysicsStep,
+                                  const std::vector<sim::AuthoritativeBody>& bodies,
+                                  std::vector<std::uint8_t>& out) {
+	out.clear();
+	writeHeader(out, MsgType::AuthoritativeBodyUpsert);
+	appendU64(out, serverTick);
+	appendU64(out, globalPhysicsStep);
+	appendU32(out, static_cast<std::uint32_t>(bodies.size()));
+	for (const sim::AuthoritativeBody& b : bodies) {
+		appendU64(out, b.id);
+		appendF64(out, b.x);
+		appendF64(out, b.y);
+		appendF64(out, b.vx);
+		appendF64(out, b.vy);
+		appendF64(out, b.mass);
+		appendF64(out, b.radius);
+		const std::uint32_t nl =
+		    static_cast<std::uint32_t>(std::min<std::size_t>(b.name.size(), 65000));
+		appendU32(out, nl);
+		for (std::uint32_t i = 0; i < nl; ++i) {
+			out.push_back(static_cast<std::uint8_t>(b.name[i]));
+		}
+	}
+	return true;
+}
+
+bool readAuthoritativeBodyUpsert(const std::uint8_t* data,
+                                 const std::size_t len,
+                                 std::uint64_t& serverTickOut,
+                                 std::uint64_t& globalPhysicsStepOut,
+                                 std::vector<sim::AuthoritativeBody>& bodiesOut) {
+	const std::uint8_t* p = data;
+	const std::uint8_t* end = data + len;
+	std::uint8_t ver = 0;
+	serverTickOut = 0;
+	globalPhysicsStepOut = 0;
+	if (!readHeader(p, end, MsgType::AuthoritativeBodyUpsert, ver)) {
+		return false;
+	}
+	if (!readU64(p, end, serverTickOut) || !readU64(p, end, globalPhysicsStepOut)) {
+		return false;
+	}
+	std::uint32_t n = 0;
+	if (!readU32(p, end, n) || n > 2'000'000u) {
+		return false;
+	}
+	bodiesOut.clear();
+	bodiesOut.reserve(n);
+	for (std::uint32_t i = 0; i < n; ++i) {
+		sim::AuthoritativeBody b{};
+		if (!readU64(p, end, b.id)) {
+			return false;
+		}
+		if (!readF64(p, end, b.x) || !readF64(p, end, b.y) || !readF64(p, end, b.vx) ||
+		    !readF64(p, end, b.vy) || !readF64(p, end, b.mass) || !readF64(p, end, b.radius)) {
+			return false;
+		}
+		std::uint32_t nameLen = 0;
+		if (!readU32(p, end, nameLen) || nameLen > 65000u ||
+		    static_cast<std::size_t>(end - p) < nameLen) {
+			return false;
+		}
+		b.name.assign(reinterpret_cast<const char*>(p), nameLen);
+		p += nameLen;
+		bodiesOut.push_back(std::move(b));
 	}
 	return p == end;
 }

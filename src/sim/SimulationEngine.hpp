@@ -93,6 +93,7 @@ class SimulationEngine {
 	void queueClearAll();
 	void queueReplaceWorld(const std::vector<SpawnCommand>& bodies);
 	void queueApplyAuthoritativeSnapshot(std::vector<AuthoritativeBody> bodies);
+	void queueUpsertAuthoritativeBodies(std::vector<AuthoritativeBody> bodies);
 	void queuePatchBodyDynamics(std::vector<BodyDynamicsPatch> patches);
 	/// Constant in-world acceleration (m/s²) for this integration step only (e.g. ship thrust).
 	void setShipThrustAccelWorld(BodyId id, double ax, double ay);

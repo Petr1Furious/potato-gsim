@@ -20,6 +20,8 @@ enum class MsgType : std::uint8_t {
 	ShipState = 4,
 	WorldDynamicSnapshot = 5,
 	MergeRemapBatch = 6,
+	/// Reliable: add or update server bodies (e.g. another player ship after join).
+	AuthoritativeBodyUpsert = 7,
 };
 
 #pragma pack(push, 1)
@@ -101,5 +103,15 @@ bool readMergeRemapBatch(const std::uint8_t* data,
                          std::size_t len,
                          std::uint64_t& tickOut,
                          std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut);
+
+bool writeAuthoritativeBodyUpsert(const std::uint64_t serverTick,
+                                  const std::uint64_t globalPhysicsStep,
+                                  const std::vector<sim::AuthoritativeBody>& bodies,
+                                  std::vector<std::uint8_t>& out);
+bool readAuthoritativeBodyUpsert(const std::uint8_t* data,
+                                 std::size_t len,
+                                 std::uint64_t& serverTickOut,
+                                 std::uint64_t& globalPhysicsStepOut,
+                                 std::vector<sim::AuthoritativeBody>& bodiesOut);
 
 }  // namespace net

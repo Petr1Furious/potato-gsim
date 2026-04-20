@@ -890,6 +890,10 @@ void SimulationEngine::queueApplyAuthoritativeSnapshot(std::vector<Authoritative
 	commandQueue_.pushApplyAuthoritativeSnapshot(std::move(bodies));
 }
 
+void SimulationEngine::queueUpsertAuthoritativeBodies(std::vector<AuthoritativeBody> bodies) {
+	commandQueue_.pushUpsertAuthoritative(std::move(bodies));
+}
+
 void SimulationEngine::queuePatchBodyDynamics(std::vector<BodyDynamicsPatch> patches) {
 	commandQueue_.pushPatchDynamics(std::move(patches));
 }
@@ -964,6 +968,32 @@ bool SimulationEngine::applyCommands(BodyState& state,
 				state.posY[i] = p.y;
 				state.velX[i] = p.vx;
 				state.velY[i] = p.vy;
+			}
+			continue;
+		}
+
+		if (command.type == SimCommand::Type::UpsertAuthoritative) {
+			for (const AuthoritativeBody& b : command.upsertBodies) {
+				double mass = clampFinite(b.mass, 1.0);
+				if (std::abs(mass) < 1e-12) {
+					mass = 1.0;
+				}
+				const double radius = clampPositive(b.radius, 1.0);
+				const std::optional<std::uint32_t> idx = idMap.denseIndexFor(b.id);
+				if (idx.has_value() && *idx < state.size()) {
+					const std::uint32_t i = *idx;
+					state.posX[i] = b.x;
+					state.posY[i] = b.y;
+					state.velX[i] = b.vx;
+					state.velY[i] = b.vy;
+					state.mass[i] = mass;
+					state.radius[i] = radius;
+					state.name[i] = b.name;
+				} else {
+					spawnedOrReplaced = true;
+					state.pushBack(b.x, b.y, b.vx, b.vy, mass, radius, b.name);
+					idMap.pushServerBody(b.id);
+				}
 			}
 			continue;
 		}
