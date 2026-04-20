@@ -44,6 +44,19 @@ bool MpReplayBuffer::findFrame(const std::uint64_t stepEnd, ReplayFrame& out) co
 	return false;
 }
 
+bool MpReplayBuffer::findLatestCheckpointAtOrBefore(const std::uint64_t stepEnd,
+                                                    std::uint64_t& foundStepEndOut,
+                                                    ReplayFrame& out) const {
+	for (auto it = frames_.rbegin(); it != frames_.rend(); ++it) {
+		if (it->globalPhysicsStepEnd <= stepEnd && !it->bodiesAfter.empty()) {
+			foundStepEndOut = it->globalPhysicsStepEnd;
+			out = *it;
+			return true;
+		}
+	}
+	return false;
+}
+
 void MpReplayBuffer::popFramesAfter(const std::uint64_t keepThroughStep) {
 	while (!frames_.empty() && frames_.back().globalPhysicsStepEnd > keepThroughStep) {
 		frames_.pop_back();

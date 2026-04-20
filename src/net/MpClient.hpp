@@ -6,9 +6,14 @@
 
 #include <enet/enet.h>
 
+#include <atomic>
 #include <cstdint>
+#include <deque>
+#include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -40,17 +45,15 @@ class MpClient {
 	[[nodiscard]] bool connect(const std::string& host, std::uint16_t port);
 	void disconnect();
 
-	/// Poll network; timeout in ms (0 = non-blocking).
+	/// Main thread: apply packets received on the background net thread (non-blocking).
 	void service(int timeoutMs);
 
 	void sendJoinRequest();
 	void sendInput(const ClientInputPayload& payload);
 
-	[[nodiscard]] bool isConnected() const { return serverPeer_ != nullptr; }
+	[[nodiscard]] bool isConnected() const;
 	/// True once the outgoing connection handshake has completed (safe to send join).
-	[[nodiscard]] bool isPeerConnected() const {
-		return serverPeer_ != nullptr && serverPeer_->state == ENET_PEER_STATE_CONNECTED;
-	}
+	[[nodiscard]] bool isPeerConnected() const;
 
 	void takeJoinAccept(std::uint64_t& tickOut,
 	                    std::uint64_t& joinGlobalPhysicsStepOut,
@@ -71,10 +74,26 @@ class MpClient {
 	                     bool& hadOneOut);
 
    private:
-	void flushIncoming(ENetEvent& event);
+	enum class OutboundKind : std::uint8_t { JoinReliable, InputUnreliable };
+
+	void netThreadMain(std::stop_token st);
+	void enqueueReceivedPacket(std::vector<std::uint8_t> bytes);
+	void processPacket(const std::uint8_t* data, std::size_t len);
 
 	ENetHost* host_ = nullptr;
 	ENetPeer* serverPeer_ = nullptr;
+	mutable std::mutex enetMutex_;
+	std::optional<std::jthread> netThread_;
+
+	/// Outbound payloads built on the main thread; only the net thread calls `enet_peer_send`.
+	std::mutex sendMutex_;
+	std::deque<std::pair<OutboundKind, std::vector<std::uint8_t>>> outboundPackets_;
+
+	std::atomic<bool> hasServerPeer_{false};
+	std::atomic<bool> peerFullyConnected_{false};
+
+	std::mutex inboundMutex_;
+	std::deque<std::vector<std::uint8_t>> inboundPackets_;
 
 	std::optional<std::uint64_t> pendingJoinTick_;
 	std::uint64_t pendingJoinGlobalPhysicsStep_ = 0;

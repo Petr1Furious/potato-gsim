@@ -115,7 +115,8 @@ int main(int argc, char** argv) {
 	cfg.workerCount = 0;
 	sim::SimulationEngine engine(cfg);
 	// Drive stepping from this thread only (no background simulationLoop).
-	engine.queueReplaceWorld(scenario::ScenarioManager::makePreset(0));
+	// engine.queueReplaceWorld(scenario::ScenarioManager::makePreset(0));
+	engine.queueReplaceWorld(scenario::ScenarioManager::makeRandom(1000, 0.0, 0.0, 1e11));
 
 	std::vector<ClientSlot> clients;
 
@@ -138,10 +139,10 @@ int main(int argc, char** argv) {
 				const std::string shipName =
 				    "Ship" + std::to_string(static_cast<int>(clients.size()));
 				engine.queueSpawn(sim::SpawnCommand{
-				    .x = 1.5e11,
+				    .x = 5e10,
 				    .y = 0.0,
 				    .vx = 0.0,
-				    .vy = 2.9e4,
+				    .vy = 0,
 				    .mass = 2e4,
 				    .radius = 15.0,
 				    .name = shipName,
@@ -277,8 +278,8 @@ int main(int argc, char** argv) {
 			}
 		}
 
-		if (serverTick % 30 == 0) {
-			engine.copyBodies(snaps);
+		// One full dynamics snapshot per server net tick (same `snaps` as ship broadcast above).
+		{
 			std::vector<sim::BodyId> ids;
 			std::vector<double> px, py, vx, vy;
 			ids.reserve(snaps.size());

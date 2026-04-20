@@ -21,9 +21,16 @@ class SelectionState {
 
 	void applyMergeRemap(const std::vector<std::pair<sim::BodyId, sim::BodyId>>& remap);
 	void validateAgainstEngine(const sim::SimulationEngine& engine);
+	void validateAgainstBodies(const std::vector<sim::BodySnapshot>& bodies);
 
 	std::optional<sim::BodyId> pick(
 	    const sim::SimulationEngine& engine,
+	    const sf::Vector2f& worldPoint,
+	    const std::function<float(const sf::Vector2f&)>& worldToScreenDistance,
+	    std::optional<sim::BodyId> excludedBodyId,
+	    float maxScreenDistancePx) const;
+	std::optional<sim::BodyId> pickFromBodies(
+	    const std::vector<sim::BodySnapshot>& bodies,
 	    const sf::Vector2f& worldPoint,
 	    const std::function<float(const sf::Vector2f&)>& worldToScreenDistance,
 	    std::optional<sim::BodyId> excludedBodyId,

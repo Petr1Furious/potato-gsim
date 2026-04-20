@@ -27,6 +27,7 @@ add_executable(
   potato_gsim
   main.cpp
   src/net/MpClient.cpp
+  src/net/MpClientSim.cpp
   src/net/MpReplay.cpp
   src/net/Protocol.cpp
   src/render/Renderer.cpp

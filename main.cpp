@@ -1,6 +1,6 @@
 #include "net/MpClient.hpp"
+#include "net/MpClientSim.hpp"
 #include "net/MpConstants.hpp"
-#include "net/MpReplay.hpp"
 #include "net/Protocol.hpp"
 #include "render/Renderer.hpp"
 #include "sim/SimulationEngine.hpp"
@@ -20,13 +20,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <iomanip>
-#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -78,101 +76,7 @@ void setWindowFullscreen(sf::RenderWindow& window, bool fullscreen) {
 	window.setFramerateLimit(0);
 }
 
-struct MpShipReplica {
-	float facing = 0.f;
-	std::uint8_t thrustForward = 0;
-	std::uint8_t thrustReverse = 0;
-	std::uint64_t lastTick = 0;
-};
-
-void collectReplicaThrustSamples(const std::unordered_map<sim::BodyId, MpShipReplica>& replicas,
-                                 std::vector<net::ShipThrustSample>& out) {
-	out.clear();
-	for (const auto& [id, rep] : replicas) {
-		const double f = static_cast<double>(rep.facing);
-		const double ca = std::cos(f);
-		const double sa = std::sin(f);
-		double ax = 0.0;
-		double ay = 0.0;
-		if (rep.thrustForward) {
-			ax += net::kShipThrustAccel * ca;
-			ay += net::kShipThrustAccel * sa;
-		}
-		if (rep.thrustReverse) {
-			ax -= net::kShipThrustAccel * ca * 0.5;
-			ay -= net::kShipThrustAccel * sa * 0.5;
-		}
-		out.push_back(net::ShipThrustSample{.id = id, .ax = ax, .ay = ay});
-	}
-}
-
-bool rewindReplayAuthority(net::MpReplayBuffer& replay,
-                           sim::SimulationEngine& engine,
-                           const std::uint64_t S,
-                           const std::uint64_t H,
-                           const sim::SimulationConfig& physicsCfg,
-                           std::vector<sim::BodyDynamicsPatch> patchesAtS) {
-	if (S >= H) {
-		return false;
-	}
-	std::vector<std::pair<std::uint64_t, std::vector<net::ShipThrustSample>>> thrustsByStep;
-	if (!replay.extractThrustsBetween(S, H, thrustsByStep)) {
-		std::fprintf(stderr, "potato_gsim: MP rewind missing thrust history (S=%llu H=%llu)\n",
-		             static_cast<unsigned long long>(S), static_cast<unsigned long long>(H));
-		return false;
-	}
-	replay.popFramesAfter(S);
-	net::ReplayFrame atS{};
-	if (!replay.findFrame(S, atS)) {
-		std::fprintf(stderr, "potato_gsim: MP rewind missing checkpoint at S=%llu\n",
-		             static_cast<unsigned long long>(S));
-		return false;
-	}
-	engine.queueApplyAuthoritativeSnapshot(std::move(atS.bodiesAfter));
-	if (!patchesAtS.empty()) {
-		engine.queuePatchBodyDynamics(std::move(patchesAtS));
-	}
-	const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
-	                      ? physicsCfg.timeScale
-	                      : 1.0;
-	const double dtSim = net::simulationDtFromTimeScale(ts);
-	for (const auto& pr : thrustsByStep) {
-		const std::uint64_t g = pr.first;
-		net::applyShipThrustSamples(engine, pr.second);
-		engine.advanceFixedStep(dtSim, physicsCfg);
-		std::vector<sim::AuthoritativeBody> bodiesAfter;
-		net::copyBodiesToAuthoritative(engine, bodiesAfter);
-		replay.recordAfterPhysicsStep(g, std::move(bodiesAfter),
-		                              std::vector<net::ShipThrustSample>(pr.second));
-	}
-	return true;
-}
-
-void catchUpPhysicsHead(net::MpReplayBuffer& replay,
-                        sim::SimulationEngine& engine,
-                        std::uint64_t steps,
-                        const sim::SimulationConfig& physicsCfg,
-                        const std::unordered_map<sim::BodyId, MpShipReplica>& replicas,
-                        std::uint64_t& headRef) {
-	if (steps == 0) {
-		return;
-	}
-	const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
-	                      ? physicsCfg.timeScale
-	                      : 1.0;
-	const double dtSim = net::simulationDtFromTimeScale(ts);
-	for (std::uint64_t k = 0; k < steps; ++k) {
-		std::vector<net::ShipThrustSample> thrust;
-		collectReplicaThrustSamples(replicas, thrust);
-		net::applyShipThrustSamples(engine, thrust);
-		engine.advanceFixedStep(dtSim, physicsCfg);
-		++headRef;
-		std::vector<sim::AuthoritativeBody> bodiesAfter;
-		net::copyBodiesToAuthoritative(engine, bodiesAfter);
-		replay.recordAfterPhysicsStep(headRef, std::move(bodiesAfter),
-		                              std::vector<net::ShipThrustSample>(thrust));
-	}
-}
+using MpShipReplica = net::MpShipReplicaInput;
 
 }  // namespace
 
@@ -217,10 +121,7 @@ int main(int argc, char** argv) {
 	bool mpSessionJoined = false;
 	bool mpJoinRequestSent = false;
 	std::uint32_t mpInputSeq = 0;
-	double mpWallPhysicsDebt = 0.0;
-	std::uint64_t mpClientPhysicsHead = 0;
-	std::uint64_t mpLastConfirmedAuthorityStep = 0;
-	net::MpReplayBuffer mpReplay;
+	std::optional<net::MpClientSim> mpSim;
 	bool mpPendingWorldHad = false;
 	std::uint64_t mpPendingWorldTick = 0;
 	std::uint64_t mpPendingWorldGlobalStep = 0;
@@ -257,10 +158,10 @@ int main(int argc, char** argv) {
 	});
 	ui.predictor.setSettings(ui::Predictor::Settings{
 	    .enabled = true,
-	    .steps = 1200,
+	    .steps = 900,
 	    .dt = 1.0 / 120.0,
-	    .realTimeHorizonSeconds = 12.0,
-	    .maxAttractors = 320,
+	    .realTimeHorizonSeconds = 5.0,
+	    .maxAttractors = 20,
 	    .predictionRecalcIntervalSeconds = 0.0,
 	});
 	engine.setDebugMetricsEnabled(false);
@@ -292,6 +193,7 @@ int main(int argc, char** argv) {
 	std::optional<sim::BodyId> trackedFollowId;
 	std::optional<std::pair<double, double>> followViewOffset;
 	bool wasFollowCamera = false;
+	std::optional<net::MpClientRenderPublish> mpRenderFrame;
 
 	auto statusUntil = std::chrono::steady_clock::now();
 	auto setStatus = [&](const std::string& message, double seconds) {
@@ -368,7 +270,25 @@ int main(int argc, char** argv) {
 	auto lastFrameTime = std::chrono::steady_clock::now();
 	auto lastPredictTime = lastFrameTime;
 	double fps = 0.0;
-	const auto currentSimSecondsPerRealSecond = [&engine]() {
+	const auto currentSimSecondsPerRealSecond = [&engine, &mpRenderFrame, &config, &mpSessionJoined,
+	                                              &mpSim]() {
+		if (mpRenderFrame.has_value()) {
+			const net::MpClientRenderPublish& p = *mpRenderFrame;
+			if (std::isfinite(p.simulatedSecondsPerRealSecond) && p.simulatedSecondsPerRealSecond > 0.0) {
+				return p.simulatedSecondsPerRealSecond;
+			}
+			if (std::isfinite(p.config.timeScale) && p.config.timeScale > 0.0) {
+				return p.config.timeScale;
+			}
+			return 1.0;
+		}
+		if (mpSessionJoined && mpSim.has_value()) {
+			// Sim thread owns `engine` until first publish; avoid racing `engine` metrics here.
+			if (std::isfinite(config.timeScale) && config.timeScale > 0.0) {
+				return config.timeScale;
+			}
+			return 1.0;
+		}
 		const sim::SimulationConfig liveCfg = engine.config();
 		const double measured = engine.simulatedSecondsPerRealSecond();
 		if (std::isfinite(measured) && measured > 0.0) {
@@ -477,8 +397,12 @@ int main(int argc, char** argv) {
 							                        static_cast<float>(p1.y - p0.y));
 							return std::sqrt(diff.x * diff.x + diff.y * diff.y);
 						};
-						const std::optional<sim::BodyId> picked = ui.selection.pick(
-						    engine, world, worldToScreenDistance, mpOwnShipId, 26.0f);
+						const std::optional<sim::BodyId> picked =
+						    (mpSessionJoined && mpSim.has_value())
+						        ? ui.selection.pickFromBodies(bodies, world, worldToScreenDistance,
+						                                      mpOwnShipId, 26.0f)
+						        : ui.selection.pick(engine, world, worldToScreenDistance,
+						                            mpOwnShipId, 26.0f);
 						if (picked.has_value()) {
 							ui.selection.setSelected(*picked);
 						} else {
@@ -554,56 +478,59 @@ int main(int argc, char** argv) {
 			mpClient->takeJoinAccept(joinTick, joinGlobalPhysicsStep, joinBodies, joinOwn,
 			                         joinTimeScale);
 			if (!joinBodies.empty()) {
-				std::vector<sim::AuthoritativeBody> joinReplaySeed = joinBodies;
-				engine.queueApplyAuthoritativeSnapshot(std::move(joinBodies));
-				engine.setTimeScale(joinTimeScale);
-				mpOwnShipId = joinOwn;
-				mpSessionJoined = true;
-				if (mpOwnShipId != 0) {
-					const auto it = std::find_if(
-					    joinReplaySeed.begin(), joinReplaySeed.end(),
-					    [&](const sim::AuthoritativeBody& b) { return b.id == mpOwnShipId; });
-					if (it != joinReplaySeed.end()) {
-						renderer.setWorldOriginForRendering(it->x, it->y);
-						renderer.setCameraWorldCenterDouble(it->x, it->y);
+				std::optional<std::pair<double, double>> ownShipCenter;
+				if (joinOwn != 0) {
+					const auto ownShipIt =
+					    std::find_if(joinBodies.begin(), joinBodies.end(),
+					                 [&](const sim::AuthoritativeBody& b) { return b.id == joinOwn; });
+					if (ownShipIt != joinBodies.end()) {
+						ownShipCenter = {ownShipIt->x, ownShipIt->y};
 					}
 				}
-				trackedFollowId = mpOwnShipId;
-				followViewOffset = {0.0, 0.0};
-				engine.copyBodies(bodies);
 				std::vector<sim::SpawnCommand> fitBodies;
-				fitBodies.reserve(bodies.size());
-				for (const sim::BodySnapshot& b : bodies) {
+				fitBodies.reserve(joinBodies.size());
+				for (const sim::AuthoritativeBody& ab : joinBodies) {
 					fitBodies.push_back(sim::SpawnCommand{
-					    .x = b.x,
-					    .y = b.y,
-					    .vx = b.vx,
-					    .vy = b.vy,
-					    .mass = b.mass,
-					    .radius = b.radius,
-					    .name = b.name,
+					    .x = ab.x,
+					    .y = ab.y,
+					    .vx = ab.vx,
+					    .vy = ab.vy,
+					    .mass = ab.mass,
+					    .radius = ab.radius,
+					    .name = ab.name,
 					});
 				}
 				fitViewToBodies(renderer, fitBodies);
+				mpOwnShipId = joinOwn;
+				mpSessionJoined = true;
+				mpSim.emplace(engine);
+				mpSim->syncJoin(joinGlobalPhysicsStep, joinTimeScale, std::move(joinBodies));
+				mpSim->start();
+				if (mpOwnShipId != 0 && ownShipCenter.has_value()) {
+					renderer.setWorldOriginForRendering(ownShipCenter->first, ownShipCenter->second);
+					renderer.setCameraWorldCenterDouble(ownShipCenter->first, ownShipCenter->second);
+				}
+				trackedFollowId = mpOwnShipId;
+				followViewOffset = {0.0, 0.0};
 				mpHudServerTick = joinTick;
-				mpWallPhysicsDebt = 0.0;
-				mpClientPhysicsHead = joinGlobalPhysicsStep;
-				mpLastConfirmedAuthorityStep = joinGlobalPhysicsStep;
-				mpReplay.seedAfterJoin(joinGlobalPhysicsStep, std::move(joinReplaySeed));
 				setStatus("Joined multiplayer session.", 2.5);
 			}
 			if (mpSessionJoined) {
+				if (mpSim.has_value() && !mpClient->isConnected()) {
+					mpSim->stop();
+					mpSim.reset();
+					mpSessionJoined = false;
+				} else {
 				bool hadMerge = false;
 				std::uint64_t mergeTick = 0;
 				std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
 				mpClient->takeMergeRemaps(mergeTick, netMerges, hadMerge);
 				if (hadMerge) {
-					for (const auto& pr : netMerges) {
-						engine.queueDelete(pr.first);
-					}
 					ui.selection.applyMergeRemap(netMerges);
 					ui.traces.applyMergeRemap(netMerges);
-					mpReplay.clear();
+					if (mpSim.has_value()) {
+						mpSim->postMergeDeletes(std::move(netMerges));
+					}
 				}
 
 				mpClient->takeShipSamples(mpInboundShips);
@@ -620,13 +547,19 @@ int main(int argc, char** argv) {
 				                            mpPendingWorldIds, mpPendingWorldPx, mpPendingWorldPy,
 				                            mpPendingWorldVx, mpPendingWorldVy, mpPendingWorldHad);
 
+				if (mpSim.has_value()) {
+					mpSim->syncReplicas(mpShipReplica);
+				}
+
 				if (mpOwnShipId != 0) {
 					double facing = 0.0;
-					if (const std::optional<sim::BodySnapshot> self =
-					        engine.bodyById(mpOwnShipId)) {
-						const render::Renderer::WorldCoordsD mouseWorld =
-						    renderer.screenToWorldD(sf::Mouse::getPosition(window));
-						facing = std::atan2(mouseWorld.y - self->y, mouseWorld.x - self->x);
+					const render::Renderer::WorldCoordsD mouseWorld =
+					    renderer.screenToWorldD(sf::Mouse::getPosition(window));
+					const auto shipIt = std::find_if(
+					    bodies.begin(), bodies.end(),
+					    [&](const sim::BodySnapshot& b) { return b.id == mpOwnShipId; });
+					if (shipIt != bodies.end()) {
+						facing = std::atan2(mouseWorld.y - shipIt->y, mouseWorld.x - shipIt->x);
 					} else if (const auto it = mpShipReplica.find(mpOwnShipId);
 					           it != mpShipReplica.end()) {
 						facing = static_cast<double>(it->second.facing);
@@ -646,18 +579,22 @@ int main(int argc, char** argv) {
 					in.facingRadians = static_cast<float>(facing);
 					mpClient->sendInput(in);
 				}
+				}
 			}
 		}
 
-		if (multiplayer && mpSessionJoined) {
-			const sim::SimulationConfig physicsCfg = engine.config();
-			if (!physicsCfg.paused) {
-				const double ts =
-				    (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
-				        ? physicsCfg.timeScale
-				        : 1.0;
-				const double dtSim = net::simulationDtFromTimeScale(ts);
+		mpRenderFrame.reset();
+		if (mpSessionJoined && mpSim.has_value()) {
+			net::MpClientRenderPublish pub;
+			mpSim->copyLatestRenderPublish(pub);
+			mpRenderFrame = std::move(pub);
+			bodies = mpRenderFrame->bodies;
+		}
 
+		if (multiplayer && mpSessionJoined && mpSim.has_value()) {
+			const bool simPaused =
+			    mpRenderFrame.has_value() && mpRenderFrame->config.paused;
+			if (!simPaused) {
 				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
 					mpHudServerTick = std::max(mpHudServerTick, s.serverTick);
 				}
@@ -665,25 +602,17 @@ int main(int argc, char** argv) {
 					mpHudServerTick = std::max(mpHudServerTick, mpPendingWorldTick);
 				}
 
-				std::unordered_set<sim::BodyId> shipDynamicsFromNet;
-				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
-					shipDynamicsFromNet.insert(s.bodyId);
-				}
-				for (const auto& idRep : mpShipReplica) {
-					shipDynamicsFromNet.insert(idRep.first);
-				}
-				if (mpOwnShipId != 0) {
-					shipDynamicsFromNet.insert(mpOwnShipId);
-				}
-
-				std::map<std::uint64_t, std::vector<sim::BodyDynamicsPatch>> stepPatches;
+				// One server tick bundle (`WorldDynamicSnapshot`) carries dynamics for every body at
+				// the same `globalPhysicsStep`; ship packets are display/replica only.
+				const std::uint64_t lastAuth = mpSim->lastConfirmedAuthorityStep();
+				std::uint64_t commitStep = lastAuth;
+				std::vector<sim::BodyDynamicsPatch> authorityPatches;
 				if (mpPendingWorldHad) {
-					auto& into = stepPatches[mpPendingWorldGlobalStep];
+					const std::uint64_t W = mpPendingWorldGlobalStep;
+					commitStep = std::max(commitStep, W);
+					authorityPatches.reserve(mpPendingWorldIds.size());
 					for (std::size_t i = 0; i < mpPendingWorldIds.size(); ++i) {
-						if (shipDynamicsFromNet.count(mpPendingWorldIds[i]) != 0) {
-							continue;
-						}
-						into.push_back(sim::BodyDynamicsPatch{
+						authorityPatches.push_back(sim::BodyDynamicsPatch{
 						    .id = mpPendingWorldIds[i],
 						    .x = mpPendingWorldPx[i],
 						    .y = mpPendingWorldPy[i],
@@ -692,88 +621,38 @@ int main(int argc, char** argv) {
 						});
 					}
 				}
-				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
-					stepPatches[s.globalPhysicsStep].push_back(sim::BodyDynamicsPatch{
-					    .id = s.bodyId,
-					    .x = s.px,
-					    .y = s.py,
-					    .vx = s.vx,
-					    .vy = s.vy,
-					});
-				}
 
-				std::vector<std::uint64_t> stepKeys;
-				stepKeys.reserve(stepPatches.size());
-				for (const auto& pr : stepPatches) {
-					stepKeys.push_back(pr.first);
-				}
-				std::sort(stepKeys.begin(), stepKeys.end());
-				for (const std::uint64_t S : stepKeys) {
-					const auto itSp = stepPatches.find(S);
-					if (itSp == stepPatches.end()) {
-						continue;
-					}
-					std::vector<sim::BodyDynamicsPatch> patches = std::move(itSp->second);
-					const std::uint64_t H = mpClientPhysicsHead;
-					if (S < H) {
-						if (!rewindReplayAuthority(mpReplay, engine, S, H, physicsCfg,
-						                           std::move(patches))) {
-							std::fprintf(
-							    stderr,
-							    "potato_gsim: MP replay horizon exceeded; resyncing buffer\n");
-							std::vector<sim::AuthoritativeBody> snap;
-							net::copyBodiesToAuthoritative(engine, snap);
-							mpReplay.clear();
-							mpReplay.seedAfterJoin(mpClientPhysicsHead, std::move(snap));
-						} else {
-							mpClientPhysicsHead = H;
-						}
-					} else if (S > H) {
-						catchUpPhysicsHead(mpReplay, engine, S - H, physicsCfg, mpShipReplica,
-						                   mpClientPhysicsHead);
-						if (!patches.empty()) {
-							engine.queuePatchBodyDynamics(std::move(patches));
-						}
-					} else {
-						if (!patches.empty()) {
-							engine.queuePatchBodyDynamics(std::move(patches));
-						}
-					}
-					mpLastConfirmedAuthorityStep = std::max(mpLastConfirmedAuthorityStep, S);
-				}
-
-				mpWallPhysicsDebt += frameDt;
-				mpWallPhysicsDebt = std::min(mpWallPhysicsDebt, net::kMaxWallPhysicsDebtSeconds);
-				int stepBudget = 0;
-				while (mpWallPhysicsDebt >= net::kRealSecondsPerPhysicsStep &&
-				       stepBudget < net::kMaxCatchUpPhysicsStepsPerFrame) {
-					if (mpClientPhysicsHead >=
-					    mpLastConfirmedAuthorityStep + net::kMaxPredictionLeadPhysicsSteps) {
-						break;
-					}
-					std::vector<net::ShipThrustSample> thrust;
-					collectReplicaThrustSamples(mpShipReplica, thrust);
-					net::applyShipThrustSamples(engine, thrust);
-					engine.advanceFixedStep(dtSim, physicsCfg);
-					++mpClientPhysicsHead;
-					std::vector<sim::AuthoritativeBody> bodiesAfter;
-					net::copyBodiesToAuthoritative(engine, bodiesAfter);
-					mpReplay.recordAfterPhysicsStep(mpClientPhysicsHead, std::move(bodiesAfter),
-					                                std::vector<net::ShipThrustSample>(thrust));
-					mpWallPhysicsDebt -= net::kRealSecondsPerPhysicsStep;
-					++stepBudget;
+				if (!authorityPatches.empty()) {
+					mpSim->postAuthorityBundle(std::move(authorityPatches), commitStep);
+				} else if (commitStep != lastAuth) {
+					mpSim->setLastConfirmedAuthorityStep(commitStep);
 				}
 			}
 		}
 
-		const sim::SimulationConfig cfg = engine.config();
-
-		engine.drainMergeRemapEvents(mergeRemapEvents);
+		sim::SimulationConfig cfg{};
+		double traceSimClock = 0.0;
+		if (mpSessionJoined && mpSim.has_value()) {
+			mpSim->takePendingMergeRemaps(mergeRemapEvents);
+			if (mpRenderFrame.has_value()) {
+				cfg = mpRenderFrame->config;
+				traceSimClock = mpRenderFrame->simulationTimeSeconds;
+			} else {
+				cfg = config;
+			}
+		} else {
+			cfg = engine.config();
+			traceSimClock = engine.simulationTimeSeconds();
+			engine.drainMergeRemapEvents(mergeRemapEvents);
+			engine.copyBodies(bodies);
+		}
 		ui.selection.applyMergeRemap(mergeRemapEvents);
 		ui.traces.applyMergeRemap(mergeRemapEvents);
-		ui.selection.validateAgainstEngine(engine);
-
-		engine.copyBodies(bodies);
+		if (mpSessionJoined && mpSim.has_value()) {
+			ui.selection.validateAgainstBodies(bodies);
+		} else {
+			ui.selection.validateAgainstEngine(engine);
+		}
 		std::optional<sim::BodySnapshot> selectedBody;
 		if (ui.selection.selectedId().has_value()) {
 			const sim::BodyId selectedId = *ui.selection.selectedId();
@@ -853,7 +732,7 @@ int main(int argc, char** argv) {
 			s.simplify = !selectedBody.has_value();
 			ui.traces.setSettings(s);
 		}
-		ui.traces.ingest(bodies, engine.simulationTimeSeconds());
+		ui.traces.ingest(bodies, traceSimClock);
 		const render::Renderer::WorldCoordsD cursorWorldD =
 		    renderer.screenToWorldD(sf::Mouse::getPosition(window));
 		std::optional<sim::BodySnapshot> hoveredBody;
@@ -904,9 +783,15 @@ int main(int argc, char** argv) {
 		    std::max(1e-9, predictWindowSimSeconds / static_cast<double>(predictorSettings.steps));
 		ui.predictor.setSettings(predictorSettings);
 		const double simSecondsPerUpdate =
-		    (engine.simulatedSecondsPerUpdate() > 0.0)
-		        ? engine.simulatedSecondsPerUpdate()
-		        : ((std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale : 1.0);
+		    (mpRenderFrame.has_value() && mpRenderFrame->simulatedSecondsPerUpdate > 0.0)
+		        ? mpRenderFrame->simulatedSecondsPerUpdate
+		        : ((mpSessionJoined && mpSim.has_value())
+		               ? ((std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale : 1.0)
+		               : ((engine.simulatedSecondsPerUpdate() > 0.0) ? engine.simulatedSecondsPerUpdate()
+		                                                             : ((std::isfinite(cfg.timeScale) &&
+		                                                                 cfg.timeScale > 0.0)
+		                                                                    ? cfg.timeScale
+		                                                                    : 1.0)));
 		const std::string timeScaleDisplay = ui::formatTimeLegacy(displayTimeRate) + "/s (" +
 		                                     ui::formatTimeLegacy(simSecondsPerUpdate) + "/U)";
 		const std::string predictWindowDisplay =
@@ -918,13 +803,16 @@ int main(int argc, char** argv) {
 		        : (formatFixed(predictorSettings.predictionRecalcIntervalSeconds, 3) + " s");
 		const std::string scaleDisplay =
 		    ui::formatDistanceLegacy(renderer.worldUnitsPerPixel()) + "/pixel";
-		const bool shouldRefreshPrediction = ui.showShipSelfPrediction;
+		const double predictInterval = predictorSettings.predictionRecalcIntervalSeconds;
+		const bool dueByInterval =
+		    predictInterval <= 0.0 ||
+		    std::chrono::duration<double>(now - lastPredictTime).count() >= predictInterval;
+		const bool shouldRefreshPrediction = ui.showShipSelfPrediction && dueByInterval;
 		if (shouldRefreshPrediction) {
 			lastPredictTime = now;
 			shipPredictionOffsets.clear();
 			shipPredictionBodyId.reset();
 			if (mpOwnShipId != 0) {
-				const sim::SimulationConfig cfg = engine.config();
 				const std::vector<sf::Vector2f> shipPredicted = ui.predictor.predictForBody(
 				    bodies, mpOwnShipId, cfg.gravitationalConstant, cfg.softeningEpsilon);
 				if (!shipPredicted.empty()) {
@@ -1067,7 +955,9 @@ int main(int argc, char** argv) {
 				                   " | server: potato_gsim_server");
 			}
 		}
-		hudLines.push_back("Bodies: " + std::to_string(engine.bodyCount()));
+		hudLines.push_back("Bodies: " +
+		                   std::to_string((mpSessionJoined && mpSim.has_value()) ? bodies.size()
+		                                                                       : engine.bodyCount()));
 		hudLines.push_back("Time speed: " + timeScaleDisplay);
 		hudLines.push_back("Scale: " + scaleDisplay + " | Predict: " + predictWindowDisplay +
 		                   " | FPS: " + std::to_string(round3(fps)));
@@ -1091,6 +981,10 @@ int main(int argc, char** argv) {
 	}
 
 	if (multiplayer) {
+		if (mpSim.has_value()) {
+			mpSim->stop();
+			mpSim.reset();
+		}
 		mpClient.reset();
 		enet_deinitialize();
 	}

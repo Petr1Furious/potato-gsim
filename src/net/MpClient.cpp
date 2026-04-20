@@ -1,6 +1,19 @@
 #include "net/MpClient.hpp"
 
+#include <chrono>
+#include <cstring>
+#include <thread>
+#include <vector>
+
 namespace net {
+
+namespace {
+
+// Large enough for bursts; oldest packets are dropped if the main thread stalls.
+constexpr std::size_t kInboundPacketQueueMax = 8192;
+constexpr std::size_t kOutboundQueueMax = 8192;
+
+}  // namespace
 
 MpClient::~MpClient() {
 	disconnect();
@@ -13,20 +26,46 @@ bool MpClient::connect(const std::string& host, const std::uint16_t port) {
 		return false;
 	}
 	address.port = port;
-	host_ = enet_host_create(nullptr, 1, 3, 0, 0);
-	if (host_ == nullptr) {
-		return false;
+	{
+		std::lock_guard<std::mutex> lock(enetMutex_);
+		host_ = enet_host_create(nullptr, 1, 3, 0, 0);
+		if (host_ == nullptr) {
+			return false;
+		}
+		serverPeer_ = enet_host_connect(host_, &address, 3, 0);
+		if (serverPeer_ == nullptr) {
+			enet_host_destroy(host_);
+			host_ = nullptr;
+			return false;
+		}
+		hasServerPeer_.store(true, std::memory_order_release);
+		peerFullyConnected_.store(false, std::memory_order_release);
 	}
-	serverPeer_ = enet_host_connect(host_, &address, 3, 0);
-	return serverPeer_ != nullptr;
+	netThread_.emplace([this](std::stop_token st) { netThreadMain(st); });
+	return true;
 }
 
 void MpClient::disconnect() {
+	if (netThread_.has_value()) {
+		netThread_->request_stop();
+		netThread_.reset();
+	}
+	hasServerPeer_.store(false, std::memory_order_release);
+	peerFullyConnected_.store(false, std::memory_order_release);
+	{
+		std::lock_guard<std::mutex> q(inboundMutex_);
+		inboundPackets_.clear();
+	}
+	{
+		std::lock_guard<std::mutex> s(sendMutex_);
+		outboundPackets_.clear();
+	}
+	std::lock_guard<std::mutex> lock(enetMutex_);
 	if (host_ != nullptr) {
 		enet_host_destroy(host_);
 		host_ = nullptr;
-		serverPeer_ = nullptr;
 	}
+	serverPeer_ = nullptr;
 	haveJoinAccept_ = false;
 	haveWorld_ = false;
 	haveMerge_ = false;
@@ -41,15 +80,11 @@ void MpClient::disconnect() {
 	pendingMerges_.clear();
 }
 
-void MpClient::flushIncoming(ENetEvent& event) {
-	if (event.packet->dataLength < 6) {
-		enet_packet_destroy(event.packet);
+void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
+	if (len < 6) {
 		return;
 	}
-	const std::uint8_t* d = event.packet->data;
-	const std::size_t len = event.packet->dataLength;
 	if (d[4] != kProtocolVersion) {
-		enet_packet_destroy(event.packet);
 		return;
 	}
 	const auto type = static_cast<MsgType>(d[5]);
@@ -107,43 +142,136 @@ void MpClient::flushIncoming(ENetEvent& event) {
 		default:
 			break;
 	}
-	enet_packet_destroy(event.packet);
 }
 
-void MpClient::service(const int timeoutMs) {
-	if (host_ == nullptr) {
-		return;
+void MpClient::enqueueReceivedPacket(std::vector<std::uint8_t> bytes) {
+	std::lock_guard<std::mutex> lock(inboundMutex_);
+	while (inboundPackets_.size() >= kInboundPacketQueueMax) {
+		inboundPackets_.pop_front();
 	}
-	ENetEvent event{};
-	while (enet_host_service(host_, &event, timeoutMs) > 0) {
-		if (event.type == ENET_EVENT_TYPE_RECEIVE) {
-			flushIncoming(event);
-		} else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
-			serverPeer_ = nullptr;
+	inboundPackets_.push_back(std::move(bytes));
+}
+
+void MpClient::netThreadMain(const std::stop_token st) {
+	while (!st.stop_requested()) {
+		std::deque<std::pair<OutboundKind, std::vector<std::uint8_t>>> outBatch;
+		{
+			std::lock_guard<std::mutex> s(sendMutex_);
+			outBatch.swap(outboundPackets_);
+		}
+
+		bool hadNetActivity = false;
+		std::vector<std::vector<std::uint8_t>> recvBatch;
+		{
+			std::lock_guard<std::mutex> lock(enetMutex_);
+			if (host_ == nullptr) {
+				break;
+			}
+			bool sentAny = false;
+			for (std::pair<OutboundKind, std::vector<std::uint8_t>>& item : outBatch) {
+				if (serverPeer_ == nullptr) {
+					break;
+				}
+				const OutboundKind kind = item.first;
+				std::vector<std::uint8_t>& bytes = item.second;
+				if (bytes.empty()) {
+					continue;
+				}
+				const std::uint32_t flags =
+				    (kind == OutboundKind::JoinReliable) ? ENET_PACKET_FLAG_RELIABLE : 0;
+				const std::uint8_t channel = (kind == OutboundKind::JoinReliable) ? 1 : 0;
+				ENetPacket* packet =
+				    enet_packet_create(bytes.data(), bytes.size(), flags);
+				if (packet == nullptr) {
+					continue;
+				}
+				enet_peer_send(serverPeer_, channel, packet);
+				sentAny = true;
+			}
+			if (sentAny) {
+				enet_host_flush(host_);
+				hadNetActivity = true;
+			}
+
+			ENetEvent event{};
+			while (enet_host_service(host_, &event, 0) > 0) {
+				hadNetActivity = true;
+				if (event.type == ENET_EVENT_TYPE_RECEIVE) {
+					std::vector<std::uint8_t> payload;
+					if (event.packet->dataLength > 0 && event.packet->data != nullptr) {
+						payload.resize(event.packet->dataLength);
+						std::memcpy(payload.data(), event.packet->data, event.packet->dataLength);
+					}
+					enet_packet_destroy(event.packet);
+					recvBatch.push_back(std::move(payload));
+				} else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
+					serverPeer_ = nullptr;
+					hasServerPeer_.store(false, std::memory_order_release);
+					peerFullyConnected_.store(false, std::memory_order_release);
+				}
+			}
+
+			if (serverPeer_ != nullptr &&
+			    serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
+				peerFullyConnected_.store(true, std::memory_order_release);
+			} else {
+				peerFullyConnected_.store(false, std::memory_order_release);
+			}
+		}
+
+		for (std::vector<std::uint8_t>& payload : recvBatch) {
+			enqueueReceivedPacket(std::move(payload));
+		}
+
+		if (!hadNetActivity && !st.stop_requested()) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 	}
 }
 
+void MpClient::service(const int /*timeoutMs*/) {
+	std::deque<std::vector<std::uint8_t>> batch;
+	{
+		std::lock_guard<std::mutex> lock(inboundMutex_);
+		batch.swap(inboundPackets_);
+	}
+	for (std::vector<std::uint8_t>& bytes : batch) {
+		processPacket(bytes.data(), bytes.size());
+	}
+}
+
+bool MpClient::isConnected() const {
+	return hasServerPeer_.load(std::memory_order_acquire);
+}
+
+bool MpClient::isPeerConnected() const {
+	return peerFullyConnected_.load(std::memory_order_acquire);
+}
+
 void MpClient::sendJoinRequest() {
-	if (host_ == nullptr || serverPeer_ == nullptr) {
+	if (!hasServerPeer_.load(std::memory_order_acquire)) {
 		return;
 	}
 	std::vector<std::uint8_t> payload;
 	writeJoinRequest(payload);
-	ENetPacket* packet =
-	    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
-	enet_peer_send(serverPeer_, 1, packet);
-	enet_host_flush(host_);
+	std::lock_guard<std::mutex> lock(sendMutex_);
+	while (outboundPackets_.size() >= kOutboundQueueMax) {
+		outboundPackets_.pop_front();
+	}
+	outboundPackets_.emplace_back(OutboundKind::JoinReliable, std::move(payload));
 }
 
 void MpClient::sendInput(const ClientInputPayload& payload) {
-	if (host_ == nullptr || serverPeer_ == nullptr) {
+	if (!hasServerPeer_.load(std::memory_order_acquire)) {
 		return;
 	}
 	std::vector<std::uint8_t> payloadBytes;
 	writeClientInput(payload, payloadBytes);
-	ENetPacket* packet = enet_packet_create(payloadBytes.data(), payloadBytes.size(), 0);
-	enet_peer_send(serverPeer_, 0, packet);
+	std::lock_guard<std::mutex> lock(sendMutex_);
+	while (outboundPackets_.size() >= kOutboundQueueMax) {
+		outboundPackets_.pop_front();
+	}
+	outboundPackets_.emplace_back(OutboundKind::InputUnreliable, std::move(payloadBytes));
 }
 
 void MpClient::takeJoinAccept(std::uint64_t& tickOut,

@@ -38,6 +38,9 @@ class MpReplayBuffer {
 	                            std::vector<ShipThrustSample> thrustIntoThisStep);
 
 	[[nodiscard]] bool findFrame(std::uint64_t stepEnd, ReplayFrame& out) const;
+	[[nodiscard]] bool findLatestCheckpointAtOrBefore(std::uint64_t stepEnd,
+	                                                  std::uint64_t& foundStepEndOut,
+	                                                  ReplayFrame& out) const;
 
 	/// Pop from back while last frame has stepEnd > keepThroughStep (removes speculative tail).
 	void popFramesAfter(std::uint64_t keepThroughStep);

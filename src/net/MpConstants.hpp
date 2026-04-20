@@ -27,6 +27,10 @@ inline constexpr double kPhysicsDt = kRealSecondsPerPhysicsStep;
 
 /// Max physics steps per **render frame** after a hitch (real-step backlog).
 inline constexpr int kMaxCatchUpPhysicsStepsPerFrame = 96;
+/// Max physics steps per **sim-thread wakeup** (MP client); caps burst catch-up CPU.
+inline constexpr int kMaxCatchUpPhysicsStepsPerSimThreadWake = 96;
+/// Max client `globalPhysicsStep` lead over last confirmed authority (physics steps).
+inline constexpr std::uint64_t kMpMaxClientLeadPhysicsSteps = 480;
 /// Max physics steps per **server network tick** (~30 Hz wall).
 inline constexpr int kMaxCatchUpPhysicsStepsPerServerTick = 192;
 /// Drop excess **wall-clock** backlog so a long stall does not freeze the process (seconds).
