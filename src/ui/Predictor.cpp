@@ -50,6 +50,26 @@ bool trackedOverlapsAnyOther(const std::vector<sim::BodySnapshot>& bodies,
 	return false;
 }
 
+/// True when the tracked body overlaps another and is **strictly lighter** (by |mass|) than that
+/// body — the case where we truncate the prediction path at contact.
+bool trackedOverlapsStrictlyMoreMassiveOther(const std::vector<sim::BodySnapshot>& bodies,
+                                             std::size_t trackedIndex) {
+	const sim::BodySnapshot& t = bodies[trackedIndex];
+	const double tMassAbs = std::abs(t.mass);
+	for (std::size_t j = 0; j < bodies.size(); ++j) {
+		if (j == trackedIndex) {
+			continue;
+		}
+		if (!circlesOverlap(t, bodies[j])) {
+			continue;
+		}
+		if (tMassAbs < std::abs(bodies[j].mass)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool initialTrackedOverlapOthers(const std::vector<sim::BodySnapshot>& bodies,
                                  sim::BodyId trackedId) {
 	const std::optional<std::size_t> ti = findIndexById(bodies, trackedId);
@@ -304,7 +324,7 @@ PredictionPath Predictor::integrateWorkingSet(std::vector<sim::BodySnapshot> bod
 			if (!postIndex.has_value()) {
 				break;
 			}
-			if (trackedOverlapsAnyOther(bodies, *postIndex)) {
+			if (trackedOverlapsStrictlyMoreMassiveOther(bodies, *postIndex)) {
 				const sim::BodySnapshot& t = bodies[*postIndex];
 				if (relativeOutput) {
 					if (!referenceId.has_value()) {

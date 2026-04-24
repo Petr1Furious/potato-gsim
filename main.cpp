@@ -123,14 +123,6 @@ int main(int argc, char** argv) {
 	bool mpJoinRequestSent = false;
 	std::uint32_t mpInputSeq = 0;
 	std::optional<net::MpClientSim> mpSim;
-	bool mpPendingWorldHad = false;
-	std::uint64_t mpPendingWorldTick = 0;
-	std::uint64_t mpPendingWorldGlobalStep = 0;
-	std::vector<sim::BodyId> mpPendingWorldIds;
-	std::vector<double> mpPendingWorldPx;
-	std::vector<double> mpPendingWorldPy;
-	std::vector<double> mpPendingWorldVx;
-	std::vector<double> mpPendingWorldVy;
 	std::vector<net::MpClient::ShipNetSample> mpInboundShips;
 	std::unordered_map<sim::BodyId, MpShipReplica> mpShipReplica;
 	sim::BodyId mpPrevOwnShipId = 0;
@@ -589,11 +581,12 @@ int main(int argc, char** argv) {
 					mpShipHeadingInited = false;
 					mpShipThrustPercent = 100;
 				} else {
-					bool hadMerge = false;
-					std::uint64_t mergeTick = 0;
-					std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
-					mpClient->takeMergeRemaps(mergeTick, netMerges, hadMerge);
-					if (hadMerge) {
+					while (true) {
+						std::uint64_t mergeTick = 0;
+						std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
+						if (!mpClient->takeNextMergeRemaps(mergeTick, netMerges)) {
+							break;
+						}
 						ui.selection.applyMergeRemap(netMerges);
 						ui.traces.applyMergeRemap(netMerges);
 						if (mpSim.has_value()) {
@@ -618,11 +611,26 @@ int main(int argc, char** argv) {
 						rep.lastTick = s.serverTick;
 					}
 
-					mpPendingWorldHad = false;
-					mpClient->takeWorldSnapshot(mpPendingWorldTick, mpPendingWorldGlobalStep,
-					                            mpPendingWorldIds, mpPendingWorldPx,
-					                            mpPendingWorldPy, mpPendingWorldVx,
-					                            mpPendingWorldVy, mpPendingWorldHad);
+					while (true) {
+						std::uint64_t worldTick = 0;
+						std::uint64_t worldStep = 0;
+						std::vector<sim::AuthoritativeBody> worldBodies;
+						if (!mpClient->takeNextWorldSnapshot(worldTick, worldStep, worldBodies)) {
+							break;
+						}
+						mpHudServerTick = std::max(mpHudServerTick, worldTick);
+						if (!mpSim.has_value()) {
+							continue;
+						}
+						if (worldStep <= mpSim->lastConfirmedAuthorityStep()) {
+							continue;
+						}
+						net::WorldSnapshotJob job;
+						job.serverTick = worldTick;
+						job.globalPhysicsStep = worldStep;
+						job.bodies = std::move(worldBodies);
+						mpSim->enqueueWorldSnapshot(std::move(job));
+					}
 
 					if (mpSim.has_value()) {
 						mpSim->syncReplicas(mpShipReplica);
@@ -708,14 +716,8 @@ int main(int argc, char** argv) {
 						in.facingRadians = static_cast<float>(facing);
 						in.thrustPercent = mpShipThrustPercent;
 						mpClient->sendInput(in);
-
-						if (mpSim.has_value()) {
-							MpShipReplica& live = mpShipReplica[mpOwnShipId];
-							live.facing = in.facingRadians;
-							live.thrustForward = in.thrustForward;
-							live.thrustPercent = in.thrustPercent;
-							mpSim->syncReplicas(mpShipReplica);
-						}
+						// Own-ship `mpShipReplica` thrust/facing come from server `ShipState` only
+						// (applied above) so client physics matches periodic world snapshots.
 					}
 				}
 			}
@@ -734,35 +736,6 @@ int main(int argc, char** argv) {
 			if (!simPaused) {
 				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
 					mpHudServerTick = std::max(mpHudServerTick, s.serverTick);
-				}
-				if (mpPendingWorldHad) {
-					mpHudServerTick = std::max(mpHudServerTick, mpPendingWorldTick);
-				}
-
-				// One server tick bundle (`WorldDynamicSnapshot`) carries dynamics for every body
-				// at the same `globalPhysicsStep`; ship packets are display/replica only.
-				const std::uint64_t lastAuth = mpSim->lastConfirmedAuthorityStep();
-				std::uint64_t commitStep = lastAuth;
-				std::vector<sim::BodyDynamicsPatch> authorityPatches;
-				if (mpPendingWorldHad) {
-					const std::uint64_t W = mpPendingWorldGlobalStep;
-					commitStep = std::max(commitStep, W);
-					authorityPatches.reserve(mpPendingWorldIds.size());
-					for (std::size_t i = 0; i < mpPendingWorldIds.size(); ++i) {
-						authorityPatches.push_back(sim::BodyDynamicsPatch{
-						    .id = mpPendingWorldIds[i],
-						    .x = mpPendingWorldPx[i],
-						    .y = mpPendingWorldPy[i],
-						    .vx = mpPendingWorldVx[i],
-						    .vy = mpPendingWorldVy[i],
-						});
-					}
-				}
-
-				if (!authorityPatches.empty()) {
-					mpSim->postAuthorityBundle(std::move(authorityPatches), commitStep);
-				} else if (commitStep != lastAuth) {
-					mpSim->setLastConfirmedAuthorityStep(commitStep);
 				}
 			}
 		}

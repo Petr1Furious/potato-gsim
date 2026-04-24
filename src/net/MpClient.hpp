@@ -48,6 +48,11 @@ class MpClient {
 	/// Main thread: apply packets received on the background net thread (non-blocking).
 	void service(int timeoutMs);
 
+#if defined(POTATO_GSIM_MP_WORLD_SYNC_TESTS)
+	/// Unit tests: enqueue raw inbound bytes as if received from the network thread.
+	void testingEnqueueInboundPacket(std::vector<std::uint8_t> packet);
+#endif
+
 	void sendJoinRequest();
 	void sendInput(const ClientInputPayload& payload);
 
@@ -61,17 +66,14 @@ class MpClient {
 	                    sim::BodyId& ownShipBodyIdOut,
 	                    double& serverTimeScaleOut);
 	void takeShipSamples(std::vector<ShipNetSample>& out);
-	void takeWorldSnapshot(std::uint64_t& tickOut,
-	                       std::uint64_t& globalPhysicsStepOut,
-	                       std::vector<sim::BodyId>& idsOut,
-	                       std::vector<double>& pxOut,
-	                       std::vector<double>& pyOut,
-	                       std::vector<double>& vxOut,
-	                       std::vector<double>& vyOut,
-	                       bool& hadOneOut);
-	void takeMergeRemaps(std::uint64_t& tickOut,
-	                     std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut,
-	                     bool& hadOneOut);
+	/// Pops one queued world snapshot (FIFO). Returns false when empty.
+	[[nodiscard]] bool takeNextWorldSnapshot(std::uint64_t& tickOut,
+	                                         std::uint64_t& globalPhysicsStepOut,
+	                                         std::vector<sim::AuthoritativeBody>& bodiesOut);
+	/// Pops one queued merge batch (FIFO). Returns false when empty.
+	[[nodiscard]] bool takeNextMergeRemaps(
+	    std::uint64_t& tickOut,
+	    std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut);
 	void takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bodiesOut, bool& hadOneOut);
 
    private:
@@ -80,6 +82,16 @@ class MpClient {
 	void netThreadMain(std::stop_token st);
 	void enqueueReceivedPacket(std::vector<std::uint8_t> bytes);
 	void processPacket(const std::uint8_t* data, std::size_t len);
+
+	struct PendingWorldSnapshot {
+		std::uint64_t serverTick = 0;
+		std::uint64_t globalPhysicsStep = 0;
+		std::vector<sim::AuthoritativeBody> bodies;
+	};
+	struct PendingMergeBatch {
+		std::uint64_t serverTick = 0;
+		std::vector<std::pair<sim::BodyId, sim::BodyId>> pairs;
+	};
 
 	ENetHost* host_ = nullptr;
 	ENetPeer* serverPeer_ = nullptr;
@@ -104,18 +116,8 @@ class MpClient {
 	bool haveJoinAccept_ = false;
 
 	std::vector<ShipNetSample> pendingShips_;
-	std::vector<sim::BodyId> pendingWorldIds_;
-	std::vector<double> pendingWorldPx_;
-	std::vector<double> pendingWorldPy_;
-	std::vector<double> pendingWorldVx_;
-	std::vector<double> pendingWorldVy_;
-	std::uint64_t pendingWorldTick_ = 0;
-	std::uint64_t pendingWorldGlobalPhysicsStep_ = 0;
-	bool haveWorld_ = false;
-
-	std::uint64_t pendingMergeTick_ = 0;
-	std::vector<std::pair<sim::BodyId, sim::BodyId>> pendingMerges_;
-	bool haveMerge_ = false;
+	std::deque<PendingWorldSnapshot> pendingWorldSnapshots_;
+	std::deque<PendingMergeBatch> pendingMergeBatches_;
 
 	std::vector<sim::AuthoritativeBody> pendingAuthoritativeUpserts_;
 	bool haveAuthoritativeUpserts_ = false;

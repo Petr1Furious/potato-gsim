@@ -68,17 +68,11 @@ void MpClient::disconnect() {
 	}
 	serverPeer_ = nullptr;
 	haveJoinAccept_ = false;
-	haveWorld_ = false;
-	haveMerge_ = false;
 	pendingJoinTimeScale_ = 1.0;
 	pendingJoinBodies_.clear();
 	pendingShips_.clear();
-	pendingWorldIds_.clear();
-	pendingWorldPx_.clear();
-	pendingWorldPy_.clear();
-	pendingWorldVx_.clear();
-	pendingWorldVy_.clear();
-	pendingMerges_.clear();
+	pendingWorldSnapshots_.clear();
+	pendingMergeBatches_.clear();
 	pendingAuthoritativeUpserts_.clear();
 	haveAuthoritativeUpserts_ = false;
 }
@@ -117,29 +111,23 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 		case MsgType::WorldDynamicSnapshot: {
 			std::uint64_t tick = 0;
 			std::uint64_t worldG = 0;
-			std::vector<sim::BodyId> ids;
-			std::vector<double> px;
-			std::vector<double> py;
-			std::vector<double> vx;
-			std::vector<double> vy;
-			if (readWorldDynamicSnapshot(d, len, tick, worldG, ids, px, py, vx, vy)) {
-				pendingWorldTick_ = tick;
-				pendingWorldGlobalPhysicsStep_ = worldG;
-				pendingWorldIds_ = std::move(ids);
-				pendingWorldPx_ = std::move(px);
-				pendingWorldPy_ = std::move(py);
-				pendingWorldVx_ = std::move(vx);
-				pendingWorldVy_ = std::move(vy);
-				haveWorld_ = true;
+			std::vector<sim::AuthoritativeBody> bodies;
+			if (readWorldDynamicSnapshot(d, len, tick, worldG, bodies)) {
+				PendingWorldSnapshot snap;
+				snap.serverTick = tick;
+				snap.globalPhysicsStep = worldG;
+				snap.bodies = std::move(bodies);
+				pendingWorldSnapshots_.push_back(std::move(snap));
 			}
 		} break;
 		case MsgType::MergeRemapBatch: {
 			std::uint64_t tick = 0;
 			std::vector<std::pair<sim::BodyId, sim::BodyId>> pairs;
 			if (readMergeRemapBatch(d, len, tick, pairs)) {
-				pendingMergeTick_ = tick;
-				pendingMerges_ = std::move(pairs);
-				haveMerge_ = true;
+				PendingMergeBatch batch;
+				batch.serverTick = tick;
+				batch.pairs = std::move(pairs);
+				pendingMergeBatches_.push_back(std::move(batch));
 			}
 		} break;
 		case MsgType::AuthoritativeBodyUpsert: {
@@ -254,6 +242,12 @@ void MpClient::service(const int /*timeoutMs*/) {
 	}
 }
 
+#if defined(POTATO_GSIM_MP_WORLD_SYNC_TESTS)
+void MpClient::testingEnqueueInboundPacket(std::vector<std::uint8_t> packet) {
+	enqueueReceivedPacket(std::move(packet));
+}
+#endif
+
 bool MpClient::isConnected() const {
 	return hasServerPeer_.load(std::memory_order_acquire);
 }
@@ -318,49 +312,35 @@ void MpClient::takeShipSamples(std::vector<ShipNetSample>& out) {
 	out.swap(pendingShips_);
 }
 
-void MpClient::takeWorldSnapshot(std::uint64_t& tickOut,
-                                 std::uint64_t& globalPhysicsStepOut,
-                                 std::vector<sim::BodyId>& idsOut,
-                                 std::vector<double>& pxOut,
-                                 std::vector<double>& pyOut,
-                                 std::vector<double>& vxOut,
-                                 std::vector<double>& vyOut,
-                                 bool& hadOneOut) {
-	if (!haveWorld_) {
-		hadOneOut = false;
+bool MpClient::takeNextWorldSnapshot(std::uint64_t& tickOut,
+                                     std::uint64_t& globalPhysicsStepOut,
+                                     std::vector<sim::AuthoritativeBody>& bodiesOut) {
+	if (pendingWorldSnapshots_.empty()) {
 		tickOut = 0;
 		globalPhysicsStepOut = 0;
-		idsOut.clear();
-		pxOut.clear();
-		pyOut.clear();
-		vxOut.clear();
-		vyOut.clear();
-		return;
+		bodiesOut.clear();
+		return false;
 	}
-	hadOneOut = true;
-	tickOut = pendingWorldTick_;
-	globalPhysicsStepOut = pendingWorldGlobalPhysicsStep_;
-	idsOut = std::move(pendingWorldIds_);
-	pxOut = std::move(pendingWorldPx_);
-	pyOut = std::move(pendingWorldPy_);
-	vxOut = std::move(pendingWorldVx_);
-	vyOut = std::move(pendingWorldVy_);
-	haveWorld_ = false;
+	const PendingWorldSnapshot w = std::move(pendingWorldSnapshots_.front());
+	pendingWorldSnapshots_.pop_front();
+	tickOut = w.serverTick;
+	globalPhysicsStepOut = w.globalPhysicsStep;
+	bodiesOut = std::move(w.bodies);
+	return true;
 }
 
-void MpClient::takeMergeRemaps(std::uint64_t& tickOut,
-                               std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut,
-                               bool& hadOneOut) {
-	if (!haveMerge_) {
-		hadOneOut = false;
+bool MpClient::takeNextMergeRemaps(std::uint64_t& tickOut,
+                                   std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut) {
+	if (pendingMergeBatches_.empty()) {
 		tickOut = 0;
 		pairsOut.clear();
-		return;
+		return false;
 	}
-	hadOneOut = true;
-	tickOut = pendingMergeTick_;
-	pairsOut = std::move(pendingMerges_);
-	haveMerge_ = false;
+	const PendingMergeBatch b = std::move(pendingMergeBatches_.front());
+	pendingMergeBatches_.pop_front();
+	tickOut = b.serverTick;
+	pairsOut = std::move(b.pairs);
+	return true;
 }
 
 void MpClient::takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bodiesOut,

@@ -65,27 +65,41 @@ int main() {
 	}
 
 	{
-		std::vector<sim::BodyId> ids{1, 2};
-		const double px[2]{10.0, 20.0};
-		const double py[2]{-1.0, -2.0};
-		const double vx[2]{0.1, 0.2};
-		const double vy[2]{0.3, 0.4};
+		std::vector<sim::AuthoritativeBody> bodiesIn;
+		bodiesIn.push_back(sim::AuthoritativeBody{
+		    .id = 1,
+		    .x = 10.0,
+		    .y = -1.0,
+		    .vx = 0.1,
+		    .vy = 0.3,
+		    .mass = 11.0,
+		    .radius = 3.0,
+		    .name = "A",
+		});
+		bodiesIn.push_back(sim::AuthoritativeBody{
+		    .id = 2,
+		    .x = 20.0,
+		    .y = -2.0,
+		    .vx = 0.2,
+		    .vy = 0.4,
+		    .mass = 22.0,
+		    .radius = 4.0,
+		    .name = "B",
+		});
 		std::vector<std::uint8_t> buf;
-		assert(net::writeWorldDynamicSnapshot(5, 12345, ids, px, py, vx, vy, 2, buf));
+		assert(net::writeWorldDynamicSnapshot(5, 12345, bodiesIn, buf));
 		std::uint64_t tick = 0;
 		std::uint64_t g = 0;
-		std::vector<sim::BodyId> idsOut;
-		std::vector<double> pxOut;
-		std::vector<double> pyOut;
-		std::vector<double> vxOut;
-		std::vector<double> vyOut;
-		assert(net::readWorldDynamicSnapshot(buf.data(), buf.size(), tick, g, idsOut, pxOut, pyOut,
-		                                     vxOut, vyOut));
+		std::vector<sim::AuthoritativeBody> bodiesOut;
+		assert(net::readWorldDynamicSnapshot(buf.data(), buf.size(), tick, g, bodiesOut));
 		assert(tick == 5);
 		assert(g == 12345);
-		assert(idsOut.size() == 2);
-		assert(std::abs(pxOut[1] - 20.0) < 1e-12);
-		assert(std::abs(vyOut[0] - 0.3) < 1e-12);
+		assert(bodiesOut.size() == 2);
+		assert(std::abs(bodiesOut[1].x - 20.0) < 1e-12);
+		assert(std::abs(bodiesOut[0].vy - 0.3) < 1e-12);
+		assert(std::abs(bodiesOut[0].mass - 11.0) < 1e-12);
+		assert(std::abs(bodiesOut[1].radius - 4.0) < 1e-12);
+		assert(bodiesOut[0].name == "A" && bodiesOut[1].name == "B");
 	}
 
 	{

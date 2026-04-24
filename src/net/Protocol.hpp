@@ -10,7 +10,7 @@
 namespace net {
 
 constexpr std::uint32_t kMagic = 0x31475350u;  // 'P''G''S''1' little-endian
-constexpr std::uint8_t kProtocolVersion = 5;
+constexpr std::uint8_t kProtocolVersion = 1;
 
 enum class MsgType : std::uint8_t {
 	JoinRequest = 1,
@@ -77,24 +77,17 @@ bool readShipState(const std::uint8_t* data,
                    std::uint8_t& thrustForwardOut,
                    std::uint8_t& thrustPercentOut);
 
+/// Full authoritative rows (same encoding as each `JoinAccept` body): id, pose, dynamics,
+/// mass, radius, UTF-8 name.
 bool writeWorldDynamicSnapshot(std::uint64_t serverTick,
                                std::uint64_t globalPhysicsStep,
-                               const std::vector<sim::BodyId>& ids,
-                               const double* px,
-                               const double* py,
-                               const double* vx,
-                               const double* vy,
-                               std::size_t n,
+                               const std::vector<sim::AuthoritativeBody>& bodies,
                                std::vector<std::uint8_t>& out);
 bool readWorldDynamicSnapshot(const std::uint8_t* data,
                               std::size_t len,
                               std::uint64_t& tickOut,
                               std::uint64_t& globalPhysicsStepOut,
-                              std::vector<sim::BodyId>& idsOut,
-                              std::vector<double>& pxOut,
-                              std::vector<double>& pyOut,
-                              std::vector<double>& vxOut,
-                              std::vector<double>& vyOut);
+                              std::vector<sim::AuthoritativeBody>& bodiesOut);
 
 bool writeMergeRemapBatch(std::uint64_t serverTick,
                           const std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairs,

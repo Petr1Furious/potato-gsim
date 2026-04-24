@@ -102,6 +102,42 @@ void writeHeader(std::vector<std::uint8_t>& out, MsgType type) {
 	appendU8(out, static_cast<std::uint8_t>(type));
 }
 
+void appendAuthoritativeBodyRow(std::vector<std::uint8_t>& out, const sim::AuthoritativeBody& b) {
+	appendU64(out, b.id);
+	appendF64(out, b.x);
+	appendF64(out, b.y);
+	appendF64(out, b.vx);
+	appendF64(out, b.vy);
+	appendF64(out, b.mass);
+	appendF64(out, b.radius);
+	const std::uint32_t nl =
+	    static_cast<std::uint32_t>(std::min<std::size_t>(b.name.size(), 65000));
+	appendU32(out, nl);
+	for (std::uint32_t i = 0; i < nl; ++i) {
+		out.push_back(static_cast<std::uint8_t>(b.name[i]));
+	}
+}
+
+bool readAuthoritativeBodyRow(const std::uint8_t*& p,
+                              const std::uint8_t* end,
+                              sim::AuthoritativeBody& b) {
+	if (!readU64(p, end, b.id)) {
+		return false;
+	}
+	if (!readF64(p, end, b.x) || !readF64(p, end, b.y) || !readF64(p, end, b.vx) ||
+	    !readF64(p, end, b.vy) || !readF64(p, end, b.mass) || !readF64(p, end, b.radius)) {
+		return false;
+	}
+	std::uint32_t nameLen = 0;
+	if (!readU32(p, end, nameLen) || nameLen > 65000u ||
+	    static_cast<std::size_t>(end - p) < nameLen) {
+		return false;
+	}
+	b.name.assign(reinterpret_cast<const char*>(p), nameLen);
+	p += nameLen;
+	return true;
+}
+
 }  // namespace
 
 bool writeJoinRequest(std::vector<std::uint8_t>& out) {
@@ -128,19 +164,7 @@ bool writeJoinAccept(const std::uint64_t serverTick,
 	appendU64(out, serverTick);
 	appendU32(out, static_cast<std::uint32_t>(bodies.size()));
 	for (const sim::AuthoritativeBody& b : bodies) {
-		appendU64(out, b.id);
-		appendF64(out, b.x);
-		appendF64(out, b.y);
-		appendF64(out, b.vx);
-		appendF64(out, b.vy);
-		appendF64(out, b.mass);
-		appendF64(out, b.radius);
-		const std::uint32_t nl =
-		    static_cast<std::uint32_t>(std::min<std::size_t>(b.name.size(), 65000));
-		appendU32(out, nl);
-		for (std::uint32_t i = 0; i < nl; ++i) {
-			out.push_back(static_cast<std::uint8_t>(b.name[i]));
-		}
+		appendAuthoritativeBodyRow(out, b);
 	}
 	appendU64(out, ownShipBodyId);
 	appendF64(out, serverTimeScale);
@@ -175,20 +199,9 @@ bool readJoinAccept(const std::uint8_t* data,
 	bodiesOut.reserve(n);
 	for (std::uint32_t i = 0; i < n; ++i) {
 		sim::AuthoritativeBody b{};
-		if (!readU64(p, end, b.id)) {
+		if (!readAuthoritativeBodyRow(p, end, b)) {
 			return false;
 		}
-		if (!readF64(p, end, b.x) || !readF64(p, end, b.y) || !readF64(p, end, b.vx) ||
-		    !readF64(p, end, b.vy) || !readF64(p, end, b.mass) || !readF64(p, end, b.radius)) {
-			return false;
-		}
-		std::uint32_t nameLen = 0;
-		if (!readU32(p, end, nameLen) || nameLen > 65000u ||
-		    static_cast<std::size_t>(end - p) < nameLen) {
-			return false;
-		}
-		b.name.assign(reinterpret_cast<const char*>(p), nameLen);
-		p += nameLen;
 		bodiesOut.push_back(std::move(b));
 	}
 	if (static_cast<std::size_t>(end - p) >= 8) {
@@ -312,24 +325,15 @@ bool readShipState(const std::uint8_t* data,
 
 bool writeWorldDynamicSnapshot(const std::uint64_t serverTick,
                                const std::uint64_t globalPhysicsStep,
-                               const std::vector<sim::BodyId>& ids,
-                               const double* px,
-                               const double* py,
-                               const double* vx,
-                               const double* vy,
-                               const std::size_t n,
+                               const std::vector<sim::AuthoritativeBody>& bodies,
                                std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::WorldDynamicSnapshot);
 	appendU64(out, serverTick);
 	appendU64(out, globalPhysicsStep);
-	appendU32(out, static_cast<std::uint32_t>(n));
-	for (std::size_t i = 0; i < n; ++i) {
-		appendU64(out, ids[i]);
-		appendF64(out, px[i]);
-		appendF64(out, py[i]);
-		appendF64(out, vx[i]);
-		appendF64(out, vy[i]);
+	appendU32(out, static_cast<std::uint32_t>(bodies.size()));
+	for (const sim::AuthoritativeBody& b : bodies) {
+		appendAuthoritativeBodyRow(out, b);
 	}
 	return true;
 }
@@ -338,11 +342,7 @@ bool readWorldDynamicSnapshot(const std::uint8_t* data,
                               const std::size_t len,
                               std::uint64_t& tickOut,
                               std::uint64_t& globalPhysicsStepOut,
-                              std::vector<sim::BodyId>& idsOut,
-                              std::vector<double>& pxOut,
-                              std::vector<double>& pyOut,
-                              std::vector<double>& vxOut,
-                              std::vector<double>& vyOut) {
+                              std::vector<sim::AuthoritativeBody>& bodiesOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
@@ -357,19 +357,14 @@ bool readWorldDynamicSnapshot(const std::uint8_t* data,
 	if (!readU32(p, end, n) || n > 2'000'000u) {
 		return false;
 	}
-	idsOut.resize(n);
-	pxOut.resize(n);
-	pyOut.resize(n);
-	vxOut.resize(n);
-	vyOut.resize(n);
+	bodiesOut.clear();
+	bodiesOut.reserve(n);
 	for (std::uint32_t i = 0; i < n; ++i) {
-		if (!readU64(p, end, idsOut[i])) {
+		sim::AuthoritativeBody b{};
+		if (!readAuthoritativeBodyRow(p, end, b)) {
 			return false;
 		}
-		if (!readF64(p, end, pxOut[i]) || !readF64(p, end, pyOut[i]) ||
-		    !readF64(p, end, vxOut[i]) || !readF64(p, end, vyOut[i])) {
-			return false;
-		}
+		bodiesOut.push_back(std::move(b));
 	}
 	return p == end;
 }
@@ -427,19 +422,7 @@ bool writeAuthoritativeBodyUpsert(const std::uint64_t serverTick,
 	appendU64(out, globalPhysicsStep);
 	appendU32(out, static_cast<std::uint32_t>(bodies.size()));
 	for (const sim::AuthoritativeBody& b : bodies) {
-		appendU64(out, b.id);
-		appendF64(out, b.x);
-		appendF64(out, b.y);
-		appendF64(out, b.vx);
-		appendF64(out, b.vy);
-		appendF64(out, b.mass);
-		appendF64(out, b.radius);
-		const std::uint32_t nl =
-		    static_cast<std::uint32_t>(std::min<std::size_t>(b.name.size(), 65000));
-		appendU32(out, nl);
-		for (std::uint32_t i = 0; i < nl; ++i) {
-			out.push_back(static_cast<std::uint8_t>(b.name[i]));
-		}
+		appendAuthoritativeBodyRow(out, b);
 	}
 	return true;
 }
@@ -468,20 +451,9 @@ bool readAuthoritativeBodyUpsert(const std::uint8_t* data,
 	bodiesOut.reserve(n);
 	for (std::uint32_t i = 0; i < n; ++i) {
 		sim::AuthoritativeBody b{};
-		if (!readU64(p, end, b.id)) {
+		if (!readAuthoritativeBodyRow(p, end, b)) {
 			return false;
 		}
-		if (!readF64(p, end, b.x) || !readF64(p, end, b.y) || !readF64(p, end, b.vx) ||
-		    !readF64(p, end, b.vy) || !readF64(p, end, b.mass) || !readF64(p, end, b.radius)) {
-			return false;
-		}
-		std::uint32_t nameLen = 0;
-		if (!readU32(p, end, nameLen) || nameLen > 65000u ||
-		    static_cast<std::size_t>(end - p) < nameLen) {
-			return false;
-		}
-		b.name.assign(reinterpret_cast<const char*>(p), nameLen);
-		p += nameLen;
 		bodiesOut.push_back(std::move(b));
 	}
 	return p == end;

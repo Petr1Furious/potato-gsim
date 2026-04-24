@@ -144,6 +144,10 @@ class SimulationEngine {
 	/// `start()` background loop). Not used while `simulationLoop` is driving `step`.
 	void advanceFixedStep(double dt, const SimulationConfig& cfg);
 
+	/// Replace the entire simulated world from an authoritative body list and publish
+	/// immediately, without advancing physics. Used for multiplayer snapshot reconcile.
+	void applyAuthoritativeSnapshotImmediate(std::vector<AuthoritativeBody> bodies);
+
    private:
 	struct CollisionPhaseResult {
 		double collisionMs = 0.0;

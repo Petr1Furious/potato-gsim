@@ -36,6 +36,12 @@ struct MpShipReplicaInput {
 	std::uint64_t lastTick = 0;
 };
 
+struct WorldSnapshotJob {
+	std::uint64_t serverTick = 0;
+	std::uint64_t globalPhysicsStep = 0;
+	std::vector<sim::AuthoritativeBody> bodies;
+};
+
 /// Dedicated multiplayer client simulation thread: fixed wall cadence (~240 Hz), bounded lead,
 /// soft pacing near the lead cap. Main thread enqueues network-driven work; sim thread calls
 /// `advanceFixedStep` only.
@@ -56,8 +62,7 @@ class MpClientSim {
 	              double serverTimeScale,
 	              std::vector<sim::AuthoritativeBody> bodies);
 
-	/// Main thread: enqueue merge deletes (`from` ids), applied in order before dynamics patches
-	/// posted in the same frame.
+	/// Main thread: enqueue merge deletes (`from` ids), applied on sim before snapshot processing.
 	void postMergeDeletes(std::vector<std::pair<sim::BodyId, sim::BodyId>> remaps);
 
 	/// Main thread: register new server bodies or refresh existing (e.g. late-joining player
@@ -67,14 +72,13 @@ class MpClientSim {
 	/// Main thread: enqueue dynamics patches (world + ship); may be empty.
 	void postDynamicsPatches(std::vector<sim::BodyDynamicsPatch> patches);
 
-	/// Apply all dynamics patches for one logical network frame, then advance the authority
-	/// watermark — **single queue item** so the sim thread cannot `advanceFixedStep` between
-	/// world-only and ship-only applies (which desyncs co-moving bodies).
 	void postAuthorityBundle(std::vector<sim::BodyDynamicsPatch> patches,
 	                         std::uint64_t latestAuthorityStep);
 
-	/// Main thread: monotonic authority step when there are **no** dynamics patches this frame.
 	void setLastConfirmedAuthorityStep(std::uint64_t step);
+
+	/// Main thread: full world snapshot at `globalPhysicsStep` (FIFO on sim thread).
+	void enqueueWorldSnapshot(WorldSnapshotJob job);
 
 	/// Main thread: full replica map copy (small: ships only).
 	void syncReplicas(const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas);
@@ -92,13 +96,20 @@ class MpClientSim {
 	/// Main thread: merge remap events produced on the sim thread (for UI only).
 	void takePendingMergeRemaps(std::vector<std::pair<sim::BodyId, sim::BodyId>>& out);
 
+#if defined(POTATO_GSIM_MP_WORLD_SYNC_TESTS)
+	/// Unit tests: run after `stop()` — drains work then snapshot jobs on the calling thread.
+	void testingApplyQueuedNetworkWorkOnCallerThread();
+#endif
+
    private:
 	void threadMain(std::stop_token st);
-	/// Apply all pending main-thread work in FIFO order (see implementation comment for
-	/// ordering vs `advanceFixedStep`).
 	void drainWorkQueue();
+	void drainSnapshotJobQueue();
+	void processWorldSnapshotJob(const WorldSnapshotJob& job);
 	void publishRenderStateFromEngine();
 	void forwardMergeEventsFromEngine();
+	void integrateOnePhysicsStep(const std::unordered_map<sim::BodyId, MpShipReplicaInput>& reps,
+	                             bool recordReplaySample);
 
 	sim::SimulationEngine& engine_;
 	std::optional<std::jthread> thread_;
@@ -106,8 +117,15 @@ class MpClientSim {
 	std::mutex workMutex_;
 	std::deque<std::function<void()>> workQueue_;
 
+	std::mutex snapshotJobMutex_;
+	std::deque<WorldSnapshotJob> snapshotJobQueue_;
+
 	std::mutex replicaMutex_;
 	std::unordered_map<sim::BodyId, MpShipReplicaInput> replicas_;
+
+	/// (stepIndex, replica thrust map) for rollback replay; capped at 512 entries.
+	std::deque<std::pair<std::uint64_t, std::unordered_map<sim::BodyId, MpShipReplicaInput>>>
+	    replayInputHistory_;
 
 	mutable std::mutex renderMutex_;
 	MpClientRenderPublish renderPublish_;

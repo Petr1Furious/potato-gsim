@@ -2,7 +2,9 @@
 #include "net/MpConstants.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <cstdio>
 
 namespace net {
 
@@ -24,6 +26,18 @@ void applyReplicaThrustImpl(sim::SimulationEngine& engine,
 		}
 		engine.setShipThrustAccelWorld(id, ax, ay);
 	}
+}
+
+const std::unordered_map<sim::BodyId, MpShipReplicaInput>* findReplayInputForStep(
+    const std::deque<std::pair<std::uint64_t, std::unordered_map<sim::BodyId, MpShipReplicaInput>>>&
+        history,
+    const std::uint64_t step) {
+	for (auto it = history.rbegin(); it != history.rend(); ++it) {
+		if (it->first == step) {
+			return &it->second;
+		}
+	}
+	return nullptr;
 }
 
 }  // namespace
@@ -59,6 +73,7 @@ void MpClientSim::syncJoin(const std::uint64_t joinPhysicsStep,
 	}
 	clientPhysicsHead_.store(joinPhysicsStep, std::memory_order_release);
 	lastConfirmedAuthorityStep_.store(joinPhysicsStep, std::memory_order_release);
+	replayInputHistory_.clear();
 }
 
 void MpClientSim::postMergeDeletes(std::vector<std::pair<sim::BodyId, sim::BodyId>> remaps) {
@@ -109,6 +124,11 @@ void MpClientSim::setLastConfirmedAuthorityStep(const std::uint64_t step) {
 	    [this, step]() { lastConfirmedAuthorityStep_.store(step, std::memory_order_release); });
 }
 
+void MpClientSim::enqueueWorldSnapshot(WorldSnapshotJob job) {
+	std::lock_guard<std::mutex> lock(snapshotJobMutex_);
+	snapshotJobQueue_.push_back(std::move(job));
+}
+
 void MpClientSim::syncReplicas(
     const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas) {
 	std::lock_guard<std::mutex> lock(replicaMutex_);
@@ -124,6 +144,123 @@ void MpClientSim::drainWorkQueue() {
 	for (std::function<void()>& fn : batch) {
 		fn();
 	}
+}
+
+void MpClientSim::drainSnapshotJobQueue() {
+	while (true) {
+		WorldSnapshotJob job;
+		{
+			std::lock_guard<std::mutex> lock(snapshotJobMutex_);
+			if (snapshotJobQueue_.empty()) {
+				break;
+			}
+			job = std::move(snapshotJobQueue_.front());
+			snapshotJobQueue_.pop_front();
+		}
+		processWorldSnapshotJob(job);
+	}
+}
+
+void MpClientSim::processWorldSnapshotJob(const WorldSnapshotJob& job) {
+	const std::uint64_t W = job.globalPhysicsStep;
+	const std::uint64_t priorAuth = lastConfirmedAuthorityStep_.load(std::memory_order_acquire);
+	if (W <= priorAuth) {
+		return;
+	}
+
+	const std::uint64_t headBefore = clientPhysicsHead_.load(std::memory_order_acquire);
+
+	std::vector<sim::BodySnapshot> preSnaps;
+	engine_.copyBodies(preSnaps);
+	std::vector<sim::AuthoritativeBody> preReplay;
+	preReplay.reserve(preSnaps.size());
+	for (const sim::BodySnapshot& s : preSnaps) {
+		preReplay.push_back(sim::AuthoritativeBody{
+		    .id = s.id,
+		    .x = s.x,
+		    .y = s.y,
+		    .vx = s.vx,
+		    .vy = s.vy,
+		    .mass = s.mass,
+		    .radius = s.radius,
+		    .name = s.name,
+		});
+	}
+
+	std::vector<sim::AuthoritativeBody> authoritativeAtW = job.bodies;
+	engine_.applyAuthoritativeSnapshotImmediate(std::move(authoritativeAtW));
+
+	if (W < headBefore) {
+		clientPhysicsHead_.store(W, std::memory_order_release);
+		const std::uint64_t nReplay = headBefore - W;
+		int publishedSinceBatch = 0;
+		for (std::uint64_t k = 0; k < nReplay; ++k) {
+			const std::uint64_t s = W + k;
+			const std::unordered_map<sim::BodyId, MpShipReplicaInput>* rep =
+			    findReplayInputForStep(replayInputHistory_, s);
+			if (rep == nullptr) {
+				std::fprintf(stderr,
+				             "MpClientSim: missing replay input for step %llu; restoring pre "
+				             "snapshot\n",
+				             static_cast<unsigned long long>(s));
+				engine_.applyAuthoritativeSnapshotImmediate(std::move(preReplay));
+				lastConfirmedAuthorityStep_.store(priorAuth, std::memory_order_release);
+				clientPhysicsHead_.store(headBefore, std::memory_order_release);
+				publishRenderStateFromEngine();
+				return;
+			}
+			integrateOnePhysicsStep(*rep, false);
+			++publishedSinceBatch;
+			if (publishedSinceBatch >= net::kMaxCatchUpPhysicsStepsPerSimThreadWake) {
+				publishRenderStateFromEngine();
+				publishedSinceBatch = 0;
+			}
+		}
+		if (publishedSinceBatch > 0) {
+			publishRenderStateFromEngine();
+		}
+		const std::uint64_t headAfter = clientPhysicsHead_.load(std::memory_order_acquire);
+#ifndef NDEBUG
+		assert(headAfter == headBefore);
+#endif
+		if (headAfter != headBefore) {
+			std::fprintf(stderr, "MpClientSim: replay head mismatch after=%llu expected=%llu\n",
+			             static_cast<unsigned long long>(headAfter),
+			             static_cast<unsigned long long>(headBefore));
+		}
+		lastConfirmedAuthorityStep_.store(W, std::memory_order_release);
+	} else {
+		lastConfirmedAuthorityStep_.store(W, std::memory_order_release);
+	}
+}
+
+void MpClientSim::integrateOnePhysicsStep(
+    const std::unordered_map<sim::BodyId, MpShipReplicaInput>& reps,
+    const bool recordReplaySample) {
+	if (recordReplaySample) {
+		drainWorkQueue();
+	}
+	const sim::SimulationConfig physicsCfg = engine_.config();
+	if (physicsCfg.paused) {
+		return;
+	}
+	const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
+	                      ? physicsCfg.timeScale
+	                      : 1.0;
+	const double dtSim = net::simulationDtFromTimeScale(ts);
+
+	if (recordReplaySample) {
+		const std::uint64_t stepIdx = clientPhysicsHead_.load(std::memory_order_relaxed);
+		while (replayInputHistory_.size() >= 512) {
+			replayInputHistory_.pop_front();
+		}
+		replayInputHistory_.push_back({stepIdx, reps});
+	}
+
+	applyReplicaThrustImpl(engine_, reps);
+	engine_.advanceFixedStep(dtSim, physicsCfg);
+	clientPhysicsHead_.fetch_add(1u, std::memory_order_acq_rel);
+	forwardMergeEventsFromEngine();
 }
 
 void MpClientSim::forwardMergeEventsFromEngine() {
@@ -151,6 +288,14 @@ void MpClientSim::copyLatestRenderPublish(MpClientRenderPublish& out) const {
 	std::lock_guard<std::mutex> lock(renderMutex_);
 	out = renderPublish_;
 }
+
+#if defined(POTATO_GSIM_MP_WORLD_SYNC_TESTS)
+void MpClientSim::testingApplyQueuedNetworkWorkOnCallerThread() {
+	assert(!thread_.has_value());
+	drainWorkQueue();
+	drainSnapshotJobQueue();
+}
+#endif
 
 void MpClientSim::takePendingMergeRemaps(std::vector<std::pair<sim::BodyId, sim::BodyId>>& out) {
 	out.clear();
@@ -181,20 +326,14 @@ void MpClientSim::threadMain(const std::stop_token st) {
 		wallAcc += frameDt;
 		wallAcc = std::min(wallAcc, net::kMaxWallPhysicsDebtSeconds);
 
-		// Authority ordering: always apply any queued main-thread work (snapshots, deletes,
-		// patches) before integrating the next physics step, so each `advanceFixedStep` sees a
-		// consistent command batch at step boundary.
 		drainWorkQueue();
+		drainSnapshotJobQueue();
 
 		const sim::SimulationConfig physicsCfg = engine_.config();
 		if (physicsCfg.paused) {
 			publishRenderStateFromEngine();
 			continue;
 		}
-		const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
-		                      ? physicsCfg.timeScale
-		                      : 1.0;
-		const double dtSim = net::simulationDtFromTimeScale(ts);
 
 		int stepBudget = 0;
 		while (stepBudget < net::kMaxCatchUpPhysicsStepsPerSimThreadWake) {
@@ -222,12 +361,9 @@ void MpClientSim::threadMain(const std::stop_token st) {
 				std::lock_guard<std::mutex> lock(replicaMutex_);
 				repCopy = replicas_;
 			}
-			applyReplicaThrustImpl(engine_, repCopy);
-			engine_.advanceFixedStep(dtSim, physicsCfg);
-			clientPhysicsHead_.store(head + 1u, std::memory_order_release);
+			integrateOnePhysicsStep(repCopy, true);
 			wallAcc -= requiredDebt;
 			++stepBudget;
-			forwardMergeEventsFromEngine();
 		}
 		publishRenderStateFromEngine();
 	}

@@ -141,4 +141,26 @@ if(BUILD_TESTING)
   )
   target_include_directories(mp_protocol_v3_tests PRIVATE src)
   add_test(NAME mp_protocol_v3_tests COMMAND mp_protocol_v3_tests)
+
+  add_executable(
+    mp_world_sync_tests
+    tests/mp_world_sync_tests.cpp
+    src/net/MpClient.cpp
+    src/net/MpClientSim.cpp
+    src/net/Protocol.cpp
+    src/sim/QuadTree.cpp
+    src/sim/SimulationEngine.cpp
+    src/sim/ThreadPool.cpp
+    src/sim/UniformGrid.cpp
+  )
+  target_include_directories(mp_world_sync_tests PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}")
+  target_compile_definitions(mp_world_sync_tests PRIVATE POTATO_GSIM_MP_WORLD_SYNC_TESTS=1)
+  target_link_libraries(mp_world_sync_tests PRIVATE SFML::System enet)
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(mp_world_sync_tests PRIVATE m)
+  endif()
+  if(WIN32)
+    target_link_libraries(mp_world_sync_tests PRIVATE winmm ws2_32)
+  endif()
+  add_test(NAME mp_world_sync_tests COMMAND mp_world_sync_tests)
 endif()

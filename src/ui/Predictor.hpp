@@ -9,8 +9,9 @@
 
 namespace ui {
 
-/// Integrated trajectory; `stoppedOnEncounter` means the last point is first surface contact
-/// with another body (prediction truncated there instead of continuing through overlap/merge).
+/// Integrated trajectory; `stoppedOnEncounter` means the last point is first surface contact with
+/// another body **strictly more massive** than the tracked body (lighter or equal-mass overlaps
+/// do not truncate).
 struct PredictionPath {
 	std::vector<sf::Vector2f> points;
 	bool stoppedOnEncounter = false;

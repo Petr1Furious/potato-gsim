@@ -13,12 +13,14 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
 
 constexpr int kDefaultPort = 27777;
 constexpr int kNetTickHz = 30;
+constexpr std::uint64_t kWorldSnapshotIntervalTicks = 30;
 
 struct ClientSlot {
 	ENetPeer* peer = nullptr;
@@ -275,12 +277,12 @@ int main(int argc, char** argv) {
 			}
 		}
 
+		std::vector<std::pair<sim::BodyId, sim::BodyId>> mergesThisTick;
 		{
-			std::vector<std::pair<sim::BodyId, sim::BodyId>> merges;
-			engine.drainMergeRemapEvents(merges);
-			if (!merges.empty()) {
+			engine.drainMergeRemapEvents(mergesThisTick);
+			if (!mergesThisTick.empty()) {
 				std::vector<std::uint8_t> payload;
-				net::writeMergeRemapBatch(serverTick, merges, payload);
+				net::writeMergeRemapBatch(serverTick, mergesThisTick, payload);
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 1, packet);
@@ -288,6 +290,37 @@ int main(int argc, char** argv) {
 		}
 
 		engine.copyBodies(snaps);
+		if (!mergesThisTick.empty()) {
+			std::unordered_set<sim::BodyId> survivorIds;
+			survivorIds.reserve(mergesThisTick.size());
+			for (const std::pair<sim::BodyId, sim::BodyId>& pr : mergesThisTick) {
+				survivorIds.insert(pr.second);
+			}
+			for (const sim::BodyId survivorId : survivorIds) {
+				for (const sim::BodySnapshot& b : snaps) {
+					if (b.id != survivorId) {
+						continue;
+					}
+					std::vector<sim::AuthoritativeBody> one;
+					one.push_back(sim::AuthoritativeBody{
+					    .id = b.id,
+					    .x = b.x,
+					    .y = b.y,
+					    .vx = b.vx,
+					    .vy = b.vy,
+					    .mass = b.mass,
+					    .radius = b.radius,
+					    .name = b.name,
+					});
+					std::vector<std::uint8_t> payload;
+					net::writeAuthoritativeBodyUpsert(serverTick, globalPhysicsStep, one, payload);
+					ENetPacket* packet = enet_packet_create(payload.data(), payload.size(),
+					                                        ENET_PACKET_FLAG_RELIABLE);
+					enet_host_broadcast(host, 1, packet);
+					break;
+				}
+			}
+		}
 		for (ClientSlot& c : clients) {
 			if (!c.hasShip) {
 				continue;
@@ -307,25 +340,23 @@ int main(int argc, char** argv) {
 			}
 		}
 
-		// One full dynamics snapshot per server net tick (same `snaps` as ship broadcast above).
-		{
-			std::vector<sim::BodyId> ids;
-			std::vector<double> px, py, vx, vy;
-			ids.reserve(snaps.size());
-			px.reserve(snaps.size());
-			py.reserve(snaps.size());
-			vx.reserve(snaps.size());
-			vy.reserve(snaps.size());
+		if ((serverTick % kWorldSnapshotIntervalTicks) == 0) {
+			std::vector<sim::AuthoritativeBody> snapBodies;
+			snapBodies.reserve(snaps.size());
 			for (const sim::BodySnapshot& b : snaps) {
-				ids.push_back(b.id);
-				px.push_back(b.x);
-				py.push_back(b.y);
-				vx.push_back(b.vx);
-				vy.push_back(b.vy);
+				snapBodies.push_back(sim::AuthoritativeBody{
+				    .id = b.id,
+				    .x = b.x,
+				    .y = b.y,
+				    .vx = b.vx,
+				    .vy = b.vy,
+				    .mass = b.mass,
+				    .radius = b.radius,
+				    .name = b.name,
+				});
 			}
 			std::vector<std::uint8_t> payload;
-			net::writeWorldDynamicSnapshot(serverTick, globalPhysicsStep, ids, px.data(), py.data(),
-			                               vx.data(), vy.data(), snaps.size(), payload);
+			net::writeWorldDynamicSnapshot(serverTick, globalPhysicsStep, snapBodies, payload);
 			ENetPacket* packet =
 			    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 			enet_host_broadcast(host, 2, packet);

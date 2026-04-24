@@ -781,6 +781,55 @@ void SimulationEngine::advanceFixedStep(const double dt, const SimulationConfig&
 	step(dt, cfg);
 }
 
+void SimulationEngine::applyAuthoritativeSnapshotImmediate(std::vector<AuthoritativeBody> bodies) {
+	using clock = std::chrono::steady_clock;
+	const auto stepStart = clock::now();
+	const SimulationConfig cfg = currentConfig();
+	const std::size_t workers = desiredWorkers(cfg);
+	if (workers != threadPool_.workerCount()) {
+		threadPool_.resize(workers);
+	}
+
+	EngineDebugStats debug{};
+	debug.valid = true;
+	debug.workerCount = workers;
+	debug.directSerialMaxBodies = cfg.directSerialMaxBodies;
+	debug.directParallelMaxBodies =
+	    std::max(cfg.directSerialMaxBodies, cfg.directParallelMaxBodies);
+	debug.collisionStepInterval = std::max<std::size_t>(1, cfg.collisionStepInterval);
+	debug.collisionPhaseExecuted = (stepCounter_ % debug.collisionStepInterval) == 0;
+	debug.chunkPolicy = chunkPolicyLabel(cfg.chunkPolicy);
+
+	int writeIndex = 0;
+	{
+		std::shared_lock<std::shared_mutex> lock(stateMutex_);
+		writeIndex = 1 - readIndex_;
+		states_[writeIndex] = states_[readIndex_];
+		idMaps_[writeIndex] = idMaps_[readIndex_];
+	}
+
+	BodyState& state = states_[writeIndex];
+	IdIndexMap& idMap = idMaps_[writeIndex];
+
+	std::vector<SimCommand> cmds;
+	cmds.push_back(SimCommand{
+	    .type = SimCommand::Type::ApplyAuthoritativeSnapshot,
+	    .authoritativeBodies = std::move(bodies),
+	});
+	const bool spawnedOrReplaced = applyCommands(state, idMap, cmds);
+	if (spawnedOrReplaced && state.size() > 1) {
+		const CollisionPhaseResult preCollision = runCollisionPhase(state, idMap, cfg);
+		debug.collisionMs += preCollision.collisionMs;
+		debug.mergeMs += preCollision.mergeMs;
+		debug.overlapPairs += preCollision.overlapPairs;
+		debug.mergedBodies += preCollision.mergedBodies;
+		debug.collisionPhaseExecuted = true;
+	}
+
+	debug.bodyCount = state.size();
+	publishStepResult(writeIndex, 0.0, false, stepStart, debug);
+}
+
 void SimulationEngine::step(double dt, const SimulationConfig& cfg) {
 	using clock = std::chrono::steady_clock;
 	const auto stepStart = clock::now();
