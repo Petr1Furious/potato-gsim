@@ -5,6 +5,7 @@
 #include "render/Renderer.hpp"
 #include "sim/SimulationEngine.hpp"
 #include "ui/InspectorOverlay.hpp"
+#include "ui/KeyboardChordState.hpp"
 #include "ui/QuantityFormat.hpp"
 #include "ui/UiState.hpp"
 
@@ -132,6 +133,11 @@ int main(int argc, char** argv) {
 	std::vector<double> mpPendingWorldVy;
 	std::vector<net::MpClient::ShipNetSample> mpInboundShips;
 	std::unordered_map<sim::BodyId, MpShipReplica> mpShipReplica;
+	sim::BodyId mpPrevOwnShipId = 0;
+	bool mpShipMouseAim = false;
+	double mpShipHeadingRadians = 0.0;
+	bool mpShipHeadingInited = false;
+	std::uint8_t mpShipThrustPercent = 100;
 
 	if (multiplayer) {
 		if (enet_initialize() != 0) {
@@ -151,6 +157,7 @@ int main(int argc, char** argv) {
 	render::Renderer renderer(window);
 	ui::InspectorOverlay overlay;
 	ui::UiState ui;
+	ui::KeyboardChordState keysHeld{};
 	ui.traces.setSettings(ui::TraceStore::Settings{
 	    .enabled = false,
 	    .relative = true,
@@ -161,7 +168,7 @@ int main(int argc, char** argv) {
 	    .steps = 900,
 	    .dt = 1.0 / 120.0,
 	    .realTimeHorizonSeconds = 5.0,
-	    .maxAttractors = 20,
+	    .maxAttractors = 10,
 	    .predictionRecalcIntervalSeconds = 0.0,
 	});
 	engine.setDebugMetricsEnabled(false);
@@ -190,6 +197,7 @@ int main(int argc, char** argv) {
 	std::vector<sf::Vector2f> shipPrediction;
 	std::vector<sf::Vector2f> shipPredictionOffsets;
 	std::optional<sim::BodyId> shipPredictionBodyId;
+	bool shipPredictionStoppedOnEncounter = false;
 	std::optional<sim::BodyId> trackedFollowId;
 	std::optional<std::pair<double, double>> followViewOffset;
 	bool wasFollowCamera = false;
@@ -271,10 +279,11 @@ int main(int argc, char** argv) {
 	auto lastPredictTime = lastFrameTime;
 	double fps = 0.0;
 	const auto currentSimSecondsPerRealSecond = [&engine, &mpRenderFrame, &config, &mpSessionJoined,
-	                                              &mpSim]() {
+	                                             &mpSim]() {
 		if (mpRenderFrame.has_value()) {
 			const net::MpClientRenderPublish& p = *mpRenderFrame;
-			if (std::isfinite(p.simulatedSecondsPerRealSecond) && p.simulatedSecondsPerRealSecond > 0.0) {
+			if (std::isfinite(p.simulatedSecondsPerRealSecond) &&
+			    p.simulatedSecondsPerRealSecond > 0.0) {
 				return p.simulatedSecondsPerRealSecond;
 			}
 			if (std::isfinite(p.config.timeScale) && p.config.timeScale > 0.0) {
@@ -318,10 +327,23 @@ int main(int argc, char** argv) {
 			fps = (fps == 0.0) ? instantFps : (fps * 0.9 + instantFps * 0.1);
 		}
 
+		bool windowKeyboardActive = window.hasFocus();
 		while (const auto event = window.pollEvent()) {
 			if (event->is<sf::Event::Closed>()) {
 				window.close();
 				continue;
+			}
+			if (event->is<sf::Event::FocusGained>()) {
+				windowKeyboardActive = true;
+				continue;
+			}
+			if (event->is<sf::Event::FocusLost>()) {
+				windowKeyboardActive = false;
+				keysHeld.clear();
+				continue;
+			}
+			if (const auto* keyReleased = event->getIf<sf::Event::KeyReleased>()) {
+				keysHeld.setDown(keyReleased->code, false);
 			}
 			if (const auto* resized = event->getIf<sf::Event::Resized>()) {
 				renderer.onResize(resized->size);
@@ -414,6 +436,45 @@ int main(int argc, char** argv) {
 				}
 			}
 			if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
+				if (!windowKeyboardActive) {
+					continue;
+				}
+				keysHeld.setDown(key->code, true);
+				if (!ui.menu.active() && multiplayer && mpSessionJoined && mpOwnShipId != 0 &&
+				    key->code == sf::Keyboard::Key::M) {
+					mpShipMouseAim = !mpShipMouseAim;
+					if (!mpShipMouseAim) {
+						const render::Renderer::WorldCoordsD mouseWorld =
+						    renderer.screenToWorldD(sf::Mouse::getPosition(window));
+						const auto shipIt = std::find_if(
+						    bodies.begin(), bodies.end(),
+						    [&](const sim::BodySnapshot& b) { return b.id == mpOwnShipId; });
+						if (shipIt != bodies.end()) {
+							mpShipHeadingRadians =
+							    std::atan2(mouseWorld.y - shipIt->y, mouseWorld.x - shipIt->x);
+						} else if (const auto it = mpShipReplica.find(mpOwnShipId);
+						           it != mpShipReplica.end()) {
+							mpShipHeadingRadians = static_cast<double>(it->second.facing);
+						}
+						mpShipHeadingInited = true;
+					}
+					setStatus(mpShipMouseAim ? "Ship aim: mouse (M toggles)"
+					                         : "Ship aim: A/D (M toggles)",
+					          1.6);
+					continue;
+				}
+				if (!ui.menu.active() && multiplayer && mpSessionJoined && mpOwnShipId != 0 &&
+				    key->code == sf::Keyboard::Key::X) {
+					mpShipThrustPercent = 0;
+					setStatus("Thrust power: 0%", 0.9);
+					continue;
+				}
+				if (!ui.menu.active() && multiplayer && mpSessionJoined && mpOwnShipId != 0 &&
+				    key->code == sf::Keyboard::Key::Z) {
+					mpShipThrustPercent = 100;
+					setStatus("Thrust power: 100%", 0.9);
+					continue;
+				}
 				if (ui.menu.active()) {
 					if (key->code == sf::Keyboard::Key::Escape) {
 						openMenu(false);
@@ -448,8 +509,8 @@ int main(int argc, char** argv) {
 				}
 			}
 		}
-		const ui::HoldAdjustments holds =
-		    ui.input.computeHolds(frameDt, !ui.menu.active(), !multiplayer);
+		const ui::HoldAdjustments holds = ui.input.computeHolds(
+		    frameDt, !ui.menu.active() && windowKeyboardActive, !multiplayer, keysHeld);
 		if (holds.panPixelsX != 0.0 || holds.panPixelsY != 0.0) {
 			panView(sf::Vector2i(static_cast<int>(std::lround(holds.panPixelsX)),
 			                     static_cast<int>(std::lround(holds.panPixelsY))));
@@ -480,9 +541,9 @@ int main(int argc, char** argv) {
 			if (!joinBodies.empty()) {
 				std::optional<std::pair<double, double>> ownShipCenter;
 				if (joinOwn != 0) {
-					const auto ownShipIt =
-					    std::find_if(joinBodies.begin(), joinBodies.end(),
-					                 [&](const sim::AuthoritativeBody& b) { return b.id == joinOwn; });
+					const auto ownShipIt = std::find_if(
+					    joinBodies.begin(), joinBodies.end(),
+					    [&](const sim::AuthoritativeBody& b) { return b.id == joinOwn; });
 					if (ownShipIt != joinBodies.end()) {
 						ownShipCenter = {ownShipIt->x, ownShipIt->y};
 					}
@@ -507,8 +568,10 @@ int main(int argc, char** argv) {
 				mpSim->syncJoin(joinGlobalPhysicsStep, joinTimeScale, std::move(joinBodies));
 				mpSim->start();
 				if (mpOwnShipId != 0 && ownShipCenter.has_value()) {
-					renderer.setWorldOriginForRendering(ownShipCenter->first, ownShipCenter->second);
-					renderer.setCameraWorldCenterDouble(ownShipCenter->first, ownShipCenter->second);
+					renderer.setWorldOriginForRendering(ownShipCenter->first,
+					                                    ownShipCenter->second);
+					renderer.setCameraWorldCenterDouble(ownShipCenter->first,
+					                                    ownShipCenter->second);
 				}
 				trackedFollowId = mpOwnShipId;
 				followViewOffset = {0.0, 0.0};
@@ -520,72 +583,140 @@ int main(int argc, char** argv) {
 					mpSim->stop();
 					mpSim.reset();
 					mpSessionJoined = false;
+					mpShipReplica.clear();
+					mpPrevOwnShipId = 0;
+					mpShipMouseAim = false;
+					mpShipHeadingInited = false;
+					mpShipThrustPercent = 100;
 				} else {
-				bool hadMerge = false;
-				std::uint64_t mergeTick = 0;
-				std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
-				mpClient->takeMergeRemaps(mergeTick, netMerges, hadMerge);
-				if (hadMerge) {
-					ui.selection.applyMergeRemap(netMerges);
-					ui.traces.applyMergeRemap(netMerges);
+					bool hadMerge = false;
+					std::uint64_t mergeTick = 0;
+					std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
+					mpClient->takeMergeRemaps(mergeTick, netMerges, hadMerge);
+					if (hadMerge) {
+						ui.selection.applyMergeRemap(netMerges);
+						ui.traces.applyMergeRemap(netMerges);
+						if (mpSim.has_value()) {
+							mpSim->postMergeDeletes(std::move(netMerges));
+						}
+					}
+
+					std::vector<sim::AuthoritativeBody> mpAuthoritativeUpserts;
+					bool hadAuthoritativeUpsert = false;
+					mpClient->takeAuthoritativeUpserts(mpAuthoritativeUpserts,
+					                                   hadAuthoritativeUpsert);
+					if (hadAuthoritativeUpsert && mpSim.has_value()) {
+						mpSim->postAuthoritativeUpserts(std::move(mpAuthoritativeUpserts));
+					}
+
+					mpClient->takeShipSamples(mpInboundShips);
+					for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
+						MpShipReplica& rep = mpShipReplica[s.bodyId];
+						rep.facing = s.facingRadians;
+						rep.thrustForward = s.thrustForward;
+						rep.thrustPercent = s.thrustPercent;
+						rep.lastTick = s.serverTick;
+					}
+
+					mpPendingWorldHad = false;
+					mpClient->takeWorldSnapshot(mpPendingWorldTick, mpPendingWorldGlobalStep,
+					                            mpPendingWorldIds, mpPendingWorldPx,
+					                            mpPendingWorldPy, mpPendingWorldVx,
+					                            mpPendingWorldVy, mpPendingWorldHad);
+
 					if (mpSim.has_value()) {
-						mpSim->postMergeDeletes(std::move(netMerges));
+						mpSim->syncReplicas(mpShipReplica);
 					}
-				}
 
-				std::vector<sim::AuthoritativeBody> mpAuthoritativeUpserts;
-				bool hadAuthoritativeUpsert = false;
-				mpClient->takeAuthoritativeUpserts(mpAuthoritativeUpserts, hadAuthoritativeUpsert);
-				if (hadAuthoritativeUpsert && mpSim.has_value()) {
-					mpSim->postAuthoritativeUpserts(std::move(mpAuthoritativeUpserts));
-				}
-
-				mpClient->takeShipSamples(mpInboundShips);
-				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
-					MpShipReplica& rep = mpShipReplica[s.bodyId];
-					rep.facing = s.facingRadians;
-					rep.thrustForward = s.thrustForward;
-					rep.thrustReverse = s.thrustReverse;
-					rep.lastTick = s.serverTick;
-				}
-
-				mpPendingWorldHad = false;
-				mpClient->takeWorldSnapshot(mpPendingWorldTick, mpPendingWorldGlobalStep,
-				                            mpPendingWorldIds, mpPendingWorldPx, mpPendingWorldPy,
-				                            mpPendingWorldVx, mpPendingWorldVy, mpPendingWorldHad);
-
-				if (mpSim.has_value()) {
-					mpSim->syncReplicas(mpShipReplica);
-				}
-
-				if (mpOwnShipId != 0) {
-					double facing = 0.0;
-					const render::Renderer::WorldCoordsD mouseWorld =
-					    renderer.screenToWorldD(sf::Mouse::getPosition(window));
-					const auto shipIt = std::find_if(
-					    bodies.begin(), bodies.end(),
-					    [&](const sim::BodySnapshot& b) { return b.id == mpOwnShipId; });
-					if (shipIt != bodies.end()) {
-						facing = std::atan2(mouseWorld.y - shipIt->y, mouseWorld.x - shipIt->x);
-					} else if (const auto it = mpShipReplica.find(mpOwnShipId);
-					           it != mpShipReplica.end()) {
-						facing = static_cast<double>(it->second.facing);
+					if (mpOwnShipId != mpPrevOwnShipId) {
+						mpShipHeadingInited = false;
+						if (mpOwnShipId == 0) {
+							mpShipThrustPercent = 100;
+							mpShipMouseAim = false;
+						}
+						mpPrevOwnShipId = mpOwnShipId;
 					}
-					net::ClientInputPayload in{};
-					in.seq = ++mpInputSeq;
-					in.thrustForward = static_cast<std::uint8_t>(
-					    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ||
-					            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)
-					        ? 1
-					        : 0);
-					in.thrustReverse = static_cast<std::uint8_t>(
-					    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ||
-					            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down)
-					        ? 1
-					        : 0);
-					in.facingRadians = static_cast<float>(facing);
-					mpClient->sendInput(in);
-				}
+
+					if (mpOwnShipId != 0) {
+						if (windowKeyboardActive && !ui.menu.active()) {
+							constexpr double kThrustAdjustPerSec = 80.0;
+							if (keysHeld.down(sf::Keyboard::Key::LShift) ||
+							    keysHeld.down(sf::Keyboard::Key::RShift)) {
+								const int n =
+								    static_cast<int>(mpShipThrustPercent) +
+								    static_cast<int>(std::lround(kThrustAdjustPerSec * frameDt));
+								mpShipThrustPercent =
+								    static_cast<std::uint8_t>(std::min(100, std::max(0, n)));
+							} else if (keysHeld.down(sf::Keyboard::Key::LControl) ||
+							           keysHeld.down(sf::Keyboard::Key::RControl)) {
+								const int n =
+								    static_cast<int>(mpShipThrustPercent) -
+								    static_cast<int>(std::lround(kThrustAdjustPerSec * frameDt));
+								mpShipThrustPercent =
+								    static_cast<std::uint8_t>(std::min(100, std::max(0, n)));
+							}
+						}
+
+						const render::Renderer::WorldCoordsD mouseWorld =
+						    renderer.screenToWorldD(sf::Mouse::getPosition(window));
+						const auto shipIt = std::find_if(
+						    bodies.begin(), bodies.end(),
+						    [&](const sim::BodySnapshot& b) { return b.id == mpOwnShipId; });
+						const MpShipReplica* ownRep = nullptr;
+						if (const auto it = mpShipReplica.find(mpOwnShipId);
+						    it != mpShipReplica.end()) {
+							ownRep = &it->second;
+						}
+
+						double facing = 0.0;
+						if (mpShipMouseAim) {
+							if (shipIt != bodies.end()) {
+								facing =
+								    std::atan2(mouseWorld.y - shipIt->y, mouseWorld.x - shipIt->x);
+							} else if (ownRep != nullptr) {
+								facing = static_cast<double>(ownRep->facing);
+							}
+							mpShipHeadingRadians = facing;
+							mpShipHeadingInited = true;
+						} else {
+							if (!mpShipHeadingInited) {
+								if (ownRep != nullptr) {
+									mpShipHeadingRadians = static_cast<double>(ownRep->facing);
+								} else if (shipIt != bodies.end()) {
+									mpShipHeadingRadians = std::atan2(mouseWorld.y - shipIt->y,
+									                                  mouseWorld.x - shipIt->x);
+								}
+								mpShipHeadingInited = true;
+							}
+							constexpr double kTurnRadPerSec = 2.85;
+							if (windowKeyboardActive && keysHeld.down(sf::Keyboard::Key::A)) {
+								mpShipHeadingRadians -= kTurnRadPerSec * frameDt;
+							}
+							if (windowKeyboardActive && keysHeld.down(sf::Keyboard::Key::D)) {
+								mpShipHeadingRadians += kTurnRadPerSec * frameDt;
+							}
+							facing = mpShipHeadingRadians;
+						}
+
+						net::ClientInputPayload in{};
+						in.seq = ++mpInputSeq;
+						in.thrustForward = static_cast<std::uint8_t>(
+						    windowKeyboardActive && (keysHeld.down(sf::Keyboard::Key::W) ||
+						                             keysHeld.down(sf::Keyboard::Key::Up))
+						        ? 1
+						        : 0);
+						in.facingRadians = static_cast<float>(facing);
+						in.thrustPercent = mpShipThrustPercent;
+						mpClient->sendInput(in);
+
+						if (mpSim.has_value()) {
+							MpShipReplica& live = mpShipReplica[mpOwnShipId];
+							live.facing = in.facingRadians;
+							live.thrustForward = in.thrustForward;
+							live.thrustPercent = in.thrustPercent;
+							mpSim->syncReplicas(mpShipReplica);
+						}
+					}
 				}
 			}
 		}
@@ -599,8 +730,7 @@ int main(int argc, char** argv) {
 		}
 
 		if (multiplayer && mpSessionJoined && mpSim.has_value()) {
-			const bool simPaused =
-			    mpRenderFrame.has_value() && mpRenderFrame->config.paused;
+			const bool simPaused = mpRenderFrame.has_value() && mpRenderFrame->config.paused;
 			if (!simPaused) {
 				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
 					mpHudServerTick = std::max(mpHudServerTick, s.serverTick);
@@ -609,8 +739,8 @@ int main(int argc, char** argv) {
 					mpHudServerTick = std::max(mpHudServerTick, mpPendingWorldTick);
 				}
 
-				// One server tick bundle (`WorldDynamicSnapshot`) carries dynamics for every body at
-				// the same `globalPhysicsStep`; ship packets are display/replica only.
+				// One server tick bundle (`WorldDynamicSnapshot`) carries dynamics for every body
+				// at the same `globalPhysicsStep`; ship packets are display/replica only.
 				const std::uint64_t lastAuth = mpSim->lastConfirmedAuthorityStep();
 				std::uint64_t commitStep = lastAuth;
 				std::vector<sim::BodyDynamicsPatch> authorityPatches;
@@ -793,12 +923,13 @@ int main(int argc, char** argv) {
 		    (mpRenderFrame.has_value() && mpRenderFrame->simulatedSecondsPerUpdate > 0.0)
 		        ? mpRenderFrame->simulatedSecondsPerUpdate
 		        : ((mpSessionJoined && mpSim.has_value())
-		               ? ((std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale : 1.0)
-		               : ((engine.simulatedSecondsPerUpdate() > 0.0) ? engine.simulatedSecondsPerUpdate()
-		                                                             : ((std::isfinite(cfg.timeScale) &&
-		                                                                 cfg.timeScale > 0.0)
-		                                                                    ? cfg.timeScale
-		                                                                    : 1.0)));
+		               ? ((std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale
+		                                                                        : 1.0)
+		               : ((engine.simulatedSecondsPerUpdate() > 0.0)
+		                      ? engine.simulatedSecondsPerUpdate()
+		                      : ((std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0)
+		                             ? cfg.timeScale
+		                             : 1.0)));
 		const std::string timeScaleDisplay = ui::formatTimeLegacy(displayTimeRate) + "/s (" +
 		                                     ui::formatTimeLegacy(simSecondsPerUpdate) + "/U)";
 		const std::string predictWindowDisplay =
@@ -819,9 +950,11 @@ int main(int argc, char** argv) {
 			lastPredictTime = now;
 			shipPredictionOffsets.clear();
 			shipPredictionBodyId.reset();
+			shipPredictionStoppedOnEncounter = false;
 			if (mpOwnShipId != 0) {
-				const std::vector<sf::Vector2f> shipPredicted = ui.predictor.predictForBody(
+				const ui::PredictionPath shipPath = ui.predictor.predictForBody(
 				    bodies, mpOwnShipId, cfg.gravitationalConstant, cfg.softeningEpsilon);
+				const std::vector<sf::Vector2f>& shipPredicted = shipPath.points;
 				if (!shipPredicted.empty()) {
 					if (const auto it = std::find_if(
 					        bodies.begin(), bodies.end(),
@@ -831,10 +964,11 @@ int main(int argc, char** argv) {
 						                              static_cast<float>(it->y));
 						shipPredictionOffsets.reserve(shipPredicted.size());
 						if (selectedBody.has_value() && selectedBody->id != mpOwnShipId) {
-							const std::vector<sf::Vector2f> selectedPredicted =
-							    ui.predictor.predictForBody(bodies, selectedBody->id,
-							                                cfg.gravitationalConstant,
-							                                cfg.softeningEpsilon);
+							const ui::PredictionPath selectedPath = ui.predictor.predictForBody(
+							    bodies, selectedBody->id, cfg.gravitationalConstant,
+							    cfg.softeningEpsilon);
+							const std::vector<sf::Vector2f>& selectedPredicted =
+							    selectedPath.points;
 							const sf::Vector2f selectedAnchor(static_cast<float>(selectedBody->x),
 							                                  static_cast<float>(selectedBody->y));
 							const std::size_t n =
@@ -845,15 +979,19 @@ int main(int argc, char** argv) {
 									    (shipPredicted[i] - selectedPredicted[i]) + selectedAnchor;
 									shipPredictionOffsets.push_back(rel - shipAnchor);
 								}
+								shipPredictionStoppedOnEncounter =
+								    shipPath.stoppedOnEncounter && n == shipPredicted.size();
 							} else {
 								for (const sf::Vector2f& point : shipPredicted) {
 									shipPredictionOffsets.push_back(point - shipAnchor);
 								}
+								shipPredictionStoppedOnEncounter = shipPath.stoppedOnEncounter;
 							}
 						} else {
 							for (const sf::Vector2f& point : shipPredicted) {
 								shipPredictionOffsets.push_back(point - shipAnchor);
 							}
+							shipPredictionStoppedOnEncounter = shipPath.stoppedOnEncounter;
 						}
 						shipPredictionBodyId = mpOwnShipId;
 					}
@@ -895,9 +1033,20 @@ int main(int argc, char** argv) {
 				playerFacing = it->second.facing;
 			}
 		}
+		std::unordered_map<sim::BodyId, float> mpDrawShipFacings;
+		const std::unordered_map<sim::BodyId, float>* mpDrawShipFacingsPtr = nullptr;
+		if (multiplayer && mpSessionJoined) {
+			mpDrawShipFacings.reserve(mpShipReplica.size());
+			for (const auto& [id, rep] : mpShipReplica) {
+				mpDrawShipFacings[id] = rep.facing;
+			}
+			if (!mpDrawShipFacings.empty()) {
+				mpDrawShipFacingsPtr = &mpDrawShipFacings;
+			}
+		}
 		renderer.draw(bodies,
 		              mpOwnShipId == 0 ? std::nullopt : std::optional<sim::BodyId>(mpOwnShipId),
-		              playerFacing);
+		              playerFacing, mpDrawShipFacingsPtr);
 		{
 			double rox = 0.0;
 			double roy = 0.0;
@@ -940,12 +1089,12 @@ int main(int argc, char** argv) {
 			}
 		}
 		overlay.drawWorldSelection(window, ownShipBody, selectedBody, std::nullopt, shipPrediction,
-		                           std::nullopt, displayTimeRate, false, false, worldToRenderLocal,
-		                           worldToPixel);
-		overlay.drawWorldSelection(window, selectedBody, std::nullopt, ownShipBody, {},
+		                           shipPredictionStoppedOnEncounter, std::nullopt, displayTimeRate,
+		                           false, false, worldToRenderLocal, worldToPixel);
+		overlay.drawWorldSelection(window, selectedBody, std::nullopt, ownShipBody, {}, false,
 		                           std::nullopt, displayTimeRate, true, true, worldToRenderLocal,
 		                           worldToPixel);
-		overlay.drawWorldSelection(window, hoveredBody, selectedBody, selectedBody, {},
+		overlay.drawWorldSelection(window, hoveredBody, selectedBody, selectedBody, {}, false,
 		                           std::nullopt, displayTimeRate, false, true, worldToRenderLocal,
 		                           worldToPixel);
 
@@ -962,9 +1111,9 @@ int main(int argc, char** argv) {
 				                   " | server: potato_gsim_server");
 			}
 		}
-		hudLines.push_back("Bodies: " +
-		                   std::to_string((mpSessionJoined && mpSim.has_value()) ? bodies.size()
-		                                                                       : engine.bodyCount()));
+		hudLines.push_back("Bodies: " + std::to_string((mpSessionJoined && mpSim.has_value())
+		                                                   ? bodies.size()
+		                                                   : engine.bodyCount()));
 		hudLines.push_back("Time speed: " + timeScaleDisplay);
 		hudLines.push_back("Scale: " + scaleDisplay + " | Predict: " + predictWindowDisplay +
 		                   " | FPS: " + std::to_string(round3(fps)));
@@ -976,6 +1125,10 @@ int main(int argc, char** argv) {
 			hudLines.push_back("Status: " + ui.statusMessage);
 		}
 		overlay.drawHudPanel(window, hudLines, ui.input.legendLines(ui.menu.active()), false);
+		if (multiplayer && mpSessionJoined && mpOwnShipId != 0) {
+			overlay.drawShipThrustHud(window, static_cast<int>(mpShipThrustPercent),
+			                          mpShipMouseAim);
+		}
 
 		if (ui.menu.active()) {
 			const sf::Font* menuFont = overlay.fontPtr();

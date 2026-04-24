@@ -20,6 +20,7 @@ class InspectorOverlay {
 	                        const std::optional<sim::BodySnapshot>& velocityReferenceBody,
 	                        const std::optional<sim::BodySnapshot>& distanceReferenceBody,
 	                        const std::vector<sf::Vector2f>& selectedPrediction,
+	                        bool highlightPredictionEncounterEnd,
 	                        const std::optional<sf::Vector2f>& creationVelocityTarget,
 	                        double arrowScale,
 	                        bool drawHighlightSquare,
@@ -37,6 +38,9 @@ class InspectorOverlay {
 	                  const std::vector<std::string>& lines,
 	                  const std::vector<std::string>& legendLines,
 	                  bool paused) const;
+
+	/// Bottom-right thrust bar (0–100 %) and aim mode label when flying own ship in multiplayer.
+	void drawShipThrustHud(sf::RenderWindow& window, int thrustPercent, bool mouseAimMode) const;
 
 	[[nodiscard]] bool available() const { return fontReady_; }
 	[[nodiscard]] const sf::Font* fontPtr() const { return fontReady_ ? &font_ : nullptr; }

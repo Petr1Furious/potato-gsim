@@ -218,8 +218,8 @@ bool writeClientInput(const ClientInputPayload& in, std::vector<std::uint8_t>& o
 	writeHeader(out, MsgType::ClientInput);
 	appendU32(out, in.seq);
 	appendU8(out, in.thrustForward);
-	appendU8(out, in.thrustReverse);
 	appendF32(out, in.facingRadians);
+	appendU8(out, in.thrustPercent);
 	return true;
 }
 
@@ -233,15 +233,17 @@ bool readClientInput(const std::uint8_t* data, const std::size_t len, ClientInpu
 	if (!readU32(p, end, out.seq)) {
 		return false;
 	}
-	if (end - p < 2) {
+	if (end - p < 1) {
 		return false;
 	}
-	out.thrustForward = p[0];
-	out.thrustReverse = p[1];
-	p += 2;
+	out.thrustForward = *p++;
 	if (!readF32(p, end, out.facingRadians)) {
 		return false;
 	}
+	if (end - p < 1) {
+		return false;
+	}
+	out.thrustPercent = *p++;
 	return p == end;
 }
 
@@ -254,7 +256,7 @@ bool writeShipState(const std::uint64_t serverTick,
                     const double vy,
                     const float facing,
                     const std::uint8_t thrustForward,
-                    const std::uint8_t thrustReverse,
+                    const std::uint8_t thrustPercent,
                     std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::ShipState);
@@ -267,7 +269,7 @@ bool writeShipState(const std::uint64_t serverTick,
 	appendF64(out, vy);
 	appendF32(out, facing);
 	appendU8(out, thrustForward);
-	appendU8(out, thrustReverse);
+	appendU8(out, thrustPercent);
 	return true;
 }
 
@@ -282,11 +284,12 @@ bool readShipState(const std::uint8_t* data,
                    double& vy,
                    float& facingOut,
                    std::uint8_t& thrustForwardOut,
-                   std::uint8_t& thrustReverseOut) {
+                   std::uint8_t& thrustPercentOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
 	globalPhysicsStepOut = 0;
+	thrustPercentOut = 100;
 	if (!readHeader(p, end, MsgType::ShipState, ver)) {
 		return false;
 	}
@@ -302,7 +305,7 @@ bool readShipState(const std::uint8_t* data,
 		return false;
 	}
 	thrustForwardOut = p[0];
-	thrustReverseOut = p[1];
+	thrustPercentOut = p[1];
 	p += 2;
 	return p == end;
 }

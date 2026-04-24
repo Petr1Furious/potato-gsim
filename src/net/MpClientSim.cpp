@@ -14,15 +14,13 @@ void applyReplicaThrustImpl(sim::SimulationEngine& engine,
 		const double f = static_cast<double>(rep.facing);
 		const double ca = std::cos(f);
 		const double sa = std::sin(f);
+		const double thrustScale =
+		    0.01 * static_cast<double>(std::min<std::uint8_t>(rep.thrustPercent, 100));
 		double ax = 0.0;
 		double ay = 0.0;
 		if (rep.thrustForward) {
-			ax += net::kShipThrustAccel * ca;
-			ay += net::kShipThrustAccel * sa;
-		}
-		if (rep.thrustReverse) {
-			ax -= net::kShipThrustAccel * ca * 0.5;
-			ay -= net::kShipThrustAccel * sa * 0.5;
+			ax += net::kShipThrustAccel * thrustScale * ca;
+			ay += net::kShipThrustAccel * thrustScale * sa;
 		}
 		engine.setShipThrustAccelWorld(id, ax, ay);
 	}
@@ -90,9 +88,8 @@ void MpClientSim::postDynamicsPatches(std::vector<sim::BodyDynamicsPatch> patche
 		return;
 	}
 	std::lock_guard<std::mutex> lock(workMutex_);
-	workQueue_.push_back([this, p = std::move(patches)]() mutable {
-		engine_.queuePatchBodyDynamics(std::move(p));
-	});
+	workQueue_.push_back(
+	    [this, p = std::move(patches)]() mutable { engine_.queuePatchBodyDynamics(std::move(p)); });
 }
 
 void MpClientSim::postAuthorityBundle(std::vector<sim::BodyDynamicsPatch> patches,
@@ -108,12 +105,12 @@ void MpClientSim::postAuthorityBundle(std::vector<sim::BodyDynamicsPatch> patche
 
 void MpClientSim::setLastConfirmedAuthorityStep(const std::uint64_t step) {
 	std::lock_guard<std::mutex> lock(workMutex_);
-	workQueue_.push_back([this, step]() {
-		lastConfirmedAuthorityStep_.store(step, std::memory_order_release);
-	});
+	workQueue_.push_back(
+	    [this, step]() { lastConfirmedAuthorityStep_.store(step, std::memory_order_release); });
 }
 
-void MpClientSim::syncReplicas(const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas) {
+void MpClientSim::syncReplicas(
+    const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas) {
 	std::lock_guard<std::mutex> lock(replicaMutex_);
 	replicas_ = replicas;
 }
@@ -194,9 +191,9 @@ void MpClientSim::threadMain(const std::stop_token st) {
 			publishRenderStateFromEngine();
 			continue;
 		}
-		const double ts =
-		    (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0) ? physicsCfg.timeScale
-		                                                                         : 1.0;
+		const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
+		                      ? physicsCfg.timeScale
+		                      : 1.0;
 		const double dtSim = net::simulationDtFromTimeScale(ts);
 
 		int stepBudget = 0;
@@ -208,8 +205,7 @@ void MpClientSim::threadMain(const std::stop_token st) {
 			if (head >= auth + net::kMpMaxClientLeadPhysicsSteps) {
 				break;
 			}
-			const std::uint64_t leadSteps =
-			    (head > auth) ? (head - auth) : 0u;
+			const std::uint64_t leadSteps = (head > auth) ? (head - auth) : 0u;
 			const double leadRatio =
 			    std::clamp(static_cast<double>(leadSteps) /
 			                   static_cast<double>(net::kMpMaxClientLeadPhysicsSteps),

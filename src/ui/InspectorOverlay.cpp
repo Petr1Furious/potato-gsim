@@ -78,6 +78,7 @@ void InspectorOverlay::drawWorldSelection(
     const std::optional<sim::BodySnapshot>& velocityReferenceBody,
     const std::optional<sim::BodySnapshot>& distanceReferenceBody,
     const std::vector<sf::Vector2f>& selectedPrediction,
+    bool highlightPredictionEncounterEnd,
     const std::optional<sf::Vector2f>& creationVelocityTarget,
     double arrowScale,
     bool drawHighlightSquare,
@@ -128,6 +129,23 @@ void InspectorOverlay::drawWorldSelection(
 			strip[i].color = sf::Color(0, 255, 0, 90);
 		}
 		window.draw(strip);
+	}
+
+	if (highlightPredictionEncounterEnd && !selectedPrediction.empty()) {
+		const sf::Vector2f& ep = selectedPrediction.back();
+		const sf::Vector2i epi = worldToPixel(static_cast<double>(ep.x), static_cast<double>(ep.y));
+		const float px = static_cast<float>(epi.x);
+		const float py = static_cast<float>(epi.y);
+		sf::CircleShape halo(6.0f);
+		halo.setOrigin(sf::Vector2f(6.0f, 6.0f));
+		halo.setPosition(sf::Vector2f(px, py));
+		halo.setFillColor(sf::Color(255, 80, 40, 180));
+		halo.setOutlineColor(sf::Color(255, 210, 120, 230));
+		halo.setOutlineThickness(1.5f);
+		const sf::View oldView = window.getView();
+		window.setView(window.getDefaultView());
+		window.draw(halo);
+		window.setView(oldView);
 	}
 
 	drawBodyInfoText(window, *body, velocityReferenceBody, distanceReferenceBody,
@@ -338,6 +356,56 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 		pauseText.setOutlineThickness(2.0f);
 		pauseText.setPosition(sf::Vector2f(static_cast<float>(window.getSize().x) - 170.0f, 14.0f));
 		window.draw(pauseText);
+	}
+
+	window.setView(oldView);
+}
+
+void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
+                                         const int thrustPercent,
+                                         const bool mouseAimMode) const {
+	const sf::View oldView = window.getView();
+	window.setView(window.getDefaultView());
+
+	const sf::Vector2u sz = window.getSize();
+	const float margin = 14.0f;
+	const float colW = 16.0f;
+	const float colH = 86.0f;
+	const float blockW = 118.0f;
+	const float x = static_cast<float>(sz.x) - margin - blockW;
+	const float y = static_cast<float>(sz.y) - margin - colH - 6.0f;
+
+	sf::RectangleShape border(sf::Vector2f(colW, colH));
+	border.setPosition(sf::Vector2f(x, y));
+	border.setFillColor(sf::Color(10, 14, 20, 200));
+	border.setOutlineColor(sf::Color(70, 100, 140, 220));
+	border.setOutlineThickness(1.0f);
+	window.draw(border);
+
+	const int pct = std::clamp(thrustPercent, 0, 100);
+	const float fillH = colH * (static_cast<float>(pct) / 100.0f);
+	sf::RectangleShape fill(sf::Vector2f(colW - 3.0f, std::max(0.0f, fillH - 2.0f)));
+	fill.setPosition(sf::Vector2f(x + 1.5f, y + colH - fillH + 1.0f));
+	fill.setFillColor(sf::Color(70, 210, 130, 230));
+	window.draw(fill);
+
+	if (fontReady_) {
+		std::ostringstream pctLine;
+		pctLine << pct << "%";
+		sf::Text pctText(font_, pctLine.str(), 15);
+		pctText.setFillColor(sf::Color(235, 240, 255));
+		pctText.setPosition(sf::Vector2f(x + colW + 10.0f, y + colH * 0.35f));
+		window.draw(pctText);
+
+		sf::Text aimText(font_, mouseAimMode ? "Aim: mouse" : "Aim: A/D", 13);
+		aimText.setFillColor(sf::Color(190, 205, 230));
+		aimText.setPosition(sf::Vector2f(x + colW + 10.0f, y + 8.0f));
+		window.draw(aimText);
+
+		sf::Text hint(font_, "Shift/Ctrl thrust | X 0% | Z 100%", 11);
+		hint.setFillColor(sf::Color(150, 165, 190));
+		hint.setPosition(sf::Vector2f(x, y + colH + 4.0f));
+		window.draw(hint);
 	}
 
 	window.setView(oldView);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ui/KeyboardChordState.hpp"
+
 #include <SFML/Window/Keyboard.hpp>
 
 #include <optional>
@@ -28,7 +30,8 @@ class InputActions {
 	[[nodiscard]] std::optional<Action> mapKeyPress(sf::Keyboard::Key key, bool menuActive) const;
 	[[nodiscard]] HoldAdjustments computeHolds(double dtSeconds,
 	                                           bool enabled,
-	                                           bool keyboardPanKeys = true) const;
+	                                           bool keyboardPanKeys,
+	                                           const KeyboardChordState& keys) const;
 
 	[[nodiscard]] std::vector<std::string> legendLines(bool menuActive) const;
 };

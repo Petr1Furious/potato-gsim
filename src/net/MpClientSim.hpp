@@ -32,7 +32,7 @@ struct MpClientRenderPublish {
 struct MpShipReplicaInput {
 	float facing = 0.f;
 	std::uint8_t thrustForward = 0;
-	std::uint8_t thrustReverse = 0;
+	std::uint8_t thrustPercent = 100;
 	std::uint64_t lastTick = 0;
 };
 
@@ -60,7 +60,8 @@ class MpClientSim {
 	/// posted in the same frame.
 	void postMergeDeletes(std::vector<std::pair<sim::BodyId, sim::BodyId>> remaps);
 
-	/// Main thread: register new server bodies or refresh existing (e.g. late-joining player ships).
+	/// Main thread: register new server bodies or refresh existing (e.g. late-joining player
+	/// ships).
 	void postAuthoritativeUpserts(std::vector<sim::AuthoritativeBody> bodies);
 
 	/// Main thread: enqueue dynamics patches (world + ship); may be empty.

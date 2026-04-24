@@ -110,7 +110,7 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 		case MsgType::ShipState: {
 			ShipNetSample s{};
 			if (readShipState(d, len, s.serverTick, s.globalPhysicsStep, s.bodyId, s.px, s.py, s.vx,
-			                  s.vy, s.facingRadians, s.thrustForward, s.thrustReverse)) {
+			                  s.vy, s.facingRadians, s.thrustForward, s.thrustPercent)) {
 				pendingShips_.push_back(s);
 			}
 		} break;
@@ -196,8 +196,7 @@ void MpClient::netThreadMain(const std::stop_token st) {
 				const std::uint32_t flags =
 				    (kind == OutboundKind::JoinReliable) ? ENET_PACKET_FLAG_RELIABLE : 0;
 				const std::uint8_t channel = (kind == OutboundKind::JoinReliable) ? 1 : 0;
-				ENetPacket* packet =
-				    enet_packet_create(bytes.data(), bytes.size(), flags);
+				ENetPacket* packet = enet_packet_create(bytes.data(), bytes.size(), flags);
 				if (packet == nullptr) {
 					continue;
 				}
@@ -227,8 +226,7 @@ void MpClient::netThreadMain(const std::stop_token st) {
 				}
 			}
 
-			if (serverPeer_ != nullptr &&
-			    serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
+			if (serverPeer_ != nullptr && serverPeer_->state == ENET_PEER_STATE_CONNECTED) {
 				peerFullyConnected_.store(true, std::memory_order_release);
 			} else {
 				peerFullyConnected_.store(false, std::memory_order_release);

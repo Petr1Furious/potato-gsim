@@ -43,7 +43,7 @@ int main() {
 
 	{
 		std::vector<std::uint8_t> buf;
-		assert(net::writeShipState(3, 777, 9, 1.1, 2.2, 3.3, 4.4, 0.5f, 1, 0, buf));
+		assert(net::writeShipState(3, 777, 9, 1.1, 2.2, 3.3, 4.4, 0.5f, 1, 88, buf));
 		std::uint64_t tick = 0;
 		std::uint64_t g = 0;
 		sim::BodyId id = 0;
@@ -53,14 +53,15 @@ int main() {
 		double vy = 0;
 		float facing = 0.f;
 		std::uint8_t tf = 0;
-		std::uint8_t tr = 0;
+		std::uint8_t tp = 0;
 		assert(net::readShipState(buf.data(), buf.size(), tick, g, id, px, py, vx, vy, facing, tf,
-		                          tr));
+		                          tp));
 		assert(tick == 3);
 		assert(g == 777);
 		assert(id == 9);
 		assert(std::abs(px - 1.1) < 1e-12);
-		assert(tf == 1 && tr == 0);
+		assert(tf == 1);
+		assert(tp == 88);
 	}
 
 	{
@@ -104,7 +105,8 @@ int main() {
 		std::uint64_t tickOut = 0;
 		std::uint64_t stepOut = 0;
 		std::vector<AuthoritativeBody> bodiesOut;
-		assert(net::readAuthoritativeBodyUpsert(buf.data(), buf.size(), tickOut, stepOut, bodiesOut));
+		assert(
+		    net::readAuthoritativeBodyUpsert(buf.data(), buf.size(), tickOut, stepOut, bodiesOut));
 		assert(tickOut == 9);
 		assert(stepOut == 8000);
 		assert(bodiesOut.size() == 1);

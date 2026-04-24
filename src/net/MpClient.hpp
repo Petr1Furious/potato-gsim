@@ -32,7 +32,7 @@ class MpClient {
 		double vy = 0.0;
 		float facingRadians = 0.f;
 		std::uint8_t thrustForward = 0;
-		std::uint8_t thrustReverse = 0;
+		std::uint8_t thrustPercent = 100;
 	};
 
 	MpClient() = default;

@@ -9,6 +9,13 @@
 
 namespace ui {
 
+/// Integrated trajectory; `stoppedOnEncounter` means the last point is first surface contact
+/// with another body (prediction truncated there instead of continuing through overlap/merge).
+struct PredictionPath {
+	std::vector<sf::Vector2f> points;
+	bool stoppedOnEncounter = false;
+};
+
 class Predictor {
    public:
 	struct Settings {
@@ -24,16 +31,16 @@ class Predictor {
 	void setSettings(Settings settings) { settings_ = settings; }
 	void scaleHorizon(double factor);
 
-	std::vector<sf::Vector2f> predictForBody(const std::vector<sim::BodySnapshot>& bodies,
-	                                         sim::BodyId id,
-	                                         double G,
-	                                         double epsilon) const;
+	[[nodiscard]] PredictionPath predictForBody(const std::vector<sim::BodySnapshot>& bodies,
+	                                            sim::BodyId id,
+	                                            double G,
+	                                            double epsilon) const;
 
-	std::vector<sf::Vector2f> predictSpawn(const std::vector<sim::BodySnapshot>& bodies,
-	                                       const sim::SpawnCommand& spawn,
-	                                       double G,
-	                                       double epsilon) const;
-	std::vector<sf::Vector2f> predictSpawnRelativeToBody(
+	[[nodiscard]] PredictionPath predictSpawn(const std::vector<sim::BodySnapshot>& bodies,
+	                                          const sim::SpawnCommand& spawn,
+	                                          double G,
+	                                          double epsilon) const;
+	[[nodiscard]] PredictionPath predictSpawnRelativeToBody(
 	    const std::vector<sim::BodySnapshot>& bodies,
 	    const sim::SpawnCommand& spawn,
 	    sim::BodyId referenceId,
@@ -48,12 +55,12 @@ class Predictor {
 	    const std::vector<sim::BodyId>& requiredIds,
 	    double epsilon) const;
 
-	std::vector<sf::Vector2f> integrateWorkingSet(std::vector<sim::BodySnapshot> bodies,
-	                                              sim::BodyId trackedId,
-	                                              std::optional<sim::BodyId> referenceId,
-	                                              bool relativeOutput,
-	                                              double G,
-	                                              double epsilon) const;
+	PredictionPath integrateWorkingSet(std::vector<sim::BodySnapshot> bodies,
+	                                   sim::BodyId trackedId,
+	                                   std::optional<sim::BodyId> referenceId,
+	                                   bool relativeOutput,
+	                                   double G,
+	                                   double epsilon) const;
 	static void mergeOverlaps(std::vector<sim::BodySnapshot>& bodies,
 	                          sim::BodyId& trackedId,
 	                          std::optional<sim::BodyId>& referenceId);

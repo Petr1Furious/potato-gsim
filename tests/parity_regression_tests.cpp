@@ -169,12 +169,14 @@ bool testPredictorCollisionMerge() {
 	        .radius = 2.0,
 	    },
 	};
-	const std::vector<sf::Vector2f> predicted = predictor.predictForBody(bodies, 1, 0.0, 1e-6);
+	const ui::PredictionPath predicted = predictor.predictForBody(bodies, 1, 0.0, 1e-6);
 	bool ok = true;
-	ok &= expect(!predicted.empty(), "Predictor should return points for merged body");
-	if (!predicted.empty()) {
+	ok &= expect(!predicted.points.empty(), "Predictor should return points for merged body");
+	ok &= expect(!predicted.stoppedOnEncounter,
+	             "Initially overlapping bodies use merge path, not encounter stop");
+	if (!predicted.points.empty()) {
 		const double expectedX = ((-1.0 * 1.0) + (1.0 * 5.0)) / 6.0;
-		ok &= expect(std::abs(static_cast<double>(predicted.front().x) - expectedX) < 1e-4,
+		ok &= expect(std::abs(static_cast<double>(predicted.points.front().x) - expectedX) < 1e-4,
 		             "Predictor should remap tracked id through merge and start at COM");
 	}
 	return ok;

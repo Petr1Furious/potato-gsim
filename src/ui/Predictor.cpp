@@ -29,6 +29,36 @@ sim::BodyId nextSyntheticId(const std::vector<sim::BodySnapshot>& bodies) {
 	return maxId + 1;
 }
 
+bool circlesOverlap(const sim::BodySnapshot& a, const sim::BodySnapshot& b) {
+	const double dx = b.x - a.x;
+	const double dy = b.y - a.y;
+	const double rr = a.radius + b.radius;
+	return (dx * dx + dy * dy) <= rr * rr;
+}
+
+bool trackedOverlapsAnyOther(const std::vector<sim::BodySnapshot>& bodies,
+                             std::size_t trackedIndex) {
+	const sim::BodySnapshot& t = bodies[trackedIndex];
+	for (std::size_t j = 0; j < bodies.size(); ++j) {
+		if (j == trackedIndex) {
+			continue;
+		}
+		if (circlesOverlap(t, bodies[j])) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool initialTrackedOverlapOthers(const std::vector<sim::BodySnapshot>& bodies,
+                                 sim::BodyId trackedId) {
+	const std::optional<std::size_t> ti = findIndexById(bodies, trackedId);
+	if (!ti.has_value()) {
+		return false;
+	}
+	return trackedOverlapsAnyOther(bodies, *ti);
+}
+
 }  // namespace
 
 void Predictor::scaleHorizon(double factor) {
@@ -206,17 +236,19 @@ void Predictor::mergeOverlaps(std::vector<sim::BodySnapshot>& bodies,
 	bodies.swap(mergedBodies);
 }
 
-std::vector<sf::Vector2f> Predictor::integrateWorkingSet(std::vector<sim::BodySnapshot> bodies,
-                                                         sim::BodyId trackedId,
-                                                         std::optional<sim::BodyId> referenceId,
-                                                         bool relativeOutput,
-                                                         double G,
-                                                         double epsilon) const {
-	std::vector<sf::Vector2f> out;
+PredictionPath Predictor::integrateWorkingSet(std::vector<sim::BodySnapshot> bodies,
+                                              sim::BodyId trackedId,
+                                              std::optional<sim::BodyId> referenceId,
+                                              bool relativeOutput,
+                                              double G,
+                                              double epsilon) const {
+	PredictionPath result;
+	std::vector<sf::Vector2f>& out = result.points;
 	if (!settings_.enabled || settings_.steps < 2 || bodies.empty()) {
-		return out;
+		return result;
 	}
 
+	const bool initialOverlap = initialTrackedOverlapOthers(bodies, trackedId);
 	const double dt = std::max(1e-9, settings_.dt);
 	const double eps2 = epsilon * epsilon;
 	out.reserve(static_cast<std::size_t>(settings_.steps));
@@ -266,14 +298,39 @@ std::vector<sf::Vector2f> Predictor::integrateWorkingSet(std::vector<sim::BodySn
 			bodies[i].x += bodies[i].vx * dt;
 			bodies[i].y += bodies[i].vy * dt;
 		}
+
+		if (!initialOverlap) {
+			const std::optional<std::size_t> postIndex = findIndexById(bodies, trackedId);
+			if (!postIndex.has_value()) {
+				break;
+			}
+			if (trackedOverlapsAnyOther(bodies, *postIndex)) {
+				const sim::BodySnapshot& t = bodies[*postIndex];
+				if (relativeOutput) {
+					if (!referenceId.has_value()) {
+						break;
+					}
+					const std::optional<std::size_t> refPost = findIndexById(bodies, *referenceId);
+					if (!refPost.has_value()) {
+						break;
+					}
+					const sim::BodySnapshot& r = bodies[*refPost];
+					out.emplace_back(static_cast<float>(t.x - r.x), static_cast<float>(t.y - r.y));
+				} else {
+					out.emplace_back(static_cast<float>(t.x), static_cast<float>(t.y));
+				}
+				result.stoppedOnEncounter = true;
+				break;
+			}
+		}
 	}
-	return out;
+	return result;
 }
 
-std::vector<sf::Vector2f> Predictor::predictForBody(const std::vector<sim::BodySnapshot>& bodies,
-                                                    sim::BodyId id,
-                                                    double G,
-                                                    double epsilon) const {
+PredictionPath Predictor::predictForBody(const std::vector<sim::BodySnapshot>& bodies,
+                                         sim::BodyId id,
+                                         double G,
+                                         double epsilon) const {
 	const auto it = std::find_if(bodies.begin(), bodies.end(),
 	                             [id](const sim::BodySnapshot& b) { return b.id == id; });
 	if (it == bodies.end()) {
@@ -285,10 +342,10 @@ std::vector<sf::Vector2f> Predictor::predictForBody(const std::vector<sim::BodyS
 	return integrateWorkingSet(workingSet, id, std::nullopt, false, G, epsilon);
 }
 
-std::vector<sf::Vector2f> Predictor::predictSpawn(const std::vector<sim::BodySnapshot>& bodies,
-                                                  const sim::SpawnCommand& spawn,
-                                                  double G,
-                                                  double epsilon) const {
+PredictionPath Predictor::predictSpawn(const std::vector<sim::BodySnapshot>& bodies,
+                                       const sim::SpawnCommand& spawn,
+                                       double G,
+                                       double epsilon) const {
 	const sim::BodyId pseudoId = nextSyntheticId(bodies);
 	const sim::BodySnapshot pseudo{
 	    .id = pseudoId,
@@ -305,12 +362,11 @@ std::vector<sf::Vector2f> Predictor::predictSpawn(const std::vector<sim::BodySna
 	return integrateWorkingSet(std::move(workingSet), pseudoId, std::nullopt, false, G, epsilon);
 }
 
-std::vector<sf::Vector2f> Predictor::predictSpawnRelativeToBody(
-    const std::vector<sim::BodySnapshot>& bodies,
-    const sim::SpawnCommand& spawn,
-    sim::BodyId referenceId,
-    double G,
-    double epsilon) const {
+PredictionPath Predictor::predictSpawnRelativeToBody(const std::vector<sim::BodySnapshot>& bodies,
+                                                     const sim::SpawnCommand& spawn,
+                                                     sim::BodyId referenceId,
+                                                     double G,
+                                                     double epsilon) const {
 	if (!settings_.enabled || settings_.steps < 2) {
 		return {};
 	}

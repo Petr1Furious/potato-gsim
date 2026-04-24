@@ -27,7 +27,8 @@ std::optional<Action> InputActions::mapKeyPress(sf::Keyboard::Key key, bool menu
 
 HoldAdjustments InputActions::computeHolds(const double dtSeconds,
                                            const bool enabled,
-                                           const bool keyboardPanKeys) const {
+                                           const bool keyboardPanKeys,
+                                           const KeyboardChordState& k) const {
 	HoldAdjustments out{};
 	if (!enabled) {
 		return out;
@@ -36,20 +37,17 @@ HoldAdjustments InputActions::computeHolds(const double dtSeconds,
 	const double panSpeedPxPerSecond = 950.0;
 
 	if (keyboardPanKeys) {
-		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A) ||
-		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Left)) {
+		using K = sf::Keyboard::Key;
+		if (k.down(K::A) || k.down(K::Left)) {
 			out.panPixelsX += panSpeedPxPerSecond * dtSeconds;
 		}
-		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D) ||
-		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Right)) {
+		if (k.down(K::D) || k.down(K::Right)) {
 			out.panPixelsX -= panSpeedPxPerSecond * dtSeconds;
 		}
-		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W) ||
-		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)) {
+		if (k.down(K::W) || k.down(K::Up)) {
 			out.panPixelsY += panSpeedPxPerSecond * dtSeconds;
 		}
-		if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S) ||
-		    sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down)) {
+		if (k.down(K::S) || k.down(K::Down)) {
 			out.panPixelsY -= panSpeedPxPerSecond * dtSeconds;
 		}
 	}
@@ -64,7 +62,8 @@ std::vector<std::string> InputActions::legendLines(bool menuActive) const {
 	    "Esc close menu | Up/Down select | Enter apply",
 	    "F follow mode | L trails on/off | T trails relative/world",
 	    "P ship prediction | R reset view | F11 fullscreen",
-	    "WASD/Arrows thrust | Left/Middle drag pan | Wheel zoom",
+	    "W/Up thrust | M aim | Shift/Ctrl thrust | X 0% / Z 100%",
+	    "Left/Middle drag pan | Wheel zoom",
 	};
 }
 

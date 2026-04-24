@@ -207,15 +207,13 @@ int main(int argc, char** argv) {
 				const double f = static_cast<double>(c.lastInput.facingRadians);
 				const double ca = std::cos(f);
 				const double sa = std::sin(f);
+				const double thrustScale = 0.01 * static_cast<double>(std::min<std::uint8_t>(
+				                                      c.lastInput.thrustPercent, 100));
 				double ax = 0.0;
 				double ay = 0.0;
 				if (c.lastInput.thrustForward) {
-					ax += net::kShipThrustAccel * ca;
-					ay += net::kShipThrustAccel * sa;
-				}
-				if (c.lastInput.thrustReverse) {
-					ax -= net::kShipThrustAccel * ca * 0.5;
-					ay -= net::kShipThrustAccel * sa * 0.5;
+					ax += net::kShipThrustAccel * thrustScale * ca;
+					ay += net::kShipThrustAccel * thrustScale * sa;
 				}
 				engine.setShipThrustAccelWorld(c.shipId, ax, ay);
 			}
@@ -301,7 +299,7 @@ int main(int argc, char** argv) {
 				std::vector<std::uint8_t> payload;
 				net::writeShipState(serverTick, globalPhysicsStep, b.id, b.x, b.y, b.vx, b.vy,
 				                    c.lastInput.facingRadians, c.lastInput.thrustForward,
-				                    c.lastInput.thrustReverse, payload);
+				                    c.lastInput.thrustPercent, payload);
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 0, packet);

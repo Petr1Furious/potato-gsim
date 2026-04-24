@@ -161,9 +161,48 @@ float Renderer::worldUnitsPerPixel() const {
 	return view_.getSize().x / std::max(1.0f, static_cast<float>(window_.getSize().x));
 }
 
+namespace {
+
+void drawOrientedShip(sf::RenderWindow& window,
+                      const sf::Vector2f& pos,
+                      float facing,
+                      float shipWorldRadius,
+                      float outlineThicknessWorld,
+                      const sf::Color& fill,
+                      const sf::Color& outline,
+                      const sf::Color& headingLine) {
+	const sf::Vector2f tip(pos.x + std::cos(facing) * shipWorldRadius * 1.8f,
+	                       pos.y + std::sin(facing) * shipWorldRadius * 1.8f);
+	const sf::Vector2f back(pos.x - std::cos(facing) * shipWorldRadius * 1.0f,
+	                        pos.y - std::sin(facing) * shipWorldRadius * 1.0f);
+	const sf::Vector2f left(back.x + std::cos(facing + 1.5707963f) * shipWorldRadius * 0.9f,
+	                        back.y + std::sin(facing + 1.5707963f) * shipWorldRadius * 0.9f);
+	const sf::Vector2f right(back.x + std::cos(facing - 1.5707963f) * shipWorldRadius * 0.9f,
+	                         back.y + std::sin(facing - 1.5707963f) * shipWorldRadius * 0.9f);
+
+	sf::VertexArray heading(sf::PrimitiveType::Lines, 2);
+	heading[0].position = pos;
+	heading[0].color = headingLine;
+	heading[1].position = tip;
+	heading[1].color = headingLine;
+	window.draw(heading);
+
+	sf::ConvexShape ship(3);
+	ship.setPoint(0, tip);
+	ship.setPoint(1, right);
+	ship.setPoint(2, left);
+	ship.setFillColor(fill);
+	ship.setOutlineColor(outline);
+	ship.setOutlineThickness(outlineThicknessWorld);
+	window.draw(ship);
+}
+
+}  // namespace
+
 void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
                     const std::optional<sim::BodyId> playerShipId,
-                    const std::optional<float> playerFacingRadians) {
+                    const std::optional<float> playerFacingRadians,
+                    const std::unordered_map<sim::BodyId, float>* multiplayerShipFacings) {
 	window_.setView(view_);
 	window_.clear(sf::Color(8, 10, 16));
 
@@ -190,29 +229,35 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
 		    pos.y + worldRadius < viewMinY || pos.y - worldRadius > viewMaxY) {
 			continue;
 		}
-		if (isPlayer) {
-			const float facing = playerFacingRadians.value_or(0.0f);
+
+		bool drawAsShip = false;
+		float facing = 0.0f;
+		if (multiplayerShipFacings != nullptr) {
+			const auto it = multiplayerShipFacings->find(body.id);
+			if (it != multiplayerShipFacings->end()) {
+				drawAsShip = true;
+				facing = it->second;
+			}
+		}
+		if (isPlayer && playerFacingRadians.has_value()) {
+			drawAsShip = true;
+			facing = *playerFacingRadians;
+		}
+
+		if (drawAsShip) {
 			const float minShipPx = 10.0f;
 			const float shipPx = std::max(minShipPx, std::max(radiusPx * 2.0f, 6.0f));
 			const float shipWorldRadius = shipPx * worldUnitsPerPixel() * 0.5f;
-			const sf::Vector2f tip(pos.x + std::cos(facing) * shipWorldRadius * 1.8f,
-			                       pos.y + std::sin(facing) * shipWorldRadius * 1.8f);
-			const sf::Vector2f back(pos.x - std::cos(facing) * shipWorldRadius * 1.0f,
-			                        pos.y - std::sin(facing) * shipWorldRadius * 1.0f);
-			const sf::Vector2f left(
-			    back.x + std::cos(facing + 1.5707963f) * shipWorldRadius * 0.9f,
-			    back.y + std::sin(facing + 1.5707963f) * shipWorldRadius * 0.9f);
-			const sf::Vector2f right(
-			    back.x + std::cos(facing - 1.5707963f) * shipWorldRadius * 0.9f,
-			    back.y + std::sin(facing - 1.5707963f) * shipWorldRadius * 0.9f);
-			sf::ConvexShape ship(3);
-			ship.setPoint(0, tip);
-			ship.setPoint(1, right);
-			ship.setPoint(2, left);
-			ship.setFillColor(sf::Color(255, 225, 150, 230));
-			ship.setOutlineColor(sf::Color(20, 20, 28, 230));
-			ship.setOutlineThickness(1.0f * worldUnitsPerPixel());
-			window_.draw(ship);
+			const float outlineW = 1.0f * worldUnitsPerPixel();
+			if (isPlayer) {
+				drawOrientedShip(window_, pos, facing, shipWorldRadius, outlineW,
+				                 sf::Color(255, 225, 150, 230), sf::Color(20, 20, 28, 230),
+				                 sf::Color(255, 255, 255, 72));
+			} else {
+				drawOrientedShip(window_, pos, facing, shipWorldRadius, outlineW,
+				                 sf::Color(130, 200, 255, 228), sf::Color(18, 40, 58, 235),
+				                 sf::Color(200, 235, 255, 85));
+			}
 		} else if (radiusPx > 0.5f) {
 			circle_.setRadius(worldRadius);
 			circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));

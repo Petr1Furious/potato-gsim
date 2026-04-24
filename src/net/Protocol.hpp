@@ -5,13 +5,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace net {
 
 constexpr std::uint32_t kMagic = 0x31475350u;  // 'P''G''S''1' little-endian
-constexpr std::uint8_t kProtocolVersion = 3;
+constexpr std::uint8_t kProtocolVersion = 5;
 
 enum class MsgType : std::uint8_t {
 	JoinRequest = 1,
@@ -28,8 +27,9 @@ enum class MsgType : std::uint8_t {
 struct ClientInputPayload {
 	std::uint32_t seq = 0;
 	std::uint8_t thrustForward = 0;
-	std::uint8_t thrustReverse = 0;
 	float facingRadians = 0.f;
+	/// 0–100: scales forward thrust acceleration from this client.
+	std::uint8_t thrustPercent = 100;
 };
 #pragma pack(pop)
 
@@ -62,7 +62,7 @@ bool writeShipState(std::uint64_t serverTick,
                     double vy,
                     float facing,
                     std::uint8_t thrustForward,
-                    std::uint8_t thrustReverse,
+                    std::uint8_t thrustPercent,
                     std::vector<std::uint8_t>& out);
 bool readShipState(const std::uint8_t* data,
                    std::size_t len,
@@ -75,7 +75,7 @@ bool readShipState(const std::uint8_t* data,
                    double& vy,
                    float& facingOut,
                    std::uint8_t& thrustForwardOut,
-                   std::uint8_t& thrustReverseOut);
+                   std::uint8_t& thrustPercentOut);
 
 bool writeWorldDynamicSnapshot(std::uint64_t serverTick,
                                std::uint64_t globalPhysicsStep,
