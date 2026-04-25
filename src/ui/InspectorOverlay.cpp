@@ -21,6 +21,15 @@ std::string bodyLabel(const sim::BodySnapshot& body) {
 	return ss.str();
 }
 
+sf::View makeUiView(const sf::RenderWindow& window) {
+	const sf::Vector2u sz = window.getSize();
+	const sf::Vector2f fsz(static_cast<float>(std::max(1u, sz.x)),
+	                       static_cast<float>(std::max(1u, sz.y)));
+	sf::View ui(sf::FloatRect(sf::Vector2f(0.0f, 0.0f), fsz));
+	ui.setViewport(sf::FloatRect(sf::Vector2f(0.0f, 0.0f), sf::Vector2f(1.0f, 1.0f)));
+	return ui;
+}
+
 }  // namespace
 
 InspectorOverlay::InspectorOverlay() {
@@ -116,7 +125,7 @@ void InspectorOverlay::drawWorldSelection(
 		box.setOutlineColor(sf::Color(255, 255, 255, 225));
 		box.setOutlineThickness(1.0f);
 		const sf::View oldView = window.getView();
-		window.setView(window.getDefaultView());
+		window.setView(makeUiView(window));
 		window.draw(box);
 		window.setView(oldView);
 	}
@@ -143,7 +152,7 @@ void InspectorOverlay::drawWorldSelection(
 		halo.setOutlineColor(sf::Color(255, 210, 120, 230));
 		halo.setOutlineThickness(1.5f);
 		const sf::View oldView = window.getView();
-		window.setView(window.getDefaultView());
+		window.setView(makeUiView(window));
 		window.draw(halo);
 		window.setView(oldView);
 	}
@@ -204,7 +213,7 @@ void InspectorOverlay::drawBodyInfoText(
 	text.setPosition(sf::Vector2f(px, py));
 
 	const sf::View oldView = window.getView();
-	window.setView(window.getDefaultView());
+	window.setView(makeUiView(window));
 	window.draw(text);
 	window.setView(oldView);
 }
@@ -219,7 +228,7 @@ void InspectorOverlay::drawLabels(sf::RenderWindow& window,
 	}
 
 	const sf::View oldView = window.getView();
-	window.setView(window.getDefaultView());
+	window.setView(makeUiView(window));
 
 	struct LabelEntry {
 		sf::Text text;
@@ -286,7 +295,8 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 	}
 
 	const sf::View oldView = window.getView();
-	window.setView(window.getDefaultView());
+	window.setView(makeUiView(window));
+	const sf::Vector2f uiSize = window.getView().getSize();
 
 	const float panelX = 12.0f;
 	const float panelY = 10.0f;
@@ -329,8 +339,7 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 		    maxLineWidth + padding * 2.0f,
 		    padding * 2.0f + lineHeight * static_cast<float>(legendLines.size()));
 		const float legendX = 12.0f;
-		const float legendY =
-		    std::max(12.0f, static_cast<float>(window.getSize().y) - legendPanelSize.y - 12.0f);
+		const float legendY = std::max(12.0f, uiSize.y - legendPanelSize.y - 12.0f);
 
 		sf::RectangleShape legendPanel(legendPanelSize);
 		legendPanel.setPosition(sf::Vector2f(legendX, legendY));
@@ -354,7 +363,7 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 		pauseText.setFillColor(sf::Color(255, 225, 140, 225));
 		pauseText.setOutlineColor(sf::Color(30, 30, 32));
 		pauseText.setOutlineThickness(2.0f);
-		pauseText.setPosition(sf::Vector2f(static_cast<float>(window.getSize().x) - 170.0f, 14.0f));
+		pauseText.setPosition(sf::Vector2f(uiSize.x - 170.0f, 14.0f));
 		window.draw(pauseText);
 	}
 
@@ -363,15 +372,15 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 
 void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window, const int thrustPercent) const {
 	const sf::View oldView = window.getView();
-	window.setView(window.getDefaultView());
+	window.setView(makeUiView(window));
 
-	const sf::Vector2u sz = window.getSize();
+	const sf::Vector2f uiSize = window.getView().getSize();
 	const float margin = 14.0f;
 	const float colW = 16.0f;
 	const float colH = 86.0f;
 	const float blockW = 56.0f;
-	const float x = static_cast<float>(sz.x) - margin - blockW;
-	const float y = static_cast<float>(sz.y) - margin - colH - 6.0f;
+	const float x = uiSize.x - margin - blockW;
+	const float y = uiSize.y - margin - colH - 6.0f;
 
 	sf::RectangleShape border(sf::Vector2f(colW, colH));
 	border.setPosition(sf::Vector2f(x, y));

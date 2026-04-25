@@ -182,6 +182,7 @@ int main(int argc, char** argv) {
 	}
 
 	render::Renderer renderer(window);
+	renderer.onResize(window.getSize());
 	ui::InspectorOverlay overlay;
 	ui::UiState ui;
 	ui::KeyboardChordState keysHeld{};
@@ -229,7 +230,7 @@ int main(int argc, char** argv) {
 	bool leftDragMaySelect = false;
 	sf::Vector2i leftPanPixel{0, 0};
 	sf::Vector2i leftDownPixel{0, 0};
-	bool fullscreen = false;
+	bool fullscreen = startFullscreen;
 	std::vector<sim::BodySnapshot> bodies;
 	std::vector<std::pair<sim::BodyId, sim::BodyId>> mergeRemapEvents;
 	std::vector<sf::Vector2f> shipPrediction;
@@ -262,6 +263,7 @@ int main(int argc, char** argv) {
 			case ui::Action::ToggleFullscreen:
 				fullscreen = !fullscreen;
 				setWindowFullscreen(window, fullscreen);
+				renderer.onResize(window.getSize());
 				break;
 			case ui::Action::ResetView:
 				renderer.resetView();
@@ -383,7 +385,8 @@ int main(int argc, char** argv) {
 				keysHeld.setDown(keyReleased->code, false);
 			}
 			if (const auto* resized = event->getIf<sf::Event::Resized>()) {
-				renderer.onResize(resized->size);
+				(void)resized;
+				renderer.onResize(window.getSize());
 			}
 			if (const auto* wheel = event->getIf<sf::Event::MouseWheelScrolled>()) {
 				if (!ui.menu.active()) {

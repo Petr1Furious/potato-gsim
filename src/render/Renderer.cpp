@@ -26,6 +26,7 @@ void applyZoomStep(sf::RenderWindow& window,
 Renderer::Renderer(sf::RenderWindow& window) : window_(window), view_(window.getDefaultView()) {
 	circle_.setFillColor(sf::Color(180, 220, 255));
 	enforceAspectRatio();
+	lastWindowSize_ = window_.getSize();
 	refreshCameraWorldFromView();
 }
 
@@ -65,6 +66,7 @@ void Renderer::resetView() {
 	enforceAspectRatio();
 	useWorldOrigin_ = false;
 	worldOriginX_ = worldOriginY_ = 0.0;
+	lastWindowSize_ = window_.getSize();
 	refreshCameraWorldFromView();
 }
 
@@ -73,11 +75,13 @@ void Renderer::onResize(const sf::Vector2u& size) {
 		return;
 	}
 	enforceAspectRatio();
+	lastWindowSize_ = size;
 }
 
 void Renderer::setViewSize(const sf::Vector2f& size) {
 	view_.setSize(size);
 	enforceAspectRatio();
+	lastWindowSize_ = window_.getSize();
 }
 
 void Renderer::enforceAspectRatio() {
@@ -97,6 +101,8 @@ void Renderer::enforceAspectRatio() {
 		size.y = size.x / windowAspect;
 	}
 	view_.setSize(size);
+	window_.setView(view_);
+	refreshCameraWorldFromView();
 }
 
 void Renderer::zoomAtPixel(const sf::Vector2i& pixel, float delta) {

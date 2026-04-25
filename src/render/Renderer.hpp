@@ -70,6 +70,7 @@ class Renderer {
 	bool useWorldOrigin_{false};
 	double cameraWorldX_{0.0};
 	double cameraWorldY_{0.0};
+	sf::Vector2u lastWindowSize_{0u, 0u};
 };
 
 }  // namespace render
