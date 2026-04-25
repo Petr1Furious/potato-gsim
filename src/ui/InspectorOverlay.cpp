@@ -370,7 +370,10 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 	window.setView(oldView);
 }
 
-void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window, const int thrustPercent) const {
+void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
+                                         const int thrustPercent,
+                                         const float deltaVCurrentMps,
+                                         const float deltaVMaxMps) const {
 	const sf::View oldView = window.getView();
 	window.setView(makeUiView(window));
 
@@ -378,31 +381,46 @@ void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window, const int thr
 	const float margin = 14.0f;
 	const float colW = 16.0f;
 	const float colH = 86.0f;
-	const float blockW = 56.0f;
-	const float x = uiSize.x - margin - blockW;
-	const float y = uiSize.y - margin - colH - 6.0f;
-
-	sf::RectangleShape border(sf::Vector2f(colW, colH));
-	border.setPosition(sf::Vector2f(x, y));
-	border.setFillColor(sf::Color(10, 14, 20, 200));
-	border.setOutlineColor(sf::Color(70, 100, 140, 220));
-	border.setOutlineThickness(1.0f);
-	window.draw(border);
+	const float gap = 12.0f;
+	const float thrustX = uiSize.x - margin - colW;
+	const float dvX = thrustX - gap - colW;
+	const float y = uiSize.y - margin - colH;
 
 	const int pct = std::clamp(thrustPercent, 0, 100);
-	const float fillH = colH * (static_cast<float>(pct) / 100.0f);
-	sf::RectangleShape fill(sf::Vector2f(colW - 3.0f, std::max(0.0f, fillH - 2.0f)));
-	fill.setPosition(sf::Vector2f(x + 1.5f, y + colH - fillH + 1.0f));
-	fill.setFillColor(sf::Color(70, 210, 130, 230));
-	window.draw(fill);
+	const float thrustFillRatio = static_cast<float>(pct) / 100.0f;
+	const float dvRatio =
+	    (deltaVMaxMps > 1e-3f) ? std::clamp(deltaVCurrentMps / deltaVMaxMps, 0.0f, 1.0f) : 0.0f;
+	const auto drawBar = [&](const float x, const float ratio, const sf::Color& fillColor) {
+		sf::RectangleShape border(sf::Vector2f(colW, colH));
+		border.setPosition(sf::Vector2f(x, y));
+		border.setFillColor(sf::Color(10, 14, 20, 200));
+		border.setOutlineColor(sf::Color(70, 100, 140, 220));
+		border.setOutlineThickness(1.0f);
+		window.draw(border);
+		const float fillH = colH * std::clamp(ratio, 0.0f, 1.0f);
+		sf::RectangleShape fill(sf::Vector2f(colW - 3.0f, std::max(0.0f, fillH - 2.0f)));
+		fill.setPosition(sf::Vector2f(x + 1.5f, y + colH - fillH + 1.0f));
+		fill.setFillColor(fillColor);
+		window.draw(fill);
+	};
+	drawBar(dvX, dvRatio, sf::Color(90, 170, 245, 230));
+	drawBar(thrustX, thrustFillRatio, sf::Color(70, 210, 130, 230));
 
 	if (fontReady_) {
-		std::ostringstream pctLine;
-		pctLine << pct << "%";
-		sf::Text pctText(font_, pctLine.str(), 15);
-		pctText.setFillColor(sf::Color(235, 240, 255));
-		pctText.setPosition(sf::Vector2f(x + colW + 8.0f, y + colH * 0.35f));
-		window.draw(pctText);
+		auto drawLabelAboveBar = [&](const std::string& label, const float barX,
+		                             const float yOffset) {
+			sf::Text text(font_, label, 15);
+			text.setFillColor(sf::Color(235, 240, 255));
+			const sf::FloatRect bounds = text.getLocalBounds();
+			text.setOrigin(sf::Vector2f(std::round(bounds.position.x + bounds.size.x * 0.5f),
+			                            std::round(bounds.position.y + bounds.size.y)));
+			text.setPosition(sf::Vector2f(barX + colW * 0.5f, y - yOffset));
+			window.draw(text);
+		};
+		drawLabelAboveBar(std::to_string(pct) + "%", thrustX, 4.0f);
+
+		const double dvMps = std::max(0.0, static_cast<double>(deltaVCurrentMps));
+		drawLabelAboveBar(formatSpeedLegacy(dvMps), dvX, 22.0f);
 	}
 
 	window.setView(oldView);

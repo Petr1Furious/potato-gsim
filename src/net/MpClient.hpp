@@ -33,6 +33,8 @@ class MpClient {
 		float facingRadians = 0.f;
 		std::uint8_t thrustForward = 0;
 		std::uint8_t thrustPercent = 100;
+		float deltaVCurrentMps = 0.f;
+		float deltaVMaxMps = 0.f;
 	};
 
 	MpClient() = default;

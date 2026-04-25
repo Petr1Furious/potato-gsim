@@ -104,7 +104,8 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 		case MsgType::ShipState: {
 			ShipNetSample s{};
 			if (readShipState(d, len, s.serverTick, s.globalPhysicsStep, s.bodyId, s.px, s.py, s.vx,
-			                  s.vy, s.facingRadians, s.thrustForward, s.thrustPercent)) {
+			                  s.vy, s.facingRadians, s.thrustForward, s.thrustPercent,
+			                  s.deltaVCurrentMps, s.deltaVMaxMps)) {
 				pendingShips_.push_back(s);
 			}
 		} break;

@@ -63,6 +63,8 @@ bool writeShipState(std::uint64_t serverTick,
                     float facing,
                     std::uint8_t thrustForward,
                     std::uint8_t thrustPercent,
+                    float deltaVCurrentMps,
+                    float deltaVMaxMps,
                     std::vector<std::uint8_t>& out);
 bool readShipState(const std::uint8_t* data,
                    std::size_t len,
@@ -75,7 +77,9 @@ bool readShipState(const std::uint8_t* data,
                    double& vy,
                    float& facingOut,
                    std::uint8_t& thrustForwardOut,
-                   std::uint8_t& thrustPercentOut);
+                   std::uint8_t& thrustPercentOut,
+                   float& deltaVCurrentMpsOut,
+                   float& deltaVMaxMpsOut);
 
 /// Full authoritative rows (same encoding as each `JoinAccept` body): id, pose, dynamics,
 /// mass, radius, UTF-8 name.

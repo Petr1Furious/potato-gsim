@@ -43,7 +43,8 @@ int main() {
 
 	{
 		std::vector<std::uint8_t> buf;
-		assert(net::writeShipState(3, 777, 9, 1.1, 2.2, 3.3, 4.4, 0.5f, 1, 88, buf));
+		assert(net::writeShipState(3, 777, 9, 1.1, 2.2, 3.3, 4.4, 0.5f, 1, 88, 19000.0f, 25000.0f,
+		                           buf));
 		std::uint64_t tick = 0;
 		std::uint64_t g = 0;
 		sim::BodyId id = 0;
@@ -54,14 +55,18 @@ int main() {
 		float facing = 0.f;
 		std::uint8_t tf = 0;
 		std::uint8_t tp = 0;
+		float dvCur = 0.f;
+		float dvMax = 0.f;
 		assert(net::readShipState(buf.data(), buf.size(), tick, g, id, px, py, vx, vy, facing, tf,
-		                          tp));
+		                          tp, dvCur, dvMax));
 		assert(tick == 3);
 		assert(g == 777);
 		assert(id == 9);
 		assert(std::abs(px - 1.1) < 1e-12);
 		assert(tf == 1);
 		assert(tp == 88);
+		assert(std::abs(dvCur - 19000.0f) < 1e-6f);
+		assert(std::abs(dvMax - 25000.0f) < 1e-6f);
 	}
 
 	{

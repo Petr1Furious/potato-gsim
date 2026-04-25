@@ -165,6 +165,8 @@ int main(int argc, char** argv) {
 	double mpShipHeadingRadians = 0.0;
 	bool mpShipHeadingInited = false;
 	std::uint8_t mpShipThrustPercent = 100;
+	float mpShipDeltaVCurrentMps = 0.0f;
+	float mpShipDeltaVMaxMps = 0.0f;
 
 	if (multiplayer) {
 		if (enet_initialize() != 0) {
@@ -628,6 +630,8 @@ int main(int argc, char** argv) {
 					mpShipMouseAim = false;
 					mpShipHeadingInited = false;
 					mpShipThrustPercent = 100;
+					mpShipDeltaVCurrentMps = 0.0f;
+					mpShipDeltaVMaxMps = 0.0f;
 				} else {
 					while (true) {
 						std::uint64_t mergeTick = 0;
@@ -656,7 +660,13 @@ int main(int argc, char** argv) {
 						rep.facing = s.facingRadians;
 						rep.thrustForward = s.thrustForward;
 						rep.thrustPercent = s.thrustPercent;
+						rep.deltaVCurrentMps = s.deltaVCurrentMps;
+						rep.deltaVMaxMps = s.deltaVMaxMps;
 						rep.lastTick = s.serverTick;
+						if (s.bodyId == mpOwnShipId) {
+							mpShipDeltaVCurrentMps = s.deltaVCurrentMps;
+							mpShipDeltaVMaxMps = s.deltaVMaxMps;
+						}
 					}
 
 					while (true) {
@@ -689,6 +699,8 @@ int main(int argc, char** argv) {
 						if (mpOwnShipId == 0) {
 							mpShipThrustPercent = 100;
 							mpShipMouseAim = false;
+							mpShipDeltaVCurrentMps = 0.0f;
+							mpShipDeltaVMaxMps = 0.0f;
 						}
 						mpPrevOwnShipId = mpOwnShipId;
 					}
@@ -1147,7 +1159,8 @@ int main(int argc, char** argv) {
 		}
 		overlay.drawHudPanel(window, hudLines, ui.input.legendLines(ui.menu.active()), false);
 		if (multiplayer && mpSessionJoined && mpOwnShipId != 0) {
-			overlay.drawShipThrustHud(window, static_cast<int>(mpShipThrustPercent));
+			overlay.drawShipThrustHud(window, static_cast<int>(mpShipThrustPercent),
+			                          mpShipDeltaVCurrentMps, mpShipDeltaVMaxMps);
 		}
 
 		if (ui.menu.active()) {

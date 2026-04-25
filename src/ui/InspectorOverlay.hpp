@@ -40,7 +40,10 @@ class InspectorOverlay {
 	                  bool paused) const;
 
 	/// Bottom-right thrust bar (0–100 %) when flying own ship in multiplayer.
-	void drawShipThrustHud(sf::RenderWindow& window, int thrustPercent) const;
+	void drawShipThrustHud(sf::RenderWindow& window,
+	                       int thrustPercent,
+	                       float deltaVCurrentMps,
+	                       float deltaVMaxMps) const;
 
 	[[nodiscard]] bool available() const { return fontReady_; }
 	[[nodiscard]] const sf::Font* fontPtr() const { return fontReady_ ? &font_ : nullptr; }

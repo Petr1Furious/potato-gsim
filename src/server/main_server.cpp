@@ -23,7 +23,7 @@ constexpr int kDefaultPort = 27777;
 
 struct ServerOptions {
 	int port = kDefaultPort;
-	double simTimeScale = 1.0;
+	double simTimeScale = 86400.0;
 	int netTickHz = 30;
 	std::uint64_t worldSnapshotIntervalTicks = 30;
 	int maxClients = 32;
@@ -36,6 +36,10 @@ struct ServerOptions {
 	int workerCount = 0;
 	std::size_t presetIndex = 0;
 	scenario::PresetKind presetKind = scenario::PresetKind::Random;
+	double maxDeltaV = 30000.0;
+	double deltaVRegenDelaySeconds = 5.0;
+	/// Delta-v restored per **real-world** second while regen is active (after idle delay).
+	double deltaVRegenPerRealSecond = 500.0;
 
 	scenario::RandomPresetConfig randomCfg{};
 };
@@ -50,6 +54,12 @@ struct ClientSlot {
 	bool loggedShipId = false;
 	/// One-time broadcast so existing clients register this slot's ship in their IdIndexMap.
 	bool shipAuthoritativeUpsertSent = false;
+	double deltaVCurrent = 0.0;
+	/// Wall-clock seconds since last effective thrust (not sim time; avoids instant regen at high
+	/// `timeScale`).
+	double wallSecondsSinceThrust = 0.0;
+	std::uint8_t appliedThrustForward = 0;
+	std::uint8_t appliedThrustPercent = 0;
 };
 
 void logErr(const char* msg) {
@@ -193,6 +203,14 @@ int main(int argc, char** argv) {
 	    ->capture_default_str();
 	app.add_option("--workers", opts.workerCount, "Worker threads (0=auto/default)")
 	    ->capture_default_str();
+	app.add_option("--max-delta-v", opts.maxDeltaV, "Max per-ship delta-v budget (m/s)")
+	    ->capture_default_str();
+	app.add_option("--delta-v-regen-delay", opts.deltaVRegenDelaySeconds,
+	               "Real-world idle time before delta-v regeneration starts (s)")
+	    ->capture_default_str();
+	app.add_option("--delta-v-regen-rate", opts.deltaVRegenPerRealSecond,
+	               "Delta-v restored per real-world second while regen is active (m/s per s)")
+	    ->capture_default_str();
 
 	app.add_option("--random-count", opts.randomCfg.count, "Random preset body count")
 	    ->capture_default_str();
@@ -229,6 +247,9 @@ int main(int argc, char** argv) {
 	opts.maxClients = std::max(1, opts.maxClients);
 	opts.collisionStepInterval = std::max(1, opts.collisionStepInterval);
 	opts.workerCount = std::max(0, opts.workerCount);
+	opts.maxDeltaV = std::max(0.0, opts.maxDeltaV);
+	opts.deltaVRegenDelaySeconds = std::max(0.0, opts.deltaVRegenDelaySeconds);
+	opts.deltaVRegenPerRealSecond = std::max(0.0, opts.deltaVRegenPerRealSecond);
 
 	if (enet_initialize() != 0) {
 		logErr("enet_initialize failed");
@@ -275,6 +296,7 @@ int main(int argc, char** argv) {
 
 	std::uint64_t serverTick = 0;
 	std::uint64_t globalPhysicsStep = 0;
+	std::size_t nextShipSpawnIndex = 0;
 	auto lastTick = std::chrono::steady_clock::now();
 	const double tickPeriod = 1.0 / static_cast<double>(opts.netTickHz);
 	double serverWallPhysicsDebt = 0.0;
@@ -284,12 +306,16 @@ int main(int argc, char** argv) {
 		while (enet_host_service(host, &event, 1) > 0) {
 			if (event.type == ENET_EVENT_TYPE_CONNECT) {
 				std::fprintf(stderr, "client connected\n");
-				sim::SpawnCommand shipSpawn = makeShipSpawn(clients.size(), opts);
+				sim::SpawnCommand shipSpawn = makeShipSpawn(nextShipSpawnIndex, opts);
+				++nextShipSpawnIndex;
 				const std::string shipName = shipSpawn.name;
 				engine.queueSpawn(std::move(shipSpawn));
 				ClientSlot slot;
 				slot.peer = event.peer;
 				slot.shipName = shipName;
+				slot.deltaVCurrent = opts.maxDeltaV;
+				// Must start at 0: priming to the delay makes regen begin the instant thrust stops.
+				slot.wallSecondsSinceThrust = 0.0;
 				clients.push_back(slot);
 			} else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
 				const std::uint8_t* d = event.packet->data;
@@ -332,6 +358,7 @@ int main(int argc, char** argv) {
 		const double ts =
 		    (std::isfinite(liveCfg.timeScale) && liveCfg.timeScale > 0.0) ? liveCfg.timeScale : 1.0;
 		const double dtSim = net::simulationDtFromTimeScale(ts);
+		const double wallDtStep = net::kRealSecondsPerPhysicsStep;
 		serverWallPhysicsDebt += elapsed;
 		serverWallPhysicsDebt = std::min(serverWallPhysicsDebt, net::kMaxWallPhysicsDebtSeconds);
 
@@ -345,14 +372,45 @@ int main(int argc, char** argv) {
 				const double f = static_cast<double>(c.lastInput.facingRadians);
 				const double ca = std::cos(f);
 				const double sa = std::sin(f);
-				const double thrustScale = 0.01 * static_cast<double>(std::min<std::uint8_t>(
-				                                      c.lastInput.thrustPercent, 100));
+				const double requestedThrustScale =
+				    0.01 *
+				    static_cast<double>(std::min<std::uint8_t>(c.lastInput.thrustPercent, 100));
 				double ax = 0.0;
 				double ay = 0.0;
+				std::uint8_t effectiveThrustPercent = 0;
+				std::uint8_t effectiveThrustForward = 0;
 				if (c.lastInput.thrustForward) {
-					ax += net::kShipThrustAccel * thrustScale * ca;
-					ay += net::kShipThrustAccel * thrustScale * sa;
+					const double requestedDeltaV =
+					    net::kShipThrustAccel * requestedThrustScale * dtSim;
+					const double allowedScale =
+					    (requestedDeltaV > 1e-12)
+					        ? std::clamp(c.deltaVCurrent / requestedDeltaV, 0.0, 1.0)
+					        : 0.0;
+					const double effectiveThrustScale = requestedThrustScale * allowedScale;
+					const double consumedDeltaV = requestedDeltaV * allowedScale;
+					c.deltaVCurrent = std::max(0.0, c.deltaVCurrent - consumedDeltaV);
+					if (effectiveThrustScale > 1e-9) {
+						effectiveThrustForward = 1;
+						effectiveThrustPercent = static_cast<std::uint8_t>(
+						    std::clamp(std::lround(effectiveThrustScale * 100.0), 0l, 100l));
+						ax += net::kShipThrustAccel * effectiveThrustScale * ca;
+						ay += net::kShipThrustAccel * effectiveThrustScale * sa;
+					}
 				}
+				if (effectiveThrustForward) {
+					c.wallSecondsSinceThrust = 0.0;
+				} else {
+					// Idle + regen use wall time per physics step so high `timeScale` does not
+					// fast-forward the fuel clock (one sim step could otherwise exceed the delay).
+					c.wallSecondsSinceThrust += wallDtStep;
+					if (c.wallSecondsSinceThrust >= opts.deltaVRegenDelaySeconds) {
+						c.deltaVCurrent =
+						    std::min(opts.maxDeltaV,
+						             c.deltaVCurrent + opts.deltaVRegenPerRealSecond * wallDtStep);
+					}
+				}
+				c.appliedThrustForward = effectiveThrustForward;
+				c.appliedThrustPercent = effectiveThrustPercent;
 				engine.setShipThrustAccelWorld(c.shipId, ax, ay);
 			}
 			engine.advanceFixedStep(dtSim, liveCfg);
@@ -467,8 +525,9 @@ int main(int argc, char** argv) {
 				}
 				std::vector<std::uint8_t> payload;
 				net::writeShipState(serverTick, globalPhysicsStep, b.id, b.x, b.y, b.vx, b.vy,
-				                    c.lastInput.facingRadians, c.lastInput.thrustForward,
-				                    c.lastInput.thrustPercent, payload);
+				                    c.lastInput.facingRadians, c.appliedThrustForward,
+				                    c.appliedThrustPercent, static_cast<float>(c.deltaVCurrent),
+				                    static_cast<float>(opts.maxDeltaV), payload);
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 0, packet);

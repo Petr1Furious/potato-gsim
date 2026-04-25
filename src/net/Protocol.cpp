@@ -270,6 +270,8 @@ bool writeShipState(const std::uint64_t serverTick,
                     const float facing,
                     const std::uint8_t thrustForward,
                     const std::uint8_t thrustPercent,
+                    const float deltaVCurrentMps,
+                    const float deltaVMaxMps,
                     std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::ShipState);
@@ -283,6 +285,8 @@ bool writeShipState(const std::uint64_t serverTick,
 	appendF32(out, facing);
 	appendU8(out, thrustForward);
 	appendU8(out, thrustPercent);
+	appendF32(out, deltaVCurrentMps);
+	appendF32(out, deltaVMaxMps);
 	return true;
 }
 
@@ -297,12 +301,16 @@ bool readShipState(const std::uint8_t* data,
                    double& vy,
                    float& facingOut,
                    std::uint8_t& thrustForwardOut,
-                   std::uint8_t& thrustPercentOut) {
+                   std::uint8_t& thrustPercentOut,
+                   float& deltaVCurrentMpsOut,
+                   float& deltaVMaxMpsOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
 	globalPhysicsStepOut = 0;
 	thrustPercentOut = 100;
+	deltaVCurrentMpsOut = 0.0f;
+	deltaVMaxMpsOut = 0.0f;
 	if (!readHeader(p, end, MsgType::ShipState, ver)) {
 		return false;
 	}
@@ -320,6 +328,11 @@ bool readShipState(const std::uint8_t* data,
 	thrustForwardOut = p[0];
 	thrustPercentOut = p[1];
 	p += 2;
+	if (static_cast<std::size_t>(end - p) >= 8) {
+		if (!readF32(p, end, deltaVCurrentMpsOut) || !readF32(p, end, deltaVMaxMpsOut)) {
+			return false;
+		}
+	}
 	return p == end;
 }
 

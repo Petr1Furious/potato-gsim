@@ -4,6 +4,18 @@
 
 namespace ui {
 
+namespace {
+
+sf::View makePixelAlignedUiView(const sf::Vector2u& windowSize) {
+	const sf::Vector2f fsz(static_cast<float>(std::max(1u, windowSize.x)),
+	                       static_cast<float>(std::max(1u, windowSize.y)));
+	sf::View ui(sf::FloatRect(sf::Vector2f(0.0f, 0.0f), fsz));
+	ui.setViewport(sf::FloatRect(sf::Vector2f(0.0f, 0.0f), sf::Vector2f(1.0f, 1.0f)));
+	return ui;
+}
+
+}  // namespace
+
 void MenuOverlay::setActive(bool active) {
 	active_ = active;
 	if (!active_) {
@@ -84,9 +96,8 @@ void MenuOverlay::draw(sf::RenderWindow& window, const sf::Font& font) const {
 	}
 
 	const sf::View oldView = window.getView();
-	window.setView(window.getDefaultView());
-
 	const sf::Vector2u size = window.getSize();
+	window.setView(makePixelAlignedUiView(size));
 	sf::RectangleShape dim(sf::Vector2f(static_cast<float>(size.x), static_cast<float>(size.y)));
 	dim.setFillColor(sf::Color(0, 0, 0, 150));
 	window.draw(dim);
