@@ -3,11 +3,14 @@
 #include "net/MpConstants.hpp"
 #include "net/Protocol.hpp"
 #include "render/Renderer.hpp"
+#include "scenario/ScenarioManager.hpp"
 #include "sim/SimulationEngine.hpp"
 #include "ui/InspectorOverlay.hpp"
 #include "ui/KeyboardChordState.hpp"
 #include "ui/QuantityFormat.hpp"
 #include "ui/UiState.hpp"
+
+#include <CLI11.hpp>
 
 #include <SFML/Graphics.hpp>
 
@@ -24,7 +27,6 @@
 #include <optional>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -83,18 +85,51 @@ using MpShipReplica = net::MpShipReplicaInput;
 
 int main(int argc, char** argv) {
 	bool multiplayer = false;
-	const char* mpHost = "127.0.0.1";
+	std::string mpHost = "127.0.0.1";
 	std::uint16_t mpPort = 27777;
-	if (argc >= 4 && std::string_view(argv[1]) == "--connect") {
-		multiplayer = true;
-		mpHost = argv[2];
-		mpPort = static_cast<std::uint16_t>(std::strtoul(argv[3], nullptr, 10));
-	}
+	bool startFullscreen = false;
+	std::uint32_t windowWidth = 1400;
+	std::uint32_t windowHeight = 900;
+	std::string localPreset = "empty";
+	scenario::RandomPresetConfig localRandomCfg{};
+	localRandomCfg.count = 500;
+	localRandomCfg.spreadRadius = 8e10;
+	std::vector<std::string> connectArgs;
 
-	sf::RenderWindow window(sf::VideoMode({1400, 900}), "potato_gsim", sf::Style::Default,
-	                        sf::State::Windowed);
+	CLI::App app{"potato_gsim client"};
+	app.add_flag("--multiplayer", multiplayer, "Enable multiplayer mode");
+	app.add_option("--host", mpHost, "Server host")->capture_default_str();
+	app.add_option("--port", mpPort, "Server port")->capture_default_str();
+	app.add_option("--connect", connectArgs, "Legacy connect form: --connect <host> <port>")
+	    ->expected(2);
+	app.add_option("--window-width", windowWidth, "Window width")->capture_default_str();
+	app.add_option("--window-height", windowHeight, "Window height")->capture_default_str();
+	app.add_flag("--fullscreen", startFullscreen, "Start in fullscreen");
+	app.add_option("--preset", localPreset,
+	               "Single-player startup preset: empty|solar|binary|spiral|random")
+	    ->capture_default_str();
+	app.add_option("--random-count", localRandomCfg.count, "Random preset body count");
+	app.add_option("--random-center-x", localRandomCfg.centerX, "Random preset center X");
+	app.add_option("--random-center-y", localRandomCfg.centerY, "Random preset center Y");
+	app.add_option("--random-spread", localRandomCfg.spreadRadius, "Random preset spread radius");
+	CLI11_PARSE(app, argc, argv);
+	if (connectArgs.size() == 2) {
+		multiplayer = true;
+		mpHost = connectArgs[0];
+		mpPort = static_cast<std::uint16_t>(std::strtoul(connectArgs[1].c_str(), nullptr, 10));
+	}
+	windowWidth = std::max<std::uint32_t>(320, windowWidth);
+	windowHeight = std::max<std::uint32_t>(240, windowHeight);
+	localRandomCfg.count = std::max<std::size_t>(1, localRandomCfg.count);
+	localRandomCfg.spreadRadius = std::max(1.0, localRandomCfg.spreadRadius);
+
+	sf::RenderWindow window(sf::VideoMode({windowWidth, windowHeight}), "potato_gsim",
+	                        sf::Style::Default, sf::State::Windowed);
 	window.setVerticalSyncEnabled(true);
 	window.setFramerateLimit(0);
+	if (startFullscreen) {
+		setWindowFullscreen(window, true);
+	}
 
 	sim::SimulationConfig config;
 	config.timeScale = 3600.0;
@@ -126,7 +161,7 @@ int main(int argc, char** argv) {
 	std::vector<net::MpClient::ShipNetSample> mpInboundShips;
 	std::unordered_map<sim::BodyId, MpShipReplica> mpShipReplica;
 	sim::BodyId mpPrevOwnShipId = 0;
-	bool mpShipMouseAim = false;
+	bool mpShipMouseAim = true;
 	double mpShipHeadingRadians = 0.0;
 	bool mpShipHeadingInited = false;
 	std::uint8_t mpShipThrustPercent = 100;
@@ -136,8 +171,8 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 		mpClient.emplace();
-		if (!mpClient->connect(std::string(mpHost), mpPort)) {
-			std::fprintf(stderr, "potato_gsim: could not connect to %s:%u\n", mpHost,
+		if (!mpClient->connect(mpHost, mpPort)) {
+			std::fprintf(stderr, "potato_gsim: could not connect to %s:%u\n", mpHost.c_str(),
 			             static_cast<unsigned>(mpPort));
 			enet_deinitialize();
 			return 1;
@@ -174,7 +209,18 @@ int main(int argc, char** argv) {
 		fitViewToBodies(renderer, bodies);
 	};
 	if (!multiplayer) {
-		applyScenario({});
+		if (localPreset == "solar") {
+			applyScenario(scenario::ScenarioManager::makePreset(scenario::PresetKind::SolarLike));
+		} else if (localPreset == "binary") {
+			applyScenario(scenario::ScenarioManager::makePreset(scenario::PresetKind::BinaryDance));
+		} else if (localPreset == "spiral") {
+			applyScenario(
+			    scenario::ScenarioManager::makePreset(scenario::PresetKind::SpiralCluster));
+		} else if (localPreset == "random") {
+			applyScenario(scenario::ScenarioManager::makeRandom(localRandomCfg));
+		} else {
+			applyScenario({});
+		}
 	}
 
 	bool middlePanning = false;
@@ -216,7 +262,6 @@ int main(int argc, char** argv) {
 			case ui::Action::ToggleFullscreen:
 				fullscreen = !fullscreen;
 				setWindowFullscreen(window, fullscreen);
-				renderer.onResize(window.getSize());
 				break;
 			case ui::Action::ResetView:
 				renderer.resetView();
@@ -1077,7 +1122,7 @@ int main(int argc, char** argv) {
 		std::vector<std::string> hudLines;
 		if (multiplayer) {
 			if (!mpSessionJoined) {
-				hudLines.push_back("Multiplayer: connecting to " + std::string(mpHost) + ":" +
+				hudLines.push_back("Multiplayer: connecting to " + mpHost + ":" +
 				                   std::to_string(static_cast<unsigned>(mpPort)) + "...");
 			} else {
 				hudLines.push_back("Multiplayer: tick " + std::to_string(mpHudServerTick) +
@@ -1099,8 +1144,7 @@ int main(int argc, char** argv) {
 		}
 		overlay.drawHudPanel(window, hudLines, ui.input.legendLines(ui.menu.active()), false);
 		if (multiplayer && mpSessionJoined && mpOwnShipId != 0) {
-			overlay.drawShipThrustHud(window, static_cast<int>(mpShipThrustPercent),
-			                          mpShipMouseAim);
+			overlay.drawShipThrustHud(window, static_cast<int>(mpShipThrustPercent));
 		}
 
 		if (ui.menu.active()) {

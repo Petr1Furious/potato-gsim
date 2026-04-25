@@ -361,9 +361,7 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 	window.setView(oldView);
 }
 
-void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
-                                         const int thrustPercent,
-                                         const bool mouseAimMode) const {
+void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window, const int thrustPercent) const {
 	const sf::View oldView = window.getView();
 	window.setView(window.getDefaultView());
 
@@ -371,7 +369,7 @@ void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
 	const float margin = 14.0f;
 	const float colW = 16.0f;
 	const float colH = 86.0f;
-	const float blockW = 118.0f;
+	const float blockW = 56.0f;
 	const float x = static_cast<float>(sz.x) - margin - blockW;
 	const float y = static_cast<float>(sz.y) - margin - colH - 6.0f;
 
@@ -394,18 +392,8 @@ void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
 		pctLine << pct << "%";
 		sf::Text pctText(font_, pctLine.str(), 15);
 		pctText.setFillColor(sf::Color(235, 240, 255));
-		pctText.setPosition(sf::Vector2f(x + colW + 10.0f, y + colH * 0.35f));
+		pctText.setPosition(sf::Vector2f(x + colW + 8.0f, y + colH * 0.35f));
 		window.draw(pctText);
-
-		sf::Text aimText(font_, mouseAimMode ? "Aim: mouse" : "Aim: A/D", 13);
-		aimText.setFillColor(sf::Color(190, 205, 230));
-		aimText.setPosition(sf::Vector2f(x + colW + 10.0f, y + 8.0f));
-		window.draw(aimText);
-
-		sf::Text hint(font_, "Shift/Ctrl thrust | X 0% | Z 100%", 11);
-		hint.setFillColor(sf::Color(150, 165, 190));
-		hint.setPosition(sf::Vector2f(x, y + colH + 4.0f));
-		window.draw(hint);
 	}
 
 	window.setView(oldView);

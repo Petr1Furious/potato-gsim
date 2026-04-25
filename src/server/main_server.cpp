@@ -1,3 +1,4 @@
+#include <CLI11.hpp>
 #include "net/MpConstants.hpp"
 #include "net/Protocol.hpp"
 #include "scenario/ScenarioManager.hpp"
@@ -19,8 +20,25 @@
 namespace {
 
 constexpr int kDefaultPort = 27777;
-constexpr int kNetTickHz = 30;
-constexpr std::uint64_t kWorldSnapshotIntervalTicks = 30;
+
+struct ServerOptions {
+	int port = kDefaultPort;
+	double simTimeScale = 1.0;
+	int netTickHz = 30;
+	std::uint64_t worldSnapshotIntervalTicks = 30;
+	int maxClients = 32;
+
+	double gravitationalConstant = 6.67430e-11;
+	double softeningEpsilon = 1.0e6;
+	double barnesHutTheta = 0.6;
+	double collisionCellScale = 8.0;
+	int collisionStepInterval = 1;
+	int workerCount = 0;
+	std::size_t presetIndex = 0;
+	scenario::PresetKind presetKind = scenario::PresetKind::Random;
+
+	scenario::RandomPresetConfig randomCfg{};
+};
 
 struct ClientSlot {
 	ENetPeer* peer = nullptr;
@@ -36,6 +54,70 @@ struct ClientSlot {
 
 void logErr(const char* msg) {
 	std::fprintf(stderr, "%s\n", msg);
+}
+
+std::optional<scenario::PresetKind> parsePreset(const std::string& raw) {
+	const std::string s = raw;
+	if (s == "solar" || s == "solar-like") {
+		return scenario::PresetKind::SolarLike;
+	}
+	if (s == "binary" || s == "binary-dance") {
+		return scenario::PresetKind::BinaryDance;
+	}
+	if (s == "spiral" || s == "spiral-cluster") {
+		return scenario::PresetKind::SpiralCluster;
+	}
+	if (s == "random") {
+		return scenario::PresetKind::Random;
+	}
+	return std::nullopt;
+}
+
+const char* presetName(const scenario::PresetKind p) {
+	switch (p) {
+		case scenario::PresetKind::SolarLike:
+			return "solar";
+		case scenario::PresetKind::BinaryDance:
+			return "binary";
+		case scenario::PresetKind::SpiralCluster:
+			return "spiral";
+		case scenario::PresetKind::Random:
+			return "random";
+	}
+	return "random";
+}
+
+sim::SpawnCommand makeShipSpawn(const std::size_t idx, const ServerOptions& opts) {
+	const double a = static_cast<double>(idx) * 2.399963229728653;  // Golden angle.
+	double cx = 0.0;
+	double cy = 0.0;
+	double r = 5e10 + 5e9 * static_cast<double>(idx % 6);
+	switch (opts.presetKind) {
+		case scenario::PresetKind::SolarLike:
+			r = 1.49598e11 + 1.5e9 * static_cast<double>(idx % 9);
+			break;
+		case scenario::PresetKind::BinaryDance:
+			r = 4.2e11 + 2.2e9 * static_cast<double>(idx % 9);
+			break;
+		case scenario::PresetKind::SpiralCluster:
+			r = 9.0e10 + 1.2e9 * static_cast<double>(idx % 10);
+			break;
+		case scenario::PresetKind::Random:
+			cx = opts.randomCfg.centerX;
+			cy = opts.randomCfg.centerY;
+			r = std::max(1e8, opts.randomCfg.spreadRadius * 0.18) +
+			    9e7 * static_cast<double>(idx % 16);
+			break;
+	}
+	return sim::SpawnCommand{
+	    .x = cx + r * std::cos(a),
+	    .y = cy + r * std::sin(a),
+	    .vx = 0.0,
+	    .vy = 0.0,
+	    .mass = 2e4,
+	    .radius = 15.0,
+	    .name = "Ship" + std::to_string(static_cast<int>(idx)),
+	};
 }
 
 std::optional<sim::BodyId> findBodyIdByName(const std::vector<sim::BodySnapshot>& bodies,
@@ -80,17 +162,73 @@ void sendJoinAccept(ENetPeer* peer,
 }  // namespace
 
 int main(int argc, char** argv) {
-	int port = kDefaultPort;
-	double simTimeScale = 1.0;
-	if (argc >= 2) {
-		port = std::atoi(argv[1]);
+	ServerOptions opts;
+	opts.randomCfg = scenario::RandomPresetConfig{};
+	std::string presetArg = "random";
+	CLI::App app{"potato_gsim_server"};
+	app.add_option("-p,--port", opts.port, "Server port")->capture_default_str();
+	app.add_option("--time-scale", opts.simTimeScale, "Simulation seconds per real second")
+	    ->capture_default_str();
+	app.add_option("--net-tick-hz", opts.netTickHz, "Server net tick frequency (Hz)")
+	    ->capture_default_str();
+	app.add_option("--world-snapshot-interval", opts.worldSnapshotIntervalTicks,
+	               "World snapshot packet interval in server ticks")
+	    ->capture_default_str();
+	app.add_option("--max-clients", opts.maxClients, "Maximum connected clients")
+	    ->capture_default_str();
+	app.add_option("--preset-index", opts.presetIndex, "0=solar, 1=binary, 2=spiral")
+	    ->capture_default_str();
+	app.add_option("--preset", presetArg, "Preset: solar|binary|spiral|random")
+	    ->capture_default_str();
+
+	app.add_option("--gravity", opts.gravitationalConstant, "Gravitational constant")
+	    ->capture_default_str();
+	app.add_option("--softening", opts.softeningEpsilon, "Softening epsilon")
+	    ->capture_default_str();
+	app.add_option("--theta", opts.barnesHutTheta, "Barnes-Hut theta")->capture_default_str();
+	app.add_option("--collision-cell-scale", opts.collisionCellScale, "Collision cell scale")
+	    ->capture_default_str();
+	app.add_option("--collision-step-interval", opts.collisionStepInterval,
+	               "Collision step interval")
+	    ->capture_default_str();
+	app.add_option("--workers", opts.workerCount, "Worker threads (0=auto/default)")
+	    ->capture_default_str();
+
+	app.add_option("--random-count", opts.randomCfg.count, "Random preset body count")
+	    ->capture_default_str();
+	app.add_option("--random-center-x", opts.randomCfg.centerX, "Random preset center X")
+	    ->capture_default_str();
+	app.add_option("--random-center-y", opts.randomCfg.centerY, "Random preset center Y")
+	    ->capture_default_str();
+	app.add_option("--random-spread", opts.randomCfg.spreadRadius, "Random preset spread radius")
+	    ->capture_default_str();
+	app.add_option("--random-mass-min", opts.randomCfg.massMin, "Random preset min mass")
+	    ->capture_default_str();
+	app.add_option("--random-mass-max", opts.randomCfg.massMax, "Random preset max mass")
+	    ->capture_default_str();
+	app.add_option("--random-jitter", opts.randomCfg.jitter, "Random preset spawn jitter")
+	    ->capture_default_str();
+	app.add_option("--random-tangent-scale", opts.randomCfg.tangentialVelocityScale,
+	               "Random preset tangential speed scale")
+	    ->capture_default_str();
+	app.add_option("--random-seed", opts.randomCfg.seed, "Random preset deterministic seed");
+	app.add_flag("--random-deterministic-seed", opts.randomCfg.useDeterministicSeed,
+	             "Use --random-seed instead of std::random_device");
+	CLI11_PARSE(app, argc, argv);
+
+	if (const auto parsed = parsePreset(presetArg); parsed.has_value()) {
+		opts.presetKind = *parsed;
+	} else {
+		opts.presetKind = scenario::ScenarioManager::presetKindFromIndex(opts.presetIndex);
 	}
-	if (argc >= 3) {
-		simTimeScale = std::strtod(argv[2], nullptr);
+	if (!std::isfinite(opts.simTimeScale) || opts.simTimeScale <= 0.0) {
+		opts.simTimeScale = 1.0;
 	}
-	if (!std::isfinite(simTimeScale) || simTimeScale <= 0.0) {
-		simTimeScale = 1.0;
-	}
+	opts.netTickHz = std::max(1, opts.netTickHz);
+	opts.worldSnapshotIntervalTicks = std::max<std::uint64_t>(1, opts.worldSnapshotIntervalTicks);
+	opts.maxClients = std::max(1, opts.maxClients);
+	opts.collisionStepInterval = std::max(1, opts.collisionStepInterval);
+	opts.workerCount = std::max(0, opts.workerCount);
 
 	if (enet_initialize() != 0) {
 		logErr("enet_initialize failed");
@@ -100,39 +238,45 @@ int main(int argc, char** argv) {
 
 	ENetAddress address{};
 	address.host = ENET_HOST_ANY;
-	address.port = static_cast<std::uint16_t>(port);
+	address.port = static_cast<std::uint16_t>(opts.port);
 
-	ENetHost* host = enet_host_create(&address, 32, 3, 0, 0);
+	ENetHost* host = enet_host_create(&address, static_cast<std::size_t>(opts.maxClients), 3, 0, 0);
 	if (host == nullptr) {
 		logErr("enet_host_create failed");
 		return 1;
 	}
 
 	sim::SimulationConfig cfg;
-	cfg.timeScale = simTimeScale;
+	cfg.timeScale = opts.simTimeScale;
 	cfg.fixedDtSeconds = net::kRealSecondsPerPhysicsStep;
-	cfg.gravitationalConstant = 6.67430e-11;
-	cfg.softeningEpsilon = 1.0e6;
-	cfg.barnesHutTheta = 0.6;
-	cfg.collisionCellScale = 8.0;
-	cfg.collisionStepInterval = 1;
-	cfg.workerCount = 0;
+	cfg.gravitationalConstant = opts.gravitationalConstant;
+	cfg.softeningEpsilon = opts.softeningEpsilon;
+	cfg.barnesHutTheta = opts.barnesHutTheta;
+	cfg.collisionCellScale = opts.collisionCellScale;
+	cfg.collisionStepInterval = opts.collisionStepInterval;
+	cfg.workerCount = opts.workerCount;
 	sim::SimulationEngine engine(cfg);
 	// Drive stepping from this thread only (no background simulationLoop).
-	// engine.queueReplaceWorld(scenario::ScenarioManager::makePreset(0));
-	engine.queueReplaceWorld(scenario::ScenarioManager::makeRandom(1000, 0.0, 0.0, 1e11));
+	std::vector<sim::SpawnCommand> initialBodies;
+	if (opts.presetKind == scenario::PresetKind::Random) {
+		initialBodies = scenario::ScenarioManager::makeRandom(opts.randomCfg);
+	} else {
+		initialBodies = scenario::ScenarioManager::makePreset(opts.presetKind);
+	}
+	engine.queueReplaceWorld(std::move(initialBodies));
 
 	std::vector<ClientSlot> clients;
 
 	std::fprintf(stderr,
-	             "potato_gsim_server *:%d | timeScale=%.6g sim s/real s | 240 phys ticks/s wall, "
-	             "dt_sim=timeScale/240 (argv: port [timeScale])\n",
-	             port, simTimeScale);
+	             "potato_gsim_server *:%d | preset=%s | timeScale=%.6g | netTickHz=%d | "
+	             "snapshotEvery=%llu ticks | maxClients=%d\n",
+	             opts.port, presetName(opts.presetKind), opts.simTimeScale, opts.netTickHz,
+	             static_cast<unsigned long long>(opts.worldSnapshotIntervalTicks), opts.maxClients);
 
 	std::uint64_t serverTick = 0;
 	std::uint64_t globalPhysicsStep = 0;
 	auto lastTick = std::chrono::steady_clock::now();
-	const double tickPeriod = 1.0 / static_cast<double>(kNetTickHz);
+	const double tickPeriod = 1.0 / static_cast<double>(opts.netTickHz);
 	double serverWallPhysicsDebt = 0.0;
 
 	while (true) {
@@ -140,17 +284,9 @@ int main(int argc, char** argv) {
 		while (enet_host_service(host, &event, 1) > 0) {
 			if (event.type == ENET_EVENT_TYPE_CONNECT) {
 				std::fprintf(stderr, "client connected\n");
-				const std::string shipName =
-				    "Ship" + std::to_string(static_cast<int>(clients.size()));
-				engine.queueSpawn(sim::SpawnCommand{
-				    .x = 5e10,
-				    .y = 0.0,
-				    .vx = 0.0,
-				    .vy = 0,
-				    .mass = 2e4,
-				    .radius = 15.0,
-				    .name = shipName,
-				});
+				sim::SpawnCommand shipSpawn = makeShipSpawn(clients.size(), opts);
+				const std::string shipName = shipSpawn.name;
+				engine.queueSpawn(std::move(shipSpawn));
 				ClientSlot slot;
 				slot.peer = event.peer;
 				slot.shipName = shipName;
@@ -340,7 +476,7 @@ int main(int argc, char** argv) {
 			}
 		}
 
-		if ((serverTick % kWorldSnapshotIntervalTicks) == 0) {
+		if ((serverTick % opts.worldSnapshotIntervalTicks) == 0) {
 			std::vector<sim::AuthoritativeBody> snapBodies;
 			snapBodies.reserve(snaps.size());
 			for (const sim::BodySnapshot& b : snaps) {

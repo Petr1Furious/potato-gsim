@@ -1,5 +1,6 @@
 #include "scenario/ScenarioManager.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <numbers>
@@ -171,41 +172,82 @@ std::vector<std::string> ScenarioManager::presetNames() {
 	};
 }
 
-std::vector<sim::SpawnCommand> ScenarioManager::makePreset(std::size_t index) {
+PresetKind ScenarioManager::presetKindFromIndex(const std::size_t index) {
 	switch (index % 3) {
 		case 0:
-			return makeSolarLike();
+			return PresetKind::SolarLike;
 		case 1:
-			return makeBinaryDance();
+			return PresetKind::BinaryDance;
 		default:
-			return makeSpiralCluster();
+			return PresetKind::SpiralCluster;
 	}
+}
+
+std::vector<sim::SpawnCommand> ScenarioManager::makePreset(std::size_t index) {
+	return makePreset(presetKindFromIndex(index));
+}
+
+std::vector<sim::SpawnCommand> ScenarioManager::makePreset(const PresetKind preset) {
+	switch (preset) {
+		case PresetKind::SolarLike:
+			return makeSolarLike();
+		case PresetKind::BinaryDance:
+			return makeBinaryDance();
+		case PresetKind::SpiralCluster:
+			return makeSpiralCluster();
+		case PresetKind::Random:
+			break;
+	}
+	return {};
 }
 
 std::vector<sim::SpawnCommand> ScenarioManager::makeRandom(std::size_t count,
                                                            double centerX,
                                                            double centerY,
                                                            double spreadRadius) {
+	RandomPresetConfig cfg{};
+	cfg.count = count;
+	cfg.centerX = centerX;
+	cfg.centerY = centerY;
+	cfg.spreadRadius = spreadRadius;
+	return makeRandom(cfg);
+}
+
+std::vector<sim::SpawnCommand> ScenarioManager::makeRandom(const RandomPresetConfig& inCfg) {
+	RandomPresetConfig cfg = inCfg;
+	cfg.count = std::max<std::size_t>(1, cfg.count);
+	cfg.spreadRadius = std::max(1.0, cfg.spreadRadius);
+	cfg.massMin = std::max(1.0, cfg.massMin);
+	cfg.massMax = std::max(cfg.massMin, cfg.massMax);
+	cfg.jitter = std::max(0.0, cfg.jitter);
+	cfg.tangentialVelocityScale = std::max(0.0, cfg.tangentialVelocityScale);
+
 	std::vector<sim::SpawnCommand> bodies;
-	bodies.reserve(count);
-	std::random_device rd;
-	std::mt19937_64 rng((static_cast<std::uint64_t>(rd()) << 1u) ^ 0x9E3779B97F4A7C15ULL);
+	bodies.reserve(cfg.count);
+	std::mt19937_64 rng;
+	if (cfg.useDeterministicSeed) {
+		rng.seed(cfg.seed);
+	} else {
+		std::random_device rd;
+		rng.seed((static_cast<std::uint64_t>(rd()) << 1u) ^ 0x9E3779B97F4A7C15ULL);
+	}
 	std::uniform_real_distribution<double> angleDist(0.0, 2.0 * std::numbers::pi);
 	std::uniform_real_distribution<double> radialDist(0.0, 1.0);
-	std::uniform_real_distribution<double> massDist(1e21, 5e25);
-	std::uniform_real_distribution<double> jitter(-1.5e9, 1.5e9);
+	std::uniform_real_distribution<double> massDist(cfg.massMin, cfg.massMax);
+	std::uniform_real_distribution<double> jitterDist(-cfg.jitter, cfg.jitter);
 
-	for (std::size_t i = 0; i < count; ++i) {
+	for (std::size_t i = 0; i < cfg.count; ++i) {
 		const double a = angleDist(rng);
-		const double r = std::sqrt(radialDist(rng)) * spreadRadius;
-		const double x = centerX + std::cos(a) * r + jitter(rng);
-		const double y = centerY + std::sin(a) * r + jitter(rng);
+		const double r = std::sqrt(radialDist(rng)) * cfg.spreadRadius;
+		const double x = cfg.centerX + std::cos(a) * r + jitterDist(rng);
+		const double y = cfg.centerY + std::sin(a) * r + jitterDist(rng);
 		const double mass = massDist(rng);
+		const double tangentSpeed = cfg.tangentialVelocityScale * std::sqrt(std::max(0.0, r));
 		bodies.push_back(sim::SpawnCommand{
 		    .x = x,
 		    .y = y,
-		    .vx = 0,
-		    .vy = 0,
+		    .vx = -std::sin(a) * tangentSpeed,
+		    .vy = std::cos(a) * tangentSpeed,
 		    .mass = mass,
 		    .radius = radiusFromMass(mass),
 		});

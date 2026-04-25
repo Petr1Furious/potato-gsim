@@ -39,8 +39,8 @@ class InspectorOverlay {
 	                  const std::vector<std::string>& legendLines,
 	                  bool paused) const;
 
-	/// Bottom-right thrust bar (0–100 %) and aim mode label when flying own ship in multiplayer.
-	void drawShipThrustHud(sf::RenderWindow& window, int thrustPercent, bool mouseAimMode) const;
+	/// Bottom-right thrust bar (0–100 %) when flying own ship in multiplayer.
+	void drawShipThrustHud(sf::RenderWindow& window, int thrustPercent) const;
 
 	[[nodiscard]] bool available() const { return fontReady_; }
 	[[nodiscard]] const sf::Font* fontPtr() const { return fontReady_ ? &font_ : nullptr; }

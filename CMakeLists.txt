@@ -22,6 +22,7 @@ FetchContent_MakeAvailable(enet)
 
 # ENet's CMakeLists uses directory-scoped include_directories; propagate for dependents.
 set(POTATO_GSIM_ENET_INCLUDE "${enet_SOURCE_DIR}/include")
+set(POTATO_GSIM_THIRD_PARTY_INCLUDE "${CMAKE_SOURCE_DIR}/include")
 
 add_executable(
   potato_gsim
@@ -31,6 +32,7 @@ add_executable(
   src/net/MpReplay.cpp
   src/net/Protocol.cpp
   src/render/Renderer.cpp
+  src/scenario/ScenarioManager.cpp
   src/sim/QuadTree.cpp
   src/sim/SimulationEngine.cpp
   src/sim/ThreadPool.cpp
@@ -43,7 +45,9 @@ add_executable(
   src/ui/SelectionState.cpp
   src/ui/TraceStore.cpp
 )
-target_include_directories(potato_gsim PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}")
+target_include_directories(
+  potato_gsim PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}" "${POTATO_GSIM_THIRD_PARTY_INCLUDE}"
+)
 target_link_libraries(potato_gsim PRIVATE SFML::Graphics SFML::Window SFML::System enet)
 
 add_executable(
@@ -56,7 +60,9 @@ add_executable(
   src/sim/ThreadPool.cpp
   src/sim/UniformGrid.cpp
 )
-target_include_directories(potato_gsim_server PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}")
+target_include_directories(
+  potato_gsim_server PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}" "${POTATO_GSIM_THIRD_PARTY_INCLUDE}"
+)
 target_link_libraries(potato_gsim_server PRIVATE enet)
 if(APPLE)
   find_library(CF_LIBRARY CoreFoundation REQUIRED)
@@ -92,7 +98,7 @@ if(BUILD_TESTING)
     src/ui/Predictor.cpp
     src/ui/QuantityFormat.cpp
   )
-  target_include_directories(parity_regression_tests PRIVATE src)
+  target_include_directories(parity_regression_tests PRIVATE src "${POTATO_GSIM_THIRD_PARTY_INCLUDE}")
   target_link_libraries(parity_regression_tests PRIVATE SFML::System)
 
   add_executable(
@@ -104,7 +110,7 @@ if(BUILD_TESTING)
     src/sim/ThreadPool.cpp
     src/sim/UniformGrid.cpp
   )
-  target_include_directories(high_load_smoke PRIVATE src)
+  target_include_directories(high_load_smoke PRIVATE src "${POTATO_GSIM_THIRD_PARTY_INCLUDE}")
   target_link_libraries(high_load_smoke PRIVATE SFML::System)
 
   add_executable(
@@ -116,7 +122,7 @@ if(BUILD_TESTING)
     src/sim/ThreadPool.cpp
     src/sim/UniformGrid.cpp
   )
-  target_include_directories(throughput_benchmark PRIVATE src)
+  target_include_directories(throughput_benchmark PRIVATE src "${POTATO_GSIM_THIRD_PARTY_INCLUDE}")
   target_link_libraries(throughput_benchmark PRIVATE SFML::System)
 
   add_executable(
@@ -127,7 +133,7 @@ if(BUILD_TESTING)
     src/sim/ThreadPool.cpp
     src/sim/UniformGrid.cpp
   )
-  target_include_directories(algorithm_switching_tests PRIVATE src)
+  target_include_directories(algorithm_switching_tests PRIVATE src "${POTATO_GSIM_THIRD_PARTY_INCLUDE}")
   target_link_libraries(algorithm_switching_tests PRIVATE SFML::System)
 
   add_test(NAME parity_regression_tests COMMAND parity_regression_tests)
@@ -139,7 +145,7 @@ if(BUILD_TESTING)
     tests/mp_protocol_v3_tests.cpp
     src/net/Protocol.cpp
   )
-  target_include_directories(mp_protocol_v3_tests PRIVATE src)
+  target_include_directories(mp_protocol_v3_tests PRIVATE src "${POTATO_GSIM_THIRD_PARTY_INCLUDE}")
   add_test(NAME mp_protocol_v3_tests COMMAND mp_protocol_v3_tests)
 
   add_executable(
@@ -153,7 +159,9 @@ if(BUILD_TESTING)
     src/sim/ThreadPool.cpp
     src/sim/UniformGrid.cpp
   )
-  target_include_directories(mp_world_sync_tests PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}")
+  target_include_directories(
+    mp_world_sync_tests PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}" "${POTATO_GSIM_THIRD_PARTY_INCLUDE}"
+  )
   target_compile_definitions(mp_world_sync_tests PRIVATE POTATO_GSIM_MP_WORLD_SYNC_TESTS=1)
   target_link_libraries(mp_world_sync_tests PRIVATE SFML::System enet)
   if(UNIX AND NOT APPLE)
