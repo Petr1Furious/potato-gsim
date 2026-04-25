@@ -45,10 +45,22 @@ add_executable(
   src/ui/SelectionState.cpp
   src/ui/TraceStore.cpp
 )
+set_target_properties(potato_gsim PROPERTIES
+  MACOSX_BUNDLE TRUE
+)
 target_include_directories(
   potato_gsim PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}" "${POTATO_GSIM_THIRD_PARTY_INCLUDE}"
 )
 target_link_libraries(potato_gsim PRIVATE SFML::Graphics SFML::Window SFML::System enet)
+if(APPLE)
+  set_target_properties(potato_gsim PROPERTIES
+    INSTALL_RPATH "@executable_path/../Frameworks"
+  )
+elseif(UNIX AND NOT APPLE)
+  set_target_properties(potato_gsim PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+  )
+endif()
 
 add_executable(
   potato_gsim_server
@@ -83,9 +95,46 @@ endif()
 
 include(GNUInstallDirs)
 install(TARGETS potato_gsim
+  RUNTIME_DEPENDENCY_SET potato_gsim_runtime_deps
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   BUNDLE DESTINATION .
 )
+install(TARGETS potato_gsim_server
+  RUNTIME_DEPENDENCY_SET potato_gsim_runtime_deps
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(
+  RUNTIME_DEPENDENCY_SET potato_gsim_runtime_deps
+  PRE_EXCLUDE_REGEXES
+    "api-ms-win-.*"
+    "ext-ms-win-.*"
+  POST_EXCLUDE_REGEXES
+    ".*/System/Library/.*"
+    ".*/usr/lib/.*"
+    ".*/Windows/System32/.*"
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  FRAMEWORK DESTINATION Frameworks
+)
+
+if(APPLE)
+  install(CODE [[
+    include(BundleUtilities)
+    set(BU_CHMOD_BUNDLE_ITEMS ON)
+    get_filename_component(_potato_abs_install_prefix "${CMAKE_INSTALL_PREFIX}" ABSOLUTE)
+    set(_potato_app "${_potato_abs_install_prefix}/potato_gsim.app")
+    set(_potato_extra_dirs "${_potato_abs_install_prefix}/Frameworks;${_potato_abs_install_prefix}/lib")
+    fixup_bundle("${_potato_app}" "" "${_potato_extra_dirs}")
+    verify_app("${_potato_app}")
+    execute_process(
+      COMMAND codesign --force --deep --sign - "${_potato_app}"
+      RESULT_VARIABLE _potato_codesign_result
+    )
+    if(NOT _potato_codesign_result EQUAL 0)
+      message(FATAL_ERROR "codesign failed for ${_potato_app}")
+    endif()
+  ]])
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

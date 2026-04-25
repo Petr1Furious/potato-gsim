@@ -16,3 +16,5 @@ Makefile
 DartConfiguration.tcl
 CTestTestfile.cmake
 _deps/
+dist/
+dist_bundle/
