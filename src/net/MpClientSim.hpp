@@ -5,6 +5,7 @@
 #include "sim/SimulationEngine.hpp"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -101,6 +102,15 @@ class MpClientSim {
 	/// Main thread: merge remap events produced on the sim thread (for UI only).
 	void takePendingMergeRemaps(std::vector<std::pair<sim::BodyId, sim::BodyId>>& out);
 
+	/// Main thread: pending full-world snapshots not yet consumed by the sim thread.
+	[[nodiscard]] std::size_t snapshotJobQueueDepth() const;
+
+	/// Monotonic: sim-thread wakeups that executed the max physics-step budget (catch-up
+	/// saturated).
+	[[nodiscard]] std::uint64_t simPhysicsWakeCapHitsTotal() const {
+		return simPhysicsWakeCapHitsTotal_.load(std::memory_order_relaxed);
+	}
+
 #if defined(POTATO_GSIM_MP_WORLD_SYNC_TESTS)
 	/// Unit tests: run after `stop()` — drains work then snapshot jobs on the calling thread.
 	void testingApplyQueuedNetworkWorkOnCallerThread();
@@ -122,7 +132,7 @@ class MpClientSim {
 	std::mutex workMutex_;
 	std::deque<std::function<void()>> workQueue_;
 
-	std::mutex snapshotJobMutex_;
+	mutable std::mutex snapshotJobMutex_;
 	std::deque<WorldSnapshotJob> snapshotJobQueue_;
 
 	std::mutex replicaMutex_;
@@ -140,6 +150,7 @@ class MpClientSim {
 
 	std::atomic<std::uint64_t> clientPhysicsHead_{0};
 	std::atomic<std::uint64_t> lastConfirmedAuthorityStep_{0};
+	std::atomic<std::uint64_t> simPhysicsWakeCapHitsTotal_{0};
 };
 
 }  // namespace net

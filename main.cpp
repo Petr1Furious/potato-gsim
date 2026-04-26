@@ -174,6 +174,9 @@ int main(int argc, char** argv) {
 	std::uint64_t mpShellReadyGlobalPhysicsStep = 0;
 	/// Server/client sim `timeScale` (sim s / real s) for encoding shell speed in inputs.
 	double mpNetPhysicsTimeScale = 1.0;
+	std::uint64_t mpNetPrevInboundDropsTotal = 0;
+	std::uint64_t mpNetPrevSimCapHitsTotal = 0;
+	std::optional<std::chrono::steady_clock::time_point> mpLastClientStressLog;
 
 	if (multiplayer) {
 		if (enet_initialize() != 0) {
@@ -635,6 +638,9 @@ int main(int argc, char** argv) {
 				mpHudServerTick = joinTick;
 				mpNetPhysicsTimeScale =
 				    (std::isfinite(joinTimeScale) && joinTimeScale > 0.0) ? joinTimeScale : 1.0;
+				mpNetPrevInboundDropsTotal = mpClient->inboundPacketsDroppedTotal();
+				mpNetPrevSimCapHitsTotal = mpSim->simPhysicsWakeCapHitsTotal();
+				mpLastClientStressLog.reset();
 				setStatus("Joined multiplayer session.", 2.5);
 			}
 			if (mpSessionJoined) {
@@ -652,6 +658,9 @@ int main(int argc, char** argv) {
 					mpOwnShipStateGlobalPhysicsStep = 0;
 					mpShellReadyGlobalPhysicsStep = 0;
 					mpNetPhysicsTimeScale = 1.0;
+					mpNetPrevInboundDropsTotal = 0;
+					mpNetPrevSimCapHitsTotal = 0;
+					mpLastClientStressLog.reset();
 				} else {
 					while (true) {
 						std::uint64_t mergeTick = 0;
@@ -855,6 +864,72 @@ int main(int argc, char** argv) {
 			const double pubTs = mpRenderFrame->config.timeScale;
 			if (std::isfinite(pubTs) && pubTs > 0.0) {
 				mpNetPhysicsTimeScale = pubTs;
+			}
+		}
+
+		if (multiplayer && mpSessionJoined && mpClient.has_value() && mpSim.has_value()) {
+			const std::uint64_t head = mpSim->clientPhysicsHead();
+			const std::uint64_t auth = mpSim->lastConfirmedAuthorityStep();
+			const std::uint64_t behind = (auth > head) ? (auth - head) : 0u;
+			const std::uint64_t lead = (head > auth) ? (head - auth) : 0u;
+			const bool behindBad = behind >= net::kMpClientStressBehindAuthoritySteps;
+			const bool leadBad = lead + net::kMpClientStressLeadNearCapSlackSteps >=
+			                     net::kMpMaxClientLeadPhysicsSteps;
+			const bool hitch = frameDt > net::kMpClientStressFrameHitchSeconds;
+			std::uint64_t shipAhead = 0;
+			if (mpOwnShipId != 0 && mpOwnShipStateGlobalPhysicsStep > head) {
+				shipAhead = mpOwnShipStateGlobalPhysicsStep - head;
+			}
+			const bool shipBad = shipAhead >= net::kMpClientStressShipStateAheadSteps;
+			const std::uint64_t dropsTotal = mpClient->inboundPacketsDroppedTotal();
+			const std::uint64_t dropDelta = dropsTotal - mpNetPrevInboundDropsTotal;
+			mpNetPrevInboundDropsTotal = dropsTotal;
+			const bool dropsBad = dropDelta > 0u;
+			const std::uint64_t capTotal = mpSim->simPhysicsWakeCapHitsTotal();
+			const std::uint64_t capDelta = capTotal - mpNetPrevSimCapHitsTotal;
+			mpNetPrevSimCapHitsTotal = capTotal;
+			const bool capBad = capDelta > 0u;
+			const std::size_t snapQ = mpSim->snapshotJobQueueDepth();
+			const bool snapBad = snapQ >= net::kMpClientStressSnapshotJobQueueDepth;
+			if (behindBad || leadBad || hitch || shipBad || dropsBad || capBad || snapBad) {
+				const auto t = std::chrono::steady_clock::now();
+				const bool cooldownOk =
+				    !mpLastClientStressLog.has_value() ||
+				    std::chrono::duration<double>(t - *mpLastClientStressLog).count() >=
+				        net::kMpClientStressLogCooldownSeconds;
+				if (cooldownOk) {
+					std::fprintf(stderr,
+					             "[mp-stress] behind=%llu lead=%llu frameMs=%.1f shipAhead=%llu "
+					             "rxDropDelta=%llu simCapDelta=%llu snapQ=%zu reasons=",
+					             static_cast<unsigned long long>(behind),
+					             static_cast<unsigned long long>(lead), frameDt * 1000.0,
+					             static_cast<unsigned long long>(shipAhead),
+					             static_cast<unsigned long long>(dropDelta),
+					             static_cast<unsigned long long>(capDelta), snapQ);
+					if (dropsBad) {
+						std::fprintf(stderr, "drops;");
+					}
+					if (behindBad) {
+						std::fprintf(stderr, "behind;");
+					}
+					if (snapBad) {
+						std::fprintf(stderr, "snapQ;");
+					}
+					if (capBad) {
+						std::fprintf(stderr, "simCap;");
+					}
+					if (leadBad) {
+						std::fprintf(stderr, "leadCap;");
+					}
+					if (hitch) {
+						std::fprintf(stderr, "frame;");
+					}
+					if (shipBad) {
+						std::fprintf(stderr, "ship;");
+					}
+					std::fprintf(stderr, "\n");
+					mpLastClientStressLog = t;
+				}
 			}
 		}
 

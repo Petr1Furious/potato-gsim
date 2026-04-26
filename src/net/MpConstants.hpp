@@ -54,4 +54,19 @@ inline constexpr double kShellArmDelayRealSeconds = 0.50;
 inline constexpr double kShellLifetimeRealSeconds = 10.0;
 inline constexpr double kShellCooldownRealSeconds = 1.00;
 
+/// --- Client stress logging (main thread; `[mp-stress]` only when unhealthy) ---
+
+/// Render frame hitch: likely main-thread backlog for net + sim queues.
+inline constexpr double kMpClientStressFrameHitchSeconds = 0.060;
+/// Confirmed authority step this far ahead of integrated physics head (cannot keep up).
+inline constexpr std::uint64_t kMpClientStressBehindAuthoritySteps = 200;
+/// Server `ShipState` step this far ahead of local integrated head (stale prediction vs server).
+inline constexpr std::uint64_t kMpClientStressShipStateAheadSteps = 200;
+/// Prediction buffer within this many steps of the hard lead cap (integration stalling).
+inline constexpr std::uint64_t kMpClientStressLeadNearCapSlackSteps = 40;
+/// Sim thread snapshot FIFO depth (main thread not dequeuing fast enough).
+inline constexpr std::size_t kMpClientStressSnapshotJobQueueDepth = 32;
+/// Minimum real time between `[mp-stress]` lines.
+inline constexpr double kMpClientStressLogCooldownSeconds = 1.75;
+
 }  // namespace net

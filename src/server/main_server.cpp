@@ -7,6 +7,7 @@
 #include <enet/enet.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,15 @@
 namespace {
 
 constexpr int kDefaultPort = 27777;
+
+/// Rolling mean uses this many completed server ticks (not wall seconds).
+constexpr std::size_t kServerStressSampleTicks = 12;
+/// Log when mean tick wall time exceeds this fraction of the nominal net tick period.
+constexpr double kServerStressMeanTickSlowness = 1.10;
+/// Log when physics debt exceeds this fraction of the engine clamp (falling behind on sim).
+constexpr double kServerStressDebtFraction = 0.55;
+/// Minimum server ticks between `[stress]` lines (avoids spam while overloaded).
+constexpr std::uint64_t kServerStressLogMinTicksApart = 40;
 
 struct ServerOptions {
 	int port = kDefaultPort;
@@ -46,12 +56,13 @@ struct ServerOptions {
 
 struct ClientSlot {
 	ENetPeer* peer = nullptr;
+	std::uint64_t clientLogId = 0;
+	std::string peerAddress;
 	std::string shipName;
 	net::ClientInputPayload lastInput{};
 	sim::BodyId shipId = 0;
 	bool hasShip = false;
 	bool needJoinSnapshot = true;
-	bool loggedShipId = false;
 	/// One-time broadcast so existing clients register this slot's ship in their IdIndexMap.
 	bool shipAuthoritativeUpsertSent = false;
 	double deltaVCurrent = 0.0;
@@ -70,6 +81,18 @@ struct ActiveShell {
 	std::string bodyName;
 	double ageWallSeconds = 0.0;
 };
+
+std::string peerAddressString(const ENetPeer* peer) {
+	if (peer == nullptr) {
+		return "unknown";
+	}
+	std::array<char, 64> ip{};
+	ip.fill('\0');
+	if (enet_address_get_host_ip(&peer->address, ip.data(), ip.size()) != 0) {
+		return std::string("?:") + std::to_string(peer->address.port);
+	}
+	return std::string(ip.data()) + ":" + std::to_string(peer->address.port);
+}
 
 void logErr(const char* msg) {
 	std::fprintf(stderr, "%s\n", msg);
@@ -308,6 +331,7 @@ int main(int argc, char** argv) {
 	std::vector<ClientSlot> clients;
 	std::vector<ActiveShell> activeShells;
 	std::uint64_t nextShellSerial = 1;
+	std::uint64_t nextClientLogId = 1;
 
 	std::fprintf(stderr,
 	             "potato_gsim_server *:%d | preset=%s | timeScale=%.6g | netTickHz=%d | "
@@ -321,24 +345,38 @@ int main(int argc, char** argv) {
 	auto lastTick = std::chrono::steady_clock::now();
 	const double tickPeriod = 1.0 / static_cast<double>(opts.netTickHz);
 	double serverWallPhysicsDebt = 0.0;
+	std::array<double, kServerStressSampleTicks> stressTickWallSeconds{};
+	std::array<int, kServerStressSampleTicks> stressPhysicsStepsPerTick{};
+	std::size_t stressSampleCount = 0;
+	std::size_t stressSampleIndex = 0;
+	std::uint64_t packetsRxSinceStressLog = 0;
+	std::uint64_t packetsTxSinceStressLog = 0;
+	std::optional<std::uint64_t> lastStressLogTick;
 
 	while (true) {
 		ENetEvent event;
 		while (enet_host_service(host, &event, 1) > 0) {
 			if (event.type == ENET_EVENT_TYPE_CONNECT) {
-				std::fprintf(stderr, "client connected\n");
+				const std::string peerAddress = peerAddressString(event.peer);
+				const std::uint64_t clientId = nextClientLogId++;
 				sim::SpawnCommand shipSpawn = makeShipSpawn(nextShipSpawnIndex, opts);
 				++nextShipSpawnIndex;
 				const std::string shipName = shipSpawn.name;
 				engine.queueSpawn(std::move(shipSpawn));
 				ClientSlot slot;
 				slot.peer = event.peer;
+				slot.clientLogId = clientId;
+				slot.peerAddress = peerAddress;
 				slot.shipName = shipName;
 				slot.deltaVCurrent = opts.maxDeltaV;
 				// Must start at 0: priming to the delay makes regen begin the instant thrust stops.
 				slot.wallSecondsSinceThrust = 0.0;
 				clients.push_back(slot);
+				std::fprintf(stderr, "[connect] client#%llu %s ship=%s peers=%zu/%d\n",
+				             static_cast<unsigned long long>(clientId), peerAddress.c_str(),
+				             shipName.c_str(), clients.size(), opts.maxClients);
 			} else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
+				++packetsRxSinceStressLog;
 				const std::uint8_t* d = event.packet->data;
 				const std::size_t len = event.packet->dataLength;
 				if (len >= 6 && d[4] == net::kProtocolVersion) {
@@ -360,9 +398,16 @@ int main(int argc, char** argv) {
 				}
 				enet_packet_destroy(event.packet);
 			} else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
-				std::fprintf(stderr, "client disconnected\n");
+				const std::string peerAddress = peerAddressString(event.peer);
 				for (std::size_t i = 0; i < clients.size(); ++i) {
 					if (clients[i].peer == event.peer) {
+						const ClientSlot& c = clients[i];
+						std::fprintf(
+						    stderr,
+						    "[disconnect] client#%llu from=%s shipName=%s shipId=%llu hadShip=%d\n",
+						    static_cast<unsigned long long>(c.clientLogId), peerAddress.c_str(),
+						    c.shipName.c_str(), static_cast<unsigned long long>(c.shipId),
+						    c.hasShip ? 1 : 0);
 						clients.erase(clients.begin() + static_cast<std::ptrdiff_t>(i));
 						break;
 					}
@@ -443,6 +488,10 @@ int main(int argc, char** argv) {
 			serverWallPhysicsDebt -= net::kRealSecondsPerPhysicsStep;
 			++physicsSteps;
 		}
+		stressTickWallSeconds[stressSampleIndex] = elapsed;
+		stressPhysicsStepsPerTick[stressSampleIndex] = physicsSteps;
+		stressSampleIndex = (stressSampleIndex + 1) % kServerStressSampleTicks;
+		stressSampleCount = std::min(stressSampleCount + 1, kServerStressSampleTicks);
 
 		std::vector<sim::BodySnapshot> snaps;
 		engine.copyBodies(snaps);
@@ -453,6 +502,7 @@ int main(int argc, char** argv) {
 			if (c.needJoinSnapshot) {
 				if (const std::optional<sim::BodyId> shipId = findBodyIdByName(snaps, c.shipName)) {
 					sendJoinAccept(c.peer, engine, serverTick, globalPhysicsStep, *shipId);
+					++packetsTxSinceStressLog;
 					c.needJoinSnapshot = false;
 				}
 			}
@@ -460,11 +510,6 @@ int main(int argc, char** argv) {
 				if (const std::optional<sim::BodyId> id = findBodyIdByName(snaps, c.shipName)) {
 					c.shipId = *id;
 					c.hasShip = true;
-					if (!c.loggedShipId) {
-						std::fprintf(stderr, "assigned %s id=%llu\n", c.shipName.c_str(),
-						             static_cast<unsigned long long>(c.shipId));
-						c.loggedShipId = true;
-					}
 				}
 			}
 		}
@@ -532,6 +577,7 @@ int main(int argc, char** argv) {
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 1, packet);
+				++packetsTxSinceStressLog;
 				c.shipAuthoritativeUpsertSent = true;
 				break;
 			}
@@ -546,6 +592,7 @@ int main(int argc, char** argv) {
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 1, packet);
+				++packetsTxSinceStressLog;
 			}
 		}
 
@@ -577,6 +624,7 @@ int main(int argc, char** argv) {
 					ENetPacket* packet = enet_packet_create(payload.data(), payload.size(),
 					                                        ENET_PACKET_FLAG_RELIABLE);
 					enet_host_broadcast(host, 1, packet);
+					++packetsTxSinceStressLog;
 					break;
 				}
 			}
@@ -607,6 +655,7 @@ int main(int argc, char** argv) {
 						ENetPacket* packet = enet_packet_create(payload.data(), payload.size(),
 						                                        ENET_PACKET_FLAG_RELIABLE);
 						enet_host_broadcast(host, 1, packet);
+						++packetsTxSinceStressLog;
 					}
 				}
 			}
@@ -658,6 +707,11 @@ int main(int argc, char** argv) {
 				engine.queueDelete(id);
 				for (ClientSlot& c : clients) {
 					if (c.shipId == id) {
+						std::fprintf(
+						    stderr,
+						    "[ship-destroyed] client#%llu shipId=%llu reason=shell-proximity\n",
+						    static_cast<unsigned long long>(c.clientLogId),
+						    static_cast<unsigned long long>(id));
 						c.hasShip = false;
 						c.shipId = 0;
 						c.needJoinSnapshot = false;
@@ -706,6 +760,7 @@ int main(int argc, char** argv) {
 			ENetPacket* delPacket =
 			    enet_packet_create(delPayload.data(), delPayload.size(), ENET_PACKET_FLAG_RELIABLE);
 			enet_host_broadcast(host, 1, delPacket);
+			++packetsTxSinceStressLog;
 		}
 
 		for (ClientSlot& c : clients) {
@@ -730,6 +785,7 @@ int main(int argc, char** argv) {
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 0, packet);
+				++packetsTxSinceStressLog;
 				break;
 			}
 		}
@@ -757,6 +813,44 @@ int main(int argc, char** argv) {
 			ENetPacket* packet =
 			    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 			enet_host_broadcast(host, 2, packet);
+			++packetsTxSinceStressLog;
+		}
+
+		if (stressSampleCount >= kServerStressSampleTicks) {
+			double sumWall = 0.0;
+			double sumPhys = 0.0;
+			for (std::size_t i = 0; i < kServerStressSampleTicks; ++i) {
+				sumWall += stressTickWallSeconds[i];
+				sumPhys += static_cast<double>(stressPhysicsStepsPerTick[i]);
+			}
+			const double meanWall = sumWall / static_cast<double>(kServerStressSampleTicks);
+			const double meanPhysSteps = sumPhys / static_cast<double>(kServerStressSampleTicks);
+			const double nominalPeriod = tickPeriod;
+			const bool meanTooSlow = meanWall > nominalPeriod * kServerStressMeanTickSlowness;
+			const bool physicsCapped = physicsSteps >= net::kMaxCatchUpPhysicsStepsPerServerTick;
+			const double debtLimit = net::kMaxWallPhysicsDebtSeconds;
+			const bool debtHigh =
+			    debtLimit > 1e-12 && serverWallPhysicsDebt >= debtLimit * kServerStressDebtFraction;
+			const bool stressed = meanTooSlow || physicsCapped || debtHigh;
+			const bool cooldownOk =
+			    !lastStressLogTick.has_value() ||
+			    (serverTick - *lastStressLogTick) >= kServerStressLogMinTicksApart;
+			if (stressed && cooldownOk) {
+				const double tps = (meanWall > 1e-12) ? (1.0 / meanWall) : 0.0;
+				const char* reason = meanTooSlow     ? "slow_mean"
+				                     : physicsCapped ? "physics_cap"
+				                                     : "debt";
+				std::fprintf(stderr,
+				             "[stress] tick=%llu reason=%s tps=%.2f avgSteps/tick=%.2f "
+				             "debt=%.4fs rxPkts=%llu txPkts=%llu\n",
+				             static_cast<unsigned long long>(serverTick), reason, tps,
+				             meanPhysSteps, serverWallPhysicsDebt,
+				             static_cast<unsigned long long>(packetsRxSinceStressLog),
+				             static_cast<unsigned long long>(packetsTxSinceStressLog));
+				lastStressLogTick = serverTick;
+				packetsRxSinceStressLog = 0;
+				packetsTxSinceStressLog = 0;
+			}
 		}
 
 		enet_host_flush(host);

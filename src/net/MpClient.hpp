@@ -64,6 +64,12 @@ class MpClient {
 	/// True once the outgoing connection handshake has completed (safe to send join).
 	[[nodiscard]] bool isPeerConnected() const;
 
+	/// Monotonic: inbound raw packets dropped because the main thread did not `service()` fast
+	/// enough (queue cap). Used for client-side stress diagnostics.
+	[[nodiscard]] std::uint64_t inboundPacketsDroppedTotal() const {
+		return inboundPacketsDropped_.load(std::memory_order_relaxed);
+	}
+
 	void takeJoinAccept(std::uint64_t& tickOut,
 	                    std::uint64_t& joinGlobalPhysicsStepOut,
 	                    std::vector<sim::AuthoritativeBody>& bodiesOut,
@@ -120,6 +126,7 @@ class MpClient {
 
 	std::mutex inboundMutex_;
 	std::deque<std::vector<std::uint8_t>> inboundPackets_;
+	std::atomic<std::uint64_t> inboundPacketsDropped_{0};
 
 	std::optional<std::uint64_t> pendingJoinTick_;
 	std::uint64_t pendingJoinGlobalPhysicsStep_ = 0;

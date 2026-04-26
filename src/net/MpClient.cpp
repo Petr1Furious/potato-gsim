@@ -166,6 +166,7 @@ void MpClient::enqueueReceivedPacket(std::vector<std::uint8_t> bytes) {
 	std::lock_guard<std::mutex> lock(inboundMutex_);
 	while (inboundPackets_.size() >= kInboundPacketQueueMax) {
 		inboundPackets_.pop_front();
+		inboundPacketsDropped_.fetch_add(1u, std::memory_order_relaxed);
 	}
 	inboundPackets_.push_back(std::move(bytes));
 }

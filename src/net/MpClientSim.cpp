@@ -149,6 +149,11 @@ void MpClientSim::syncReplicas(
 	replicas_ = replicas;
 }
 
+std::size_t MpClientSim::snapshotJobQueueDepth() const {
+	std::lock_guard<std::mutex> lock(snapshotJobMutex_);
+	return snapshotJobQueue_.size();
+}
+
 void MpClientSim::drainWorkQueue() {
 	std::deque<std::function<void()>> batch;
 	{
@@ -378,6 +383,9 @@ void MpClientSim::threadMain(const std::stop_token st) {
 			integrateOnePhysicsStep(repCopy, true);
 			wallAcc -= requiredDebt;
 			++stepBudget;
+		}
+		if (!physicsCfg.paused && stepBudget >= net::kMaxCatchUpPhysicsStepsPerSimThreadWake) {
+			simPhysicsWakeCapHitsTotal_.fetch_add(1u, std::memory_order_relaxed);
 		}
 		publishRenderStateFromEngine();
 	}
