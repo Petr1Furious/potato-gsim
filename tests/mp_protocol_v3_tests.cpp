@@ -9,6 +9,26 @@
 int main() {
 	using sim::AuthoritativeBody;
 
+	assert(net::kProtocolVersion == 1);
+
+	{
+		std::vector<std::uint8_t> buf;
+		assert(net::writeJoinRequest("alice", buf));
+		std::string nameOut;
+		assert(net::readJoinRequest(buf.data(), buf.size(), nameOut));
+		assert(nameOut == "alice");
+	}
+
+	{
+		std::vector<std::uint8_t> buf;
+		assert(net::writeJoinReject(net::JoinRejectReason::ShipNameTaken, "busy", buf));
+		net::JoinRejectReason r = net::JoinRejectReason::NameInvalid;
+		std::string detail;
+		assert(net::readJoinReject(buf.data(), buf.size(), r, detail));
+		assert(r == net::JoinRejectReason::ShipNameTaken);
+		assert(detail == "busy");
+	}
+
 	{
 		std::vector<std::uint8_t> buf;
 		std::vector<AuthoritativeBody> bodiesIn;
@@ -24,18 +44,25 @@ int main() {
 		});
 		const std::uint64_t tick = 42;
 		const std::uint64_t joinG = 9001;
-		assert(net::writeJoinAccept(tick, joinG, bodiesIn, 7, 1.25, buf));
+		const double physStep = 1.0 / 120.0;
+		const double thrustA = 0.03;
+		assert(net::writeJoinAccept(tick, joinG, bodiesIn, 7, 1.25, physStep, thrustA, buf));
 
 		std::uint64_t tickOut = 0;
 		std::uint64_t joinGOut = 0;
 		std::vector<AuthoritativeBody> bodiesOut;
 		sim::BodyId own = 0;
 		double ts = 0.0;
-		assert(net::readJoinAccept(buf.data(), buf.size(), tickOut, joinGOut, bodiesOut, own, ts));
+		double rs = 0.0;
+		double ta = 0.0;
+		assert(net::readJoinAccept(buf.data(), buf.size(), tickOut, joinGOut, bodiesOut, own, ts,
+		                           rs, ta));
 		assert(tickOut == tick);
 		assert(joinGOut == joinG);
 		assert(own == 7);
 		assert(std::abs(ts - 1.25) < 1e-12);
+		assert(std::abs(rs - physStep) < 1e-12);
+		assert(std::abs(ta - thrustA) < 1e-12);
 		assert(bodiesOut.size() == 1);
 		assert(bodiesOut[0].id == 7);
 		assert(bodiesOut[0].name == "alpha");

@@ -1,44 +1,43 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace net {
 
-/// Multiplayer driver: **wall-clock** cadence is fixed at 240 Hz (one physics tick per 1/240 s of
-/// real time). Each tick integrates **`simulationDtFromTimeScale(timeScale)`** simulated seconds.
-/// So total simulated time per real second is always `240 * (timeScale/240) = timeScale`, and
-/// step count does **not** grow with `timeScale` (high time speed is not CPU-bound by extra
-/// substeps).
+/// Multiplayer driver: fixed **wall-clock** cadence `1 / realSecondsPerPhysicsStep` Hz. Each step
+/// integrates **`simulationDtFromTimeScale(timeScale, realSecondsPerPhysicsStep)`** simulated
+/// seconds. Simulated time per real second stays `timeScale` regardless of step rate.
 
-/// Wall seconds between physics steps (server + MP client); keep server and client identical.
-inline constexpr double kRealSecondsPerPhysicsStep = 1.0 / 240.0;
+/// Default wall seconds between physics steps (solo client / until JoinAccept in MP).
+inline constexpr double kDefaultRealSecondsPerPhysicsStep = 1.0 / 240.0;
+/// Default ship forward thrust scale (m/s² per unit thrust); server may override via JoinAccept.
+inline constexpr double kDefaultShipThrustAccel = 0.02;
 
 /// Simulated seconds advanced in one physics step, given `SimulationConfig::timeScale` =
-/// simulated seconds per real second.
-inline double simulationDtFromTimeScale(const double timeScale) {
-	return timeScale / 240.0;
+/// simulated seconds per real second, and wall step duration `realSecondsPerPhysicsStep`.
+inline double simulationDtFromTimeScale(
+    const double timeScale,
+    const double realSecondsPerPhysicsStep = kDefaultRealSecondsPerPhysicsStep) {
+	return timeScale * realSecondsPerPhysicsStep;
 }
-
-/// Must match server and client integration (m/s²).
-inline constexpr double kShipThrustAccel = 0.02;
-
-/// Legacy name: same as `kRealSecondsPerPhysicsStep` (fixed wall cadence).
-inline constexpr double kPhysicsDt = kRealSecondsPerPhysicsStep;
 
 /// Max physics steps per **render frame** after a hitch (real-step backlog).
 inline constexpr int kMaxCatchUpPhysicsStepsPerFrame = 96;
 /// Max physics steps per **sim-thread wakeup** (MP client); caps burst catch-up CPU.
 inline constexpr int kMaxCatchUpPhysicsStepsPerSimThreadWake = 96;
-/// Max client `globalPhysicsStep` lead over last confirmed authority (physics steps).
-inline constexpr std::uint64_t kMpMaxClientLeadPhysicsSteps = 480;
+/// Max client `globalPhysicsStep` lead over `serverPhysicsHeadTarget` before integration stalls
+/// (physics steps). Also scales the quadratic MP pace curve vs `(target - head)`.
+inline constexpr std::uint64_t kMpLeadCapSteps = 480;
 /// Max physics steps per **server network tick** (~30 Hz wall).
 inline constexpr int kMaxCatchUpPhysicsStepsPerServerTick = 192;
 /// Drop excess **wall-clock** backlog so a long stall does not freeze the process (seconds).
 inline constexpr double kMaxWallPhysicsDebtSeconds = 0.5;
 
-/// Max client `globalPhysicsStep` lead over last confirmed authority before wall-clock prediction
-/// stalls (physics steps; at scale 1 this is ~2 s).
-inline constexpr std::uint64_t kMaxPredictionLeadPhysicsSteps = 480;
+/// MP client sim wall pace vs `(target - head)` (physics steps, signed): on time → 1; up to
+/// `kMpLeadCapSteps` **ahead** (`head > target`) → `1 - ratio²` down to 0; up to `kMpLeadCapSteps`
+/// **behind** → `1 + ratio² * (max-1)` up to `kMpClientPaceScaleMax`.
+inline constexpr double kMpClientPaceScaleMax = 4.0;
 
 /// Multiplayer shell weapon tuning.
 inline constexpr double kShellRadius = 4.0;
@@ -62,7 +61,8 @@ inline constexpr double kMpClientStressFrameHitchSeconds = 0.060;
 inline constexpr std::uint64_t kMpClientStressBehindAuthoritySteps = 200;
 /// Server `ShipState` step this far ahead of local integrated head (stale prediction vs server).
 inline constexpr std::uint64_t kMpClientStressShipStateAheadSteps = 200;
-/// Prediction buffer within this many steps of the hard lead cap (integration stalling).
+/// Prediction buffer within this many steps of the hard lead-vs-target cap (integration
+/// stalling).
 inline constexpr std::uint64_t kMpClientStressLeadNearCapSlackSteps = 40;
 /// Sim thread snapshot FIFO depth (main thread not dequeuing fast enough).
 inline constexpr std::size_t kMpClientStressSnapshotJobQueueDepth = 32;

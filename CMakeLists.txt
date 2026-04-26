@@ -24,9 +24,13 @@ FetchContent_MakeAvailable(enet)
 set(POTATO_GSIM_ENET_INCLUDE "${enet_SOURCE_DIR}/include")
 set(POTATO_GSIM_THIRD_PARTY_INCLUDE "${CMAKE_SOURCE_DIR}/include")
 
+set(POTATO_GSIM_DEFAULT_MP_HOST "localhost" CACHE STRING "Default multiplayer host (client menu)")
+set(POTATO_GSIM_DEFAULT_MP_PORT 27777 CACHE STRING "Default multiplayer port (client menu)")
+
 add_executable(
   potato_gsim
   main.cpp
+  src/io/ClientSettings.cpp
   src/net/MpClient.cpp
   src/net/MpClientSim.cpp
   src/net/MpReplay.cpp
@@ -52,6 +56,12 @@ target_include_directories(
   potato_gsim PRIVATE src "${POTATO_GSIM_ENET_INCLUDE}" "${POTATO_GSIM_THIRD_PARTY_INCLUDE}"
 )
 target_link_libraries(potato_gsim PRIVATE SFML::Graphics SFML::Window SFML::System enet)
+target_compile_definitions(
+  potato_gsim
+  PRIVATE
+    "POTATO_GSIM_DEFAULT_MP_HOST=\"${POTATO_GSIM_DEFAULT_MP_HOST}\""
+    POTATO_GSIM_DEFAULT_MP_PORT=${POTATO_GSIM_DEFAULT_MP_PORT}
+)
 if(APPLE)
   set_target_properties(potato_gsim PROPERTIES
     INSTALL_RPATH "@executable_path/../Frameworks"

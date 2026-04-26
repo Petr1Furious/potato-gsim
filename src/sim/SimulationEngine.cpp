@@ -500,6 +500,10 @@ void SimulationEngine::publishStepResult(int writeIndex,
 		if (advanceTimer) {
 			std::lock_guard<std::mutex> timerLock(timerMutex_);
 			simulatedSeconds_ += dt;
+			if (dt > 0.0 && std::isfinite(dt)) {
+				std::lock_guard<std::mutex> fuelLock(spFuelLedgerMutex_);
+				spFuelLedgerAccumSimDt_ += dt;
+			}
 		}
 	}
 	const auto publishEnd = clock::now();
@@ -1164,6 +1168,13 @@ void SimulationEngine::drainMergeRemapEvents(std::vector<std::pair<BodyId, BodyI
 	std::lock_guard<std::mutex> lock(mergeMutex_);
 	out.clear();
 	out.swap(mergeRemapEvents_);
+}
+
+double SimulationEngine::takeAccumulatedSimulatedSecondsForShipFuel() {
+	std::lock_guard<std::mutex> lock(spFuelLedgerMutex_);
+	const double t = spFuelLedgerAccumSimDt_;
+	spFuelLedgerAccumSimDt_ = 0.0;
+	return t;
 }
 
 SimulationConfig SimulationEngine::currentConfig() const {

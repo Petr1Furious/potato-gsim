@@ -15,6 +15,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -50,6 +51,10 @@ struct ServerOptions {
 	double deltaVRegenDelaySeconds = 5.0;
 	/// Delta-v restored per **real-world** second while regen is active (after idle delay).
 	double deltaVRegenPerRealSecond = 500.0;
+	/// Wall seconds between physics steps (sent to clients in JoinAccept).
+	double physicsRealStepSeconds = net::kDefaultRealSecondsPerPhysicsStep;
+	/// Ship thrust acceleration at 100% (m/s²); sent to clients in JoinAccept.
+	double shipThrustAccel = net::kDefaultShipThrustAccel;
 
 	scenario::RandomPresetConfig randomCfg{};
 };
@@ -186,7 +191,9 @@ void sendJoinAccept(ENetPeer* peer,
                     sim::SimulationEngine& engine,
                     const std::uint64_t serverTick,
                     const std::uint64_t joinGlobalPhysicsStep,
-                    const sim::BodyId ownShipBodyId) {
+                    const sim::BodyId ownShipBodyId,
+                    const double physicsRealStepSeconds,
+                    const double shipThrustAccel) {
 	std::vector<sim::BodySnapshot> snaps;
 	engine.copyBodies(snaps);
 	std::vector<sim::AuthoritativeBody> bodies;
@@ -205,10 +212,66 @@ void sendJoinAccept(ENetPeer* peer,
 	}
 	std::vector<std::uint8_t> payload;
 	const double ts = engine.config().timeScale;
-	net::writeJoinAccept(serverTick, joinGlobalPhysicsStep, bodies, ownShipBodyId, ts, payload);
+	net::writeJoinAccept(serverTick, joinGlobalPhysicsStep, bodies, ownShipBodyId, ts,
+	                     physicsRealStepSeconds, shipThrustAccel, payload);
 	ENetPacket* packet =
 	    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 	enet_peer_send(peer, 2, packet);
+}
+
+void sendJoinReject(ENetHost* enetHost,
+                    ENetPeer* peer,
+                    const net::JoinRejectReason reason,
+                    const std::string_view detail) {
+	std::vector<std::uint8_t> payload;
+	net::writeJoinReject(reason, detail, payload);
+	ENetPacket* packet =
+	    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
+	enet_peer_send(peer, 2, packet);
+	enet_host_flush(enetHost);
+	enet_peer_disconnect(peer, 0);
+}
+
+std::string trimJoinName(std::string s) {
+	while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) {
+		s.pop_back();
+	}
+	std::size_t i = 0;
+	while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) {
+		++i;
+	}
+	if (i > 0) {
+		s.erase(0, i);
+	}
+	return s;
+}
+
+bool otherSlotReservedName(const std::vector<ClientSlot>& clients,
+                           const ENetPeer* self,
+                           const std::string& name) {
+	for (const ClientSlot& c : clients) {
+		if (c.peer == self) {
+			continue;
+		}
+		if (c.shipName == name) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool otherSlotControlsShip(const std::vector<ClientSlot>& clients,
+                           const ENetPeer* self,
+                           const sim::BodyId shipId) {
+	for (const ClientSlot& c : clients) {
+		if (c.peer == self) {
+			continue;
+		}
+		if (c.hasShip && c.shipId == shipId) {
+			return true;
+		}
+	}
+	return false;
 }
 
 }  // namespace
@@ -253,6 +316,12 @@ int main(int argc, char** argv) {
 	app.add_option("--delta-v-regen-rate", opts.deltaVRegenPerRealSecond,
 	               "Delta-v restored per real-world second while regen is active (m/s per s)")
 	    ->capture_default_str();
+	app.add_option("--physics-real-step", opts.physicsRealStepSeconds,
+	               "Wall seconds between physics integration steps (server + JoinAccept)")
+	    ->capture_default_str();
+	app.add_option("--ship-thrust-accel", opts.shipThrustAccel,
+	               "Ship forward thrust acceleration at 100% thrust (m/s^2)")
+	    ->capture_default_str();
 
 	app.add_option("--random-count", opts.randomCfg.count, "Random preset body count")
 	    ->capture_default_str();
@@ -292,6 +361,8 @@ int main(int argc, char** argv) {
 	opts.maxDeltaV = std::max(0.0, opts.maxDeltaV);
 	opts.deltaVRegenDelaySeconds = std::max(0.0, opts.deltaVRegenDelaySeconds);
 	opts.deltaVRegenPerRealSecond = std::max(0.0, opts.deltaVRegenPerRealSecond);
+	opts.physicsRealStepSeconds = std::clamp(opts.physicsRealStepSeconds, 1.0 / 600.0, 1.0 / 30.0);
+	opts.shipThrustAccel = std::clamp(opts.shipThrustAccel, 1e-6, 10.0);
 
 	if (enet_initialize() != 0) {
 		logErr("enet_initialize failed");
@@ -311,7 +382,7 @@ int main(int argc, char** argv) {
 
 	sim::SimulationConfig cfg;
 	cfg.timeScale = opts.simTimeScale;
-	cfg.fixedDtSeconds = net::kRealSecondsPerPhysicsStep;
+	cfg.fixedDtSeconds = opts.physicsRealStepSeconds;
 	cfg.gravitationalConstant = opts.gravitationalConstant;
 	cfg.softeningEpsilon = opts.softeningEpsilon;
 	cfg.barnesHutTheta = opts.barnesHutTheta;
@@ -335,9 +406,10 @@ int main(int argc, char** argv) {
 
 	std::fprintf(stderr,
 	             "potato_gsim_server *:%d | preset=%s | timeScale=%.6g | netTickHz=%d | "
-	             "snapshotEvery=%llu ticks | maxClients=%d\n",
+	             "snapshotEvery=%llu ticks | maxClients=%d | physStep=%.6g s | thrustAccel=%.6g\n",
 	             opts.port, presetName(opts.presetKind), opts.simTimeScale, opts.netTickHz,
-	             static_cast<unsigned long long>(opts.worldSnapshotIntervalTicks), opts.maxClients);
+	             static_cast<unsigned long long>(opts.worldSnapshotIntervalTicks), opts.maxClients,
+	             opts.physicsRealStepSeconds, opts.shipThrustAccel);
 
 	std::uint64_t serverTick = 0;
 	std::uint64_t globalPhysicsStep = 0;
@@ -359,29 +431,97 @@ int main(int argc, char** argv) {
 			if (event.type == ENET_EVENT_TYPE_CONNECT) {
 				const std::string peerAddress = peerAddressString(event.peer);
 				const std::uint64_t clientId = nextClientLogId++;
-				sim::SpawnCommand shipSpawn = makeShipSpawn(nextShipSpawnIndex, opts);
-				++nextShipSpawnIndex;
-				const std::string shipName = shipSpawn.name;
-				engine.queueSpawn(std::move(shipSpawn));
 				ClientSlot slot;
 				slot.peer = event.peer;
 				slot.clientLogId = clientId;
 				slot.peerAddress = peerAddress;
-				slot.shipName = shipName;
 				slot.deltaVCurrent = opts.maxDeltaV;
 				// Must start at 0: priming to the delay makes regen begin the instant thrust stops.
 				slot.wallSecondsSinceThrust = 0.0;
 				clients.push_back(slot);
-				std::fprintf(stderr, "[connect] client#%llu %s ship=%s peers=%zu/%d\n",
+				std::fprintf(stderr, "[connect] client#%llu %s peers=%zu/%d (await JoinRequest)\n",
 				             static_cast<unsigned long long>(clientId), peerAddress.c_str(),
-				             shipName.c_str(), clients.size(), opts.maxClients);
+				             clients.size(), opts.maxClients);
 			} else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
 				++packetsRxSinceStressLog;
 				const std::uint8_t* d = event.packet->data;
 				const std::size_t len = event.packet->dataLength;
 				if (len >= 6 && d[4] == net::kProtocolVersion) {
 					const auto type = static_cast<net::MsgType>(d[5]);
-					if (type == net::MsgType::ClientInput) {
+					if (type == net::MsgType::JoinRequest) {
+						std::string reqName;
+						if (!net::readJoinRequest(d, len, reqName)) {
+							sendJoinReject(host, event.peer, net::JoinRejectReason::NameInvalid,
+							               "Malformed JoinRequest");
+						} else {
+							reqName = trimJoinName(std::move(reqName));
+							ClientSlot* slot = nullptr;
+							for (ClientSlot& c : clients) {
+								if (c.peer == event.peer) {
+									slot = &c;
+									break;
+								}
+							}
+							if (slot == nullptr) {
+								sendJoinReject(host, event.peer, net::JoinRejectReason::NameInvalid,
+								               "Unknown peer");
+							} else if (!slot->shipName.empty()) {
+								// Join already started for this connection.
+							} else if (reqName.empty()) {
+								sendJoinReject(host, event.peer, net::JoinRejectReason::NameInvalid,
+								               "Empty player name");
+							} else if (reqName.size() > net::kJoinRequestNameMaxBytes) {
+								sendJoinReject(host, event.peer, net::JoinRejectReason::NameInvalid,
+								               "Name too long");
+							} else if (otherSlotReservedName(clients, event.peer, reqName)) {
+								sendJoinReject(host, event.peer,
+								               net::JoinRejectReason::ShipNameTaken,
+								               "That name is already in use");
+							} else {
+								std::vector<sim::BodySnapshot> snaps;
+								engine.copyBodies(snaps);
+								const std::optional<sim::BodyId> existing =
+								    findBodyIdByName(snaps, reqName);
+								if (existing.has_value()) {
+									if (otherSlotControlsShip(clients, event.peer, *existing)) {
+										sendJoinReject(host, event.peer,
+										               net::JoinRejectReason::ShipNameTaken,
+										               "Ship already controlled");
+									} else {
+										slot->shipName = reqName;
+										slot->needJoinSnapshot = true;
+										slot->shipAuthoritativeUpsertSent = false;
+										slot->hasShip = false;
+										slot->shipId = 0;
+										slot->deltaVCurrent = opts.maxDeltaV;
+										slot->wallSecondsSinceThrust = 0.0;
+										std::fprintf(
+										    stderr,
+										    "[join] client#%llu %s ship=%s (existing body)\n",
+										    static_cast<unsigned long long>(slot->clientLogId),
+										    slot->peerAddress.c_str(), reqName.c_str());
+									}
+								} else {
+									sim::SpawnCommand shipSpawn =
+									    makeShipSpawn(nextShipSpawnIndex, opts);
+									++nextShipSpawnIndex;
+									shipSpawn.name = reqName;
+									engine.queueSpawn(std::move(shipSpawn));
+									slot->shipName = reqName;
+									slot->needJoinSnapshot = true;
+									slot->shipAuthoritativeUpsertSent = false;
+									slot->hasShip = false;
+									slot->shipId = 0;
+									slot->deltaVCurrent = opts.maxDeltaV;
+									slot->wallSecondsSinceThrust = 0.0;
+									std::fprintf(stderr,
+									             "[join] client#%llu %s ship=%s (spawned)\n",
+									             static_cast<unsigned long long>(slot->clientLogId),
+									             slot->peerAddress.c_str(), reqName.c_str());
+								}
+							}
+						}
+					} else if (type == net::MsgType::ClientInput) {
 						net::ClientInputPayload in{};
 						if (net::readClientInput(d, len, in)) {
 							for (ClientSlot& c : clients) {
@@ -426,13 +566,13 @@ int main(int argc, char** argv) {
 		const sim::SimulationConfig liveCfg = engine.config();
 		const double ts =
 		    (std::isfinite(liveCfg.timeScale) && liveCfg.timeScale > 0.0) ? liveCfg.timeScale : 1.0;
-		const double dtSim = net::simulationDtFromTimeScale(ts);
-		const double wallDtStep = net::kRealSecondsPerPhysicsStep;
+		const double dtSim = net::simulationDtFromTimeScale(ts, opts.physicsRealStepSeconds);
+		const double wallDtStep = opts.physicsRealStepSeconds;
 		serverWallPhysicsDebt += elapsed;
 		serverWallPhysicsDebt = std::min(serverWallPhysicsDebt, net::kMaxWallPhysicsDebtSeconds);
 
 		int physicsSteps = 0;
-		while (serverWallPhysicsDebt >= net::kRealSecondsPerPhysicsStep &&
+		while (serverWallPhysicsDebt >= opts.physicsRealStepSeconds &&
 		       physicsSteps < net::kMaxCatchUpPhysicsStepsPerServerTick) {
 			for (ClientSlot& c : clients) {
 				if (!c.hasShip || c.shipId == 0) {
@@ -451,7 +591,7 @@ int main(int argc, char** argv) {
 				std::uint8_t effectiveThrustForward = 0;
 				if (c.lastInput.thrustForward) {
 					const double requestedDeltaV =
-					    net::kShipThrustAccel * requestedThrustScale * dtSim;
+					    opts.shipThrustAccel * requestedThrustScale * dtSim;
 					const double allowedScale =
 					    (requestedDeltaV > 1e-12)
 					        ? std::clamp(c.deltaVCurrent / requestedDeltaV, 0.0, 1.0)
@@ -463,8 +603,8 @@ int main(int argc, char** argv) {
 						effectiveThrustForward = 1;
 						effectiveThrustPercent = static_cast<std::uint8_t>(
 						    std::clamp(std::lround(effectiveThrustScale * 100.0), 0l, 100l));
-						ax += net::kShipThrustAccel * effectiveThrustScale * ca;
-						ay += net::kShipThrustAccel * effectiveThrustScale * sa;
+						ax += opts.shipThrustAccel * effectiveThrustScale * ca;
+						ay += opts.shipThrustAccel * effectiveThrustScale * sa;
 					}
 				}
 				if (effectiveThrustForward) {
@@ -485,7 +625,7 @@ int main(int argc, char** argv) {
 			}
 			engine.advanceFixedStep(dtSim, liveCfg);
 			++globalPhysicsStep;
-			serverWallPhysicsDebt -= net::kRealSecondsPerPhysicsStep;
+			serverWallPhysicsDebt -= opts.physicsRealStepSeconds;
 			++physicsSteps;
 		}
 		stressTickWallSeconds[stressSampleIndex] = elapsed;
@@ -501,7 +641,8 @@ int main(int argc, char** argv) {
 		for (ClientSlot& c : clients) {
 			if (c.needJoinSnapshot) {
 				if (const std::optional<sim::BodyId> shipId = findBodyIdByName(snaps, c.shipName)) {
-					sendJoinAccept(c.peer, engine, serverTick, globalPhysicsStep, *shipId);
+					sendJoinAccept(c.peer, engine, serverTick, globalPhysicsStep, *shipId,
+					               opts.physicsRealStepSeconds, opts.shipThrustAccel);
 					++packetsTxSinceStressLog;
 					c.needJoinSnapshot = false;
 				}
@@ -774,7 +915,7 @@ int main(int argc, char** argv) {
 				std::uint64_t shellReadyStep = globalPhysicsStep;
 				if (c.shellCooldownWallSeconds > 1e-9) {
 					const double steps =
-					    std::ceil(c.shellCooldownWallSeconds / net::kRealSecondsPerPhysicsStep);
+					    std::ceil(c.shellCooldownWallSeconds / opts.physicsRealStepSeconds);
 					shellReadyStep += static_cast<std::uint64_t>(std::max(1.0, steps));
 				}
 				std::vector<std::uint8_t> payload;

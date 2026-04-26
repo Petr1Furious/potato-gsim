@@ -1,4 +1,5 @@
 #include "net/MpClient.hpp"
+#include "net/MpConstants.hpp"
 
 #include <chrono>
 #include <cstring>
@@ -69,6 +70,8 @@ void MpClient::disconnect() {
 	serverPeer_ = nullptr;
 	haveJoinAccept_ = false;
 	pendingJoinTimeScale_ = 1.0;
+	pendingJoinRealSecondsPerPhysicsStep_ = 0.0;
+	pendingJoinShipThrustAccel_ = 0.0;
 	pendingJoinBodies_.clear();
 	pendingShips_.clear();
 	pendingWorldSnapshots_.clear();
@@ -76,6 +79,8 @@ void MpClient::disconnect() {
 	pendingBodyDeleteBatches_.clear();
 	pendingAuthoritativeUpserts_.clear();
 	haveAuthoritativeUpserts_ = false;
+	haveJoinReject_ = false;
+	pendingJoinRejectDetail_.clear();
 }
 
 void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
@@ -92,14 +97,28 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 			std::uint64_t joinG = 0;
 			sim::BodyId ownShip = 0;
 			double joinTs = 1.0;
+			double joinRealStep = kDefaultRealSecondsPerPhysicsStep;
+			double joinThrust = kDefaultShipThrustAccel;
 			std::vector<sim::AuthoritativeBody> bodies;
-			if (readJoinAccept(d, len, tick, joinG, bodies, ownShip, joinTs)) {
+			if (readJoinAccept(d, len, tick, joinG, bodies, ownShip, joinTs, joinRealStep,
+			                   joinThrust)) {
 				pendingJoinTick_ = tick;
 				pendingJoinGlobalPhysicsStep_ = joinG;
 				pendingJoinBodies_ = std::move(bodies);
 				pendingJoinOwnShip_ = ownShip;
 				pendingJoinTimeScale_ = joinTs;
+				pendingJoinRealSecondsPerPhysicsStep_ = joinRealStep;
+				pendingJoinShipThrustAccel_ = joinThrust;
 				haveJoinAccept_ = true;
+			}
+		} break;
+		case MsgType::JoinReject: {
+			JoinRejectReason r = JoinRejectReason::NameInvalid;
+			std::string det;
+			if (readJoinReject(d, len, r, det)) {
+				pendingJoinRejectReason_ = r;
+				pendingJoinRejectDetail_ = std::move(det);
+				haveJoinReject_ = true;
 			}
 		} break;
 		case MsgType::ShipState: {
@@ -271,12 +290,12 @@ bool MpClient::isPeerConnected() const {
 	return peerFullyConnected_.load(std::memory_order_acquire);
 }
 
-void MpClient::sendJoinRequest() {
+void MpClient::sendJoinRequest(const std::string_view nameUtf8) {
 	if (!hasServerPeer_.load(std::memory_order_acquire)) {
 		return;
 	}
 	std::vector<std::uint8_t> payload;
-	writeJoinRequest(payload);
+	writeJoinRequest(nameUtf8, payload);
 	std::lock_guard<std::mutex> lock(sendMutex_);
 	while (outboundPackets_.size() >= kOutboundQueueMax) {
 		outboundPackets_.pop_front();
@@ -301,13 +320,17 @@ void MpClient::takeJoinAccept(std::uint64_t& tickOut,
                               std::uint64_t& joinGlobalPhysicsStepOut,
                               std::vector<sim::AuthoritativeBody>& bodiesOut,
                               sim::BodyId& ownShipBodyIdOut,
-                              double& serverTimeScaleOut) {
+                              double& serverTimeScaleOut,
+                              double& realSecondsPerPhysicsStepOut,
+                              double& shipThrustAccelOut) {
 	if (!haveJoinAccept_) {
 		tickOut = 0;
 		joinGlobalPhysicsStepOut = 0;
 		bodiesOut.clear();
 		ownShipBodyIdOut = 0;
 		serverTimeScaleOut = 1.0;
+		realSecondsPerPhysicsStepOut = kDefaultRealSecondsPerPhysicsStep;
+		shipThrustAccelOut = kDefaultShipThrustAccel;
 		return;
 	}
 	tickOut = *pendingJoinTick_;
@@ -315,11 +338,26 @@ void MpClient::takeJoinAccept(std::uint64_t& tickOut,
 	bodiesOut = std::move(pendingJoinBodies_);
 	ownShipBodyIdOut = pendingJoinOwnShip_;
 	serverTimeScaleOut = pendingJoinTimeScale_;
+	realSecondsPerPhysicsStepOut = pendingJoinRealSecondsPerPhysicsStep_;
+	shipThrustAccelOut = pendingJoinShipThrustAccel_;
 	haveJoinAccept_ = false;
 	pendingJoinTick_.reset();
 	pendingJoinGlobalPhysicsStep_ = 0;
 	pendingJoinOwnShip_ = 0;
 	pendingJoinTimeScale_ = 1.0;
+	pendingJoinRealSecondsPerPhysicsStep_ = 0.0;
+	pendingJoinShipThrustAccel_ = 0.0;
+}
+
+bool MpClient::takeJoinReject(JoinRejectReason& reasonOut, std::string& detailOut) {
+	if (!haveJoinReject_) {
+		detailOut.clear();
+		return false;
+	}
+	reasonOut = pendingJoinRejectReason_;
+	detailOut = std::move(pendingJoinRejectDetail_);
+	haveJoinReject_ = false;
+	return true;
 }
 
 void MpClient::takeShipSamples(std::vector<ShipNetSample>& out) {

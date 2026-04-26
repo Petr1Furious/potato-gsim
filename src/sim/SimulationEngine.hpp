@@ -140,6 +140,9 @@ class SimulationEngine {
 	void seedCircularCloud(std::size_t count, double centerX, double centerY, double spreadRadius);
 	void drainMergeRemapEvents(std::vector<std::pair<BodyId, BodyId>>& out);
 
+	/// Returns simulated seconds integrated since the last call (solo ship fuel bookkeeping).
+	double takeAccumulatedSimulatedSecondsForShipFuel();
+
 	/// Single-threaded integration step (headless server / multiplayer client without
 	/// `start()` background loop). Not used while `simulationLoop` is driving `step`.
 	void advanceFixedStep(double dt, const SimulationConfig& cfg);
@@ -253,6 +256,9 @@ class SimulationEngine {
 
 	mutable std::mutex thrustMutex_;
 	std::unordered_map<BodyId, std::pair<double, double>> pendingThrustAccel_;
+
+	mutable std::mutex spFuelLedgerMutex_;
+	double spFuelLedgerAccumSimDt_ = 0.0;
 
 	void fillThrustArrays(const BodyState& state, const IdIndexMap& idMap);
 };

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 
 namespace net {
@@ -11,7 +12,8 @@ namespace net {
 namespace {
 
 void applyReplicaThrustImpl(sim::SimulationEngine& engine,
-                            const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas) {
+                            const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas,
+                            const double shipThrustAccel) {
 	for (const auto& [id, rep] : replicas) {
 		const double f = static_cast<double>(rep.facing);
 		const double ca = std::cos(f);
@@ -21,8 +23,8 @@ void applyReplicaThrustImpl(sim::SimulationEngine& engine,
 		double ax = 0.0;
 		double ay = 0.0;
 		if (rep.thrustForward) {
-			ax += net::kShipThrustAccel * thrustScale * ca;
-			ay += net::kShipThrustAccel * thrustScale * sa;
+			ax += shipThrustAccel * thrustScale * ca;
+			ay += shipThrustAccel * thrustScale * sa;
 		}
 		engine.setShipThrustAccelWorld(id, ax, ay);
 	}
@@ -38,6 +40,17 @@ const std::unordered_map<sim::BodyId, MpShipReplicaInput>* findReplayInputForSte
 		}
 	}
 	return nullptr;
+}
+
+[[nodiscard]] double paceScaleFromTargetMinusHead(const std::int64_t targetMinusHead) {
+	const double K = static_cast<double>(net::kMpLeadCapSteps);
+	const double err = static_cast<double>(targetMinusHead);
+	if (err >= 0.0) {
+		const double rb = std::min(err / K, 1.0);
+		return 1.0 + rb * rb * (net::kMpClientPaceScaleMax - 1.0);
+	}
+	const double ra = std::min(-err / K, 1.0);
+	return 1.0 - ra * ra;
 }
 
 }  // namespace
@@ -66,13 +79,23 @@ void MpClientSim::stop() {
 
 void MpClientSim::syncJoin(const std::uint64_t joinPhysicsStep,
                            const double serverTimeScale,
+                           const double realSecondsPerPhysicsStep,
+                           const double shipThrustAccel,
                            std::vector<sim::AuthoritativeBody> bodies) {
+	realPhysicsStep_ = (std::isfinite(realSecondsPerPhysicsStep) && realSecondsPerPhysicsStep > 0.0)
+	                       ? realSecondsPerPhysicsStep
+	                       : kDefaultRealSecondsPerPhysicsStep;
+	shipThrustAccel_ = (std::isfinite(shipThrustAccel) && shipThrustAccel > 0.0)
+	                       ? shipThrustAccel
+	                       : kDefaultShipThrustAccel;
+	engine_.setFixedDt(realPhysicsStep_);
 	engine_.queueApplyAuthoritativeSnapshot(std::move(bodies));
 	if (std::isfinite(serverTimeScale) && serverTimeScale > 0.0) {
 		engine_.setTimeScale(serverTimeScale);
 	}
 	clientPhysicsHead_.store(joinPhysicsStep, std::memory_order_release);
 	lastConfirmedAuthorityStep_.store(joinPhysicsStep, std::memory_order_release);
+	serverPhysicsHeadTarget_.store(joinPhysicsStep, std::memory_order_release);
 	replayInputHistory_.clear();
 }
 
@@ -147,6 +170,20 @@ void MpClientSim::syncReplicas(
     const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas) {
 	std::lock_guard<std::mutex> lock(replicaMutex_);
 	replicas_ = replicas;
+}
+
+void MpClientSim::setServerPhysicsHeadTarget(const std::uint64_t serverGlobalPhysicsStep) {
+	if (serverGlobalPhysicsStep == 0u) {
+		return;
+	}
+	std::uint64_t prev = serverPhysicsHeadTarget_.load(std::memory_order_relaxed);
+	while (serverGlobalPhysicsStep > prev) {
+		if (serverPhysicsHeadTarget_.compare_exchange_weak(prev, serverGlobalPhysicsStep,
+		                                                   std::memory_order_release,
+		                                                   std::memory_order_relaxed)) {
+			return;
+		}
+	}
 }
 
 std::size_t MpClientSim::snapshotJobQueueDepth() const {
@@ -249,6 +286,9 @@ void MpClientSim::processWorldSnapshotJob(const WorldSnapshotJob& job) {
 		}
 		lastConfirmedAuthorityStep_.store(W, std::memory_order_release);
 	} else {
+		// World state is now exactly at server step `W`; keep the prediction cursor aligned so
+		// `head` matches the same global index as `auth` (and replay samples use correct stepIdx).
+		clientPhysicsHead_.store(W, std::memory_order_release);
 		lastConfirmedAuthorityStep_.store(W, std::memory_order_release);
 	}
 }
@@ -266,7 +306,7 @@ void MpClientSim::integrateOnePhysicsStep(
 	const double ts = (std::isfinite(physicsCfg.timeScale) && physicsCfg.timeScale > 0.0)
 	                      ? physicsCfg.timeScale
 	                      : 1.0;
-	const double dtSim = net::simulationDtFromTimeScale(ts);
+	const double dtSim = net::simulationDtFromTimeScale(ts, realPhysicsStep_);
 
 	if (recordReplaySample) {
 		const std::uint64_t stepIdx = clientPhysicsHead_.load(std::memory_order_relaxed);
@@ -276,7 +316,7 @@ void MpClientSim::integrateOnePhysicsStep(
 		replayInputHistory_.push_back({stepIdx, reps});
 	}
 
-	applyReplicaThrustImpl(engine_, reps);
+	applyReplicaThrustImpl(engine_, reps, shipThrustAccel_);
 	engine_.advanceFixedStep(dtSim, physicsCfg);
 	clientPhysicsHead_.fetch_add(1u, std::memory_order_acq_rel);
 	forwardMergeEventsFromEngine();
@@ -360,17 +400,20 @@ void MpClientSim::threadMain(const std::stop_token st) {
 
 			const std::uint64_t head = clientPhysicsHead_.load(std::memory_order_acquire);
 			const std::uint64_t auth = lastConfirmedAuthorityStep_.load(std::memory_order_acquire);
-			if (head >= auth + net::kMpMaxClientLeadPhysicsSteps) {
+			const std::uint64_t target = serverPhysicsHeadTarget_.load(std::memory_order_acquire);
+			const bool overLeadCap = (target != 0u && head >= target + net::kMpLeadCapSteps) ||
+			                         (target == 0u && head >= auth + net::kMpLeadCapSteps);
+			if (overLeadCap) {
 				break;
 			}
-			const std::uint64_t leadSteps = (head > auth) ? (head - auth) : 0u;
-			const double leadRatio =
-			    std::clamp(static_cast<double>(leadSteps) /
-			                   static_cast<double>(net::kMpMaxClientLeadPhysicsSteps),
-			               0.0, 1.0);
-			constexpr double kMinPaceScale = 0.15;
-			const double paceScale = std::max(kMinPaceScale, 1.0 - leadRatio * leadRatio);
-			const double requiredDebt = net::kRealSecondsPerPhysicsStep / paceScale;
+			const double paceScale =
+			    (target != 0u) ? paceScaleFromTargetMinusHead(static_cast<std::int64_t>(target) -
+			                                                  static_cast<std::int64_t>(head))
+			                   : 1.0;
+			if (paceScale <= 1e-15) {
+				break;
+			}
+			const double requiredDebt = realPhysicsStep_ / paceScale;
 			if (wallAcc < requiredDebt) {
 				break;
 			}

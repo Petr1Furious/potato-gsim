@@ -1,9 +1,11 @@
 #include "net/Protocol.hpp"
+#include "net/MpConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 namespace net {
 
@@ -140,17 +142,84 @@ bool readAuthoritativeBodyRow(const std::uint8_t*& p,
 
 }  // namespace
 
-bool writeJoinRequest(std::vector<std::uint8_t>& out) {
+bool writeJoinRequest(const std::string_view nameUtf8, std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::JoinRequest);
+	std::size_t n = nameUtf8.size();
+	while (n > 0 && (nameUtf8[n - 1] == ' ' || nameUtf8[n - 1] == '\t')) {
+		--n;
+	}
+	std::size_t start = 0;
+	while (start < n && (nameUtf8[start] == ' ' || nameUtf8[start] == '\t')) {
+		++start;
+	}
+	const std::size_t trimmed = (start < n) ? (n - start) : 0;
+	const std::size_t enc = std::min(trimmed, static_cast<std::size_t>(kJoinRequestNameMaxBytes));
+	appendU32(out, static_cast<std::uint32_t>(enc));
+	for (std::size_t i = 0; i < enc; ++i) {
+		out.push_back(static_cast<std::uint8_t>(nameUtf8[start + i]));
+	}
 	return true;
 }
 
-bool readJoinRequest(const std::uint8_t* data, std::size_t len) {
+bool readJoinRequest(const std::uint8_t* data, const std::size_t len, std::string& nameOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
-	return readHeader(p, end, MsgType::JoinRequest, ver) && p == end;
+	nameOut.clear();
+	if (!readHeader(p, end, MsgType::JoinRequest, ver)) {
+		return false;
+	}
+	if (p == end) {
+		return true;
+	}
+	std::uint32_t nameLen = 0;
+	if (!readU32(p, end, nameLen) || nameLen > kJoinRequestNameMaxBytes ||
+	    static_cast<std::size_t>(end - p) < nameLen) {
+		return false;
+	}
+	nameOut.assign(reinterpret_cast<const char*>(p), nameLen);
+	p += nameLen;
+	return p == end;
+}
+
+bool writeJoinReject(const JoinRejectReason reason,
+                     const std::string_view detailUtf8,
+                     std::vector<std::uint8_t>& out) {
+	out.clear();
+	writeHeader(out, MsgType::JoinReject);
+	appendU8(out, static_cast<std::uint8_t>(reason));
+	const std::uint32_t dl =
+	    static_cast<std::uint32_t>(std::min<std::size_t>(detailUtf8.size(), 512));
+	appendU32(out, dl);
+	for (std::uint32_t i = 0; i < dl; ++i) {
+		out.push_back(static_cast<std::uint8_t>(detailUtf8[i]));
+	}
+	return true;
+}
+
+bool readJoinReject(const std::uint8_t* data,
+                    const std::size_t len,
+                    JoinRejectReason& reasonOut,
+                    std::string& detailOut) {
+	const std::uint8_t* p = data;
+	const std::uint8_t* end = data + len;
+	std::uint8_t ver = 0;
+	detailOut.clear();
+	if (!readHeader(p, end, MsgType::JoinReject, ver)) {
+		return false;
+	}
+	if (end - p < 1) {
+		return false;
+	}
+	reasonOut = static_cast<JoinRejectReason>(*p++);
+	std::uint32_t dl = 0;
+	if (!readU32(p, end, dl) || dl > 512u || static_cast<std::size_t>(end - p) < dl) {
+		return false;
+	}
+	detailOut.assign(reinterpret_cast<const char*>(p), dl);
+	p += dl;
+	return p == end;
 }
 
 bool writeJoinAccept(const std::uint64_t serverTick,
@@ -158,6 +227,8 @@ bool writeJoinAccept(const std::uint64_t serverTick,
                      const std::vector<sim::AuthoritativeBody>& bodies,
                      const sim::BodyId ownShipBodyId,
                      const double serverTimeScale,
+                     const double realSecondsPerPhysicsStep,
+                     const double shipThrustAccel,
                      std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::JoinAccept);
@@ -169,6 +240,8 @@ bool writeJoinAccept(const std::uint64_t serverTick,
 	appendU64(out, ownShipBodyId);
 	appendF64(out, serverTimeScale);
 	appendU64(out, joinGlobalPhysicsStep);
+	appendF64(out, realSecondsPerPhysicsStep);
+	appendF64(out, shipThrustAccel);
 	return true;
 }
 
@@ -178,13 +251,17 @@ bool readJoinAccept(const std::uint8_t* data,
                     std::uint64_t& joinGlobalPhysicsStepOut,
                     std::vector<sim::AuthoritativeBody>& bodiesOut,
                     sim::BodyId& ownShipBodyIdOut,
-                    double& serverTimeScaleOut) {
+                    double& serverTimeScaleOut,
+                    double& realSecondsPerPhysicsStepOut,
+                    double& shipThrustAccelOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
 	ownShipBodyIdOut = 0;
 	serverTimeScaleOut = 1.0;
 	joinGlobalPhysicsStepOut = 0;
+	realSecondsPerPhysicsStepOut = kDefaultRealSecondsPerPhysicsStep;
+	shipThrustAccelOut = kDefaultShipThrustAccel;
 	if (!readHeader(p, end, MsgType::JoinAccept, ver)) {
 		return false;
 	}
@@ -221,6 +298,19 @@ bool readJoinAccept(const std::uint8_t* data,
 	if (static_cast<std::size_t>(end - p) >= 8) {
 		if (!readU64(p, end, joinGlobalPhysicsStepOut)) {
 			return false;
+		}
+	}
+	if (static_cast<std::size_t>(end - p) >= 16) {
+		double rs = 0.0;
+		double ta = 0.0;
+		if (!readF64(p, end, rs) || !readF64(p, end, ta)) {
+			return false;
+		}
+		if (std::isfinite(rs) && rs > 0.0) {
+			realSecondsPerPhysicsStepOut = rs;
+		}
+		if (std::isfinite(ta) && ta > 0.0) {
+			shipThrustAccelOut = ta;
 		}
 	}
 	return p == end;

@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace net {
@@ -23,6 +25,17 @@ enum class MsgType : std::uint8_t {
 	AuthoritativeBodyUpsert = 7,
 	/// Reliable: remove bodies immediately (e.g. shell hit, shell expiry); same channel as upserts.
 	BodyDeleteBatch = 8,
+	/// Reliable: join denied; disconnect typically follows.
+	JoinReject = 9,
+};
+
+/// Max UTF-8 bytes encoded in `writeJoinRequest` (after trim).
+constexpr std::size_t kJoinRequestNameMaxBytes = 64;
+
+enum class JoinRejectReason : std::uint8_t {
+	ShipNameTaken = 0,
+	NameInvalid = 1,
+	ServerFull = 2,
 };
 
 #pragma pack(push, 1)
@@ -44,14 +57,24 @@ struct ClientInputPayload {
 };
 #pragma pack(pop)
 
-bool writeJoinRequest(std::vector<std::uint8_t>& out);
-bool readJoinRequest(const std::uint8_t* data, std::size_t len);
+bool writeJoinRequest(std::string_view nameUtf8, std::vector<std::uint8_t>& out);
+bool readJoinRequest(const std::uint8_t* data, std::size_t len, std::string& nameOut);
+
+bool writeJoinReject(JoinRejectReason reason,
+                     std::string_view detailUtf8,
+                     std::vector<std::uint8_t>& out);
+bool readJoinReject(const std::uint8_t* data,
+                    std::size_t len,
+                    JoinRejectReason& reasonOut,
+                    std::string& detailOut);
 
 bool writeJoinAccept(std::uint64_t serverTick,
                      std::uint64_t joinGlobalPhysicsStep,
                      const std::vector<sim::AuthoritativeBody>& bodies,
                      sim::BodyId ownShipBodyId,
                      double serverTimeScale,
+                     double realSecondsPerPhysicsStep,
+                     double shipThrustAccel,
                      std::vector<std::uint8_t>& out);
 bool readJoinAccept(const std::uint8_t* data,
                     std::size_t len,
@@ -59,7 +82,9 @@ bool readJoinAccept(const std::uint8_t* data,
                     std::uint64_t& joinGlobalPhysicsStepOut,
                     std::vector<sim::AuthoritativeBody>& bodiesOut,
                     sim::BodyId& ownShipBodyIdOut,
-                    double& serverTimeScaleOut);
+                    double& serverTimeScaleOut,
+                    double& realSecondsPerPhysicsStepOut,
+                    double& shipThrustAccelOut);
 
 bool writeClientInput(const ClientInputPayload& in, std::vector<std::uint8_t>& out);
 bool readClientInput(const std::uint8_t* data, std::size_t len, ClientInputPayload& out);

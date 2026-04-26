@@ -1,5 +1,6 @@
 #pragma once
 
+#include "net/MpConstants.hpp"
 #include "sim/BodyId.hpp"
 #include "sim/SimulationConfig.hpp"
 #include "sim/SimulationEngine.hpp"
@@ -45,9 +46,10 @@ struct WorldSnapshotJob {
 	std::vector<sim::AuthoritativeBody> bodies;
 };
 
-/// Dedicated multiplayer client simulation thread: fixed wall cadence (~240 Hz), bounded lead,
-/// soft pacing near the lead cap. Main thread enqueues network-driven work; sim thread calls
-/// `advanceFixedStep` only.
+/// Dedicated multiplayer client simulation thread: fixed wall cadence (~240 Hz), bounded lead
+/// vs `serverPhysicsHeadTarget_`, and per-step wall pacing from `(target - head)` (see
+/// `kMpClientPace*` in MpConstants). Main thread enqueues work; sim thread calls `advanceFixedStep`
+/// only.
 class MpClientSim {
    public:
 	explicit MpClientSim(sim::SimulationEngine& engine);
@@ -63,6 +65,8 @@ class MpClientSim {
 	/// Main thread: apply join snapshot + time scale and seed counters (before `start()`).
 	void syncJoin(std::uint64_t joinPhysicsStep,
 	              double serverTimeScale,
+	              double realSecondsPerPhysicsStep,
+	              double shipThrustAccel,
 	              std::vector<sim::AuthoritativeBody> bodies);
 
 	/// Main thread: enqueue merge deletes (`from` ids), applied on sim before snapshot processing.
@@ -89,12 +93,24 @@ class MpClientSim {
 	/// Main thread: full replica map copy (small: ships only).
 	void syncReplicas(const std::unordered_map<sim::BodyId, MpShipReplicaInput>& replicas);
 
+	/// Main thread: server `globalPhysicsStep` from the latest network packet (ship and/or world
+	/// snapshot), monotonic max. Sim thread treats this as the **target** `clientPhysicsHead`
+	/// should track toward for pacing (see `kMpClientPace*` in MpConstants).
+	void setServerPhysicsHeadTarget(std::uint64_t serverGlobalPhysicsStep);
+
+	[[nodiscard]] std::uint64_t serverPhysicsHeadTarget() const {
+		return serverPhysicsHeadTarget_.load(std::memory_order_acquire);
+	}
+
+	/// Global physics step index of the client's integrated world (matches server
+	/// `globalPhysicsStep` after each full snapshot fast-forward where `W >= headBefore`).
 	[[nodiscard]] std::uint64_t clientPhysicsHead() const {
 		return clientPhysicsHead_.load(std::memory_order_acquire);
 	}
 	[[nodiscard]] std::uint64_t lastConfirmedAuthorityStep() const {
 		return lastConfirmedAuthorityStep_.load(std::memory_order_acquire);
 	}
+	[[nodiscard]] double realSecondsPerPhysicsStep() const { return realPhysicsStep_; }
 
 	/// Main thread: copy last published render state (sim thread only mutates the engine).
 	void copyLatestRenderPublish(MpClientRenderPublish& out) const;
@@ -150,7 +166,11 @@ class MpClientSim {
 
 	std::atomic<std::uint64_t> clientPhysicsHead_{0};
 	std::atomic<std::uint64_t> lastConfirmedAuthorityStep_{0};
+	std::atomic<std::uint64_t> serverPhysicsHeadTarget_{0};
 	std::atomic<std::uint64_t> simPhysicsWakeCapHitsTotal_{0};
+
+	double realPhysicsStep_ = kDefaultRealSecondsPerPhysicsStep;
+	double shipThrustAccel_ = kDefaultShipThrustAccel;
 };
 
 }  // namespace net

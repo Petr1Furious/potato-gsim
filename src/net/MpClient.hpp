@@ -13,6 +13,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -57,7 +58,7 @@ class MpClient {
 	void testingEnqueueInboundPacket(std::vector<std::uint8_t> packet);
 #endif
 
-	void sendJoinRequest();
+	void sendJoinRequest(std::string_view nameUtf8);
 	void sendInput(const ClientInputPayload& payload);
 
 	[[nodiscard]] bool isConnected() const;
@@ -74,7 +75,11 @@ class MpClient {
 	                    std::uint64_t& joinGlobalPhysicsStepOut,
 	                    std::vector<sim::AuthoritativeBody>& bodiesOut,
 	                    sim::BodyId& ownShipBodyIdOut,
-	                    double& serverTimeScaleOut);
+	                    double& serverTimeScaleOut,
+	                    double& realSecondsPerPhysicsStepOut,
+	                    double& shipThrustAccelOut);
+	/// Returns true if a `JoinReject` arrived since last call; fills outputs and clears the latch.
+	[[nodiscard]] bool takeJoinReject(JoinRejectReason& reasonOut, std::string& detailOut);
 	void takeShipSamples(std::vector<ShipNetSample>& out);
 	/// Pops one queued world snapshot (FIFO). Returns false when empty.
 	[[nodiscard]] bool takeNextWorldSnapshot(std::uint64_t& tickOut,
@@ -133,7 +138,12 @@ class MpClient {
 	std::vector<sim::AuthoritativeBody> pendingJoinBodies_;
 	sim::BodyId pendingJoinOwnShip_ = 0;
 	double pendingJoinTimeScale_ = 1.0;
+	double pendingJoinRealSecondsPerPhysicsStep_ = 0.0;
+	double pendingJoinShipThrustAccel_ = 0.0;
 	bool haveJoinAccept_ = false;
+	bool haveJoinReject_ = false;
+	JoinRejectReason pendingJoinRejectReason_{JoinRejectReason::NameInvalid};
+	std::string pendingJoinRejectDetail_;
 
 	std::vector<ShipNetSample> pendingShips_;
 	std::deque<PendingWorldSnapshot> pendingWorldSnapshots_;
