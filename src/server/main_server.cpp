@@ -60,6 +60,15 @@ struct ClientSlot {
 	double wallSecondsSinceThrust = 0.0;
 	std::uint8_t appliedThrustForward = 0;
 	std::uint8_t appliedThrustPercent = 0;
+	bool fireRequested = false;
+	double shellCooldownWallSeconds = 0.0;
+};
+
+struct ActiveShell {
+	sim::BodyId bodyId = 0;
+	sim::BodyId ownerShipId = 0;
+	std::string bodyName;
+	double ageWallSeconds = 0.0;
 };
 
 void logErr(const char* msg) {
@@ -138,6 +147,16 @@ std::optional<sim::BodyId> findBodyIdByName(const std::vector<sim::BodySnapshot>
 		}
 	}
 	return std::nullopt;
+}
+
+const sim::BodySnapshot* findBodyById(const std::vector<sim::BodySnapshot>& bodies,
+                                      const sim::BodyId id) {
+	for (const sim::BodySnapshot& b : bodies) {
+		if (b.id == id) {
+			return &b;
+		}
+	}
+	return nullptr;
 }
 
 void sendJoinAccept(ENetPeer* peer,
@@ -287,6 +306,8 @@ int main(int argc, char** argv) {
 	engine.queueReplaceWorld(std::move(initialBodies));
 
 	std::vector<ClientSlot> clients;
+	std::vector<ActiveShell> activeShells;
+	std::uint64_t nextShellSerial = 1;
 
 	std::fprintf(stderr,
 	             "potato_gsim_server *:%d | preset=%s | timeScale=%.6g | netTickHz=%d | "
@@ -328,6 +349,9 @@ int main(int argc, char** argv) {
 							for (ClientSlot& c : clients) {
 								if (c.peer == event.peer) {
 									c.lastInput = in;
+									if (in.firePrimary != 0) {
+										c.fireRequested = true;
+									}
 									break;
 								}
 							}
@@ -369,6 +393,7 @@ int main(int argc, char** argv) {
 				if (!c.hasShip || c.shipId == 0) {
 					continue;
 				}
+				c.shellCooldownWallSeconds = std::max(0.0, c.shellCooldownWallSeconds - wallDtStep);
 				const double f = static_cast<double>(c.lastInput.facingRadians);
 				const double ca = std::cos(f);
 				const double sa = std::sin(f);
@@ -422,6 +447,8 @@ int main(int argc, char** argv) {
 		std::vector<sim::BodySnapshot> snaps;
 		engine.copyBodies(snaps);
 
+		// Resolve ship ids (and join accept) before shell handling so the first tick after connect
+		// can fire; previously shells ran while `hasShip` was still false.
 		for (ClientSlot& c : clients) {
 			if (c.needJoinSnapshot) {
 				if (const std::optional<sim::BodyId> shipId = findBodyIdByName(snaps, c.shipName)) {
@@ -440,6 +467,45 @@ int main(int argc, char** argv) {
 					}
 				}
 			}
+		}
+
+		for (ClientSlot& c : clients) {
+			if (!c.fireRequested || !c.hasShip || c.shipId == 0) {
+				continue;
+			}
+			if (c.shellCooldownWallSeconds > 1e-9) {
+				c.fireRequested = false;
+				continue;
+			}
+			const sim::BodySnapshot* ship = findBodyById(snaps, c.shipId);
+			if (ship == nullptr) {
+				c.fireRequested = false;
+				continue;
+			}
+			const double aim = static_cast<double>(c.lastInput.shellAimRadians);
+			const double speedDesiredSim =
+			    std::max(0.0, static_cast<double>(c.lastInput.shellExtraSpeed));
+			const double launchSpeedSim =
+			    std::clamp(speedDesiredSim, net::kShellSpeedMin, net::kShellSpeedMax);
+			const double ca = std::cos(aim);
+			const double sa = std::sin(aim);
+			const double muzzleOffset =
+			    ship->radius + net::kShellRadius + net::kShellMuzzleSurfaceGapWorld;
+			const std::string shellName =
+			    "shell/" + std::to_string(static_cast<unsigned long long>(nextShellSerial++));
+			engine.queueSpawn(sim::SpawnCommand{
+			    .x = ship->x + ca * muzzleOffset,
+			    .y = ship->y + sa * muzzleOffset,
+			    .vx = ship->vx + launchSpeedSim * ca,
+			    .vy = ship->vy + launchSpeedSim * sa,
+			    .mass = net::kShellMass,
+			    .radius = net::kShellRadius,
+			    .name = shellName,
+			});
+			activeShells.push_back(
+			    ActiveShell{.bodyId = 0, .ownerShipId = c.shipId, .bodyName = shellName});
+			c.shellCooldownWallSeconds = net::kShellCooldownRealSeconds;
+			c.fireRequested = false;
 		}
 
 		for (ClientSlot& c : clients) {
@@ -515,6 +581,133 @@ int main(int argc, char** argv) {
 				}
 			}
 		}
+
+		const double advancedWallSeconds = static_cast<double>(physicsSteps) * wallDtStep;
+		for (ActiveShell& s : activeShells) {
+			s.ageWallSeconds += advancedWallSeconds;
+			if (s.bodyId == 0) {
+				if (const std::optional<sim::BodyId> sid = findBodyIdByName(snaps, s.bodyName)) {
+					s.bodyId = *sid;
+					if (const sim::BodySnapshot* shellBody = findBodyById(snaps, s.bodyId);
+					    shellBody != nullptr) {
+						std::vector<sim::AuthoritativeBody> one;
+						one.push_back(sim::AuthoritativeBody{
+						    .id = shellBody->id,
+						    .x = shellBody->x,
+						    .y = shellBody->y,
+						    .vx = shellBody->vx,
+						    .vy = shellBody->vy,
+						    .mass = shellBody->mass,
+						    .radius = shellBody->radius,
+						    .name = shellBody->name,
+						});
+						std::vector<std::uint8_t> payload;
+						net::writeAuthoritativeBodyUpsert(serverTick, globalPhysicsStep, one,
+						                                  payload);
+						ENetPacket* packet = enet_packet_create(payload.data(), payload.size(),
+						                                        ENET_PACKET_FLAG_RELIABLE);
+						enet_host_broadcast(host, 1, packet);
+					}
+				}
+			}
+		}
+		std::vector<sim::BodyId> shellIdsToDelete;
+		std::vector<sim::BodyId> shipIdsToDelete;
+		for (const ActiveShell& s : activeShells) {
+			if (s.bodyId == 0) {
+				continue;
+			}
+			if (s.ageWallSeconds >= net::kShellLifetimeRealSeconds) {
+				shellIdsToDelete.push_back(s.bodyId);
+				continue;
+			}
+			const sim::BodySnapshot* shellBody = findBodyById(snaps, s.bodyId);
+			if (shellBody == nullptr) {
+				continue;
+			}
+			bool shouldExplode = false;
+			for (const ClientSlot& c : clients) {
+				if (!c.hasShip || c.shipId == 0) {
+					continue;
+				}
+				if (c.shipId == s.ownerShipId &&
+				    s.ageWallSeconds < net::kShellArmDelayRealSeconds) {
+					continue;
+				}
+				const sim::BodySnapshot* shipBody = findBodyById(snaps, c.shipId);
+				if (shipBody == nullptr) {
+					continue;
+				}
+				const double dx = shipBody->x - shellBody->x;
+				const double dy = shipBody->y - shellBody->y;
+				const double rr = net::kShellExplosionRadius + shipBody->radius;
+				if ((dx * dx + dy * dy) <= rr * rr) {
+					shipIdsToDelete.push_back(c.shipId);
+					shouldExplode = true;
+				}
+			}
+			if (shouldExplode) {
+				shellIdsToDelete.push_back(s.bodyId);
+			}
+		}
+		if (!shipIdsToDelete.empty()) {
+			std::sort(shipIdsToDelete.begin(), shipIdsToDelete.end());
+			shipIdsToDelete.erase(std::unique(shipIdsToDelete.begin(), shipIdsToDelete.end()),
+			                      shipIdsToDelete.end());
+			for (const sim::BodyId id : shipIdsToDelete) {
+				engine.queueDelete(id);
+				for (ClientSlot& c : clients) {
+					if (c.shipId == id) {
+						c.hasShip = false;
+						c.shipId = 0;
+						c.needJoinSnapshot = false;
+						c.shipAuthoritativeUpsertSent = false;
+					}
+				}
+			}
+		}
+		if (!shellIdsToDelete.empty()) {
+			std::sort(shellIdsToDelete.begin(), shellIdsToDelete.end());
+			shellIdsToDelete.erase(std::unique(shellIdsToDelete.begin(), shellIdsToDelete.end()),
+			                       shellIdsToDelete.end());
+			for (const sim::BodyId id : shellIdsToDelete) {
+				engine.queueDelete(id);
+			}
+		}
+		if (!shellIdsToDelete.empty()) {
+			activeShells.erase(std::remove_if(activeShells.begin(), activeShells.end(),
+			                                  [&](const ActiveShell& s) {
+				                                  return s.bodyId != 0 &&
+				                                         std::binary_search(
+				                                             shellIdsToDelete.begin(),
+				                                             shellIdsToDelete.end(), s.bodyId);
+			                                  }),
+			                   activeShells.end());
+		}
+
+		std::vector<sim::BodyId> netBodyDeletes;
+		netBodyDeletes.reserve(shipIdsToDelete.size() + shellIdsToDelete.size());
+		for (const sim::BodyId id : shipIdsToDelete) {
+			netBodyDeletes.push_back(id);
+		}
+		for (const sim::BodyId id : shellIdsToDelete) {
+			netBodyDeletes.push_back(id);
+		}
+		if (!netBodyDeletes.empty()) {
+			std::sort(netBodyDeletes.begin(), netBodyDeletes.end());
+			netBodyDeletes.erase(std::unique(netBodyDeletes.begin(), netBodyDeletes.end()),
+			                     netBodyDeletes.end());
+		}
+		const std::unordered_set<sim::BodyId> omitFromSnapshotThisTick(netBodyDeletes.begin(),
+		                                                               netBodyDeletes.end());
+		if (!netBodyDeletes.empty()) {
+			std::vector<std::uint8_t> delPayload;
+			net::writeBodyDeleteBatch(serverTick, globalPhysicsStep, netBodyDeletes, delPayload);
+			ENetPacket* delPacket =
+			    enet_packet_create(delPayload.data(), delPayload.size(), ENET_PACKET_FLAG_RELIABLE);
+			enet_host_broadcast(host, 1, delPacket);
+		}
+
 		for (ClientSlot& c : clients) {
 			if (!c.hasShip) {
 				continue;
@@ -523,11 +716,17 @@ int main(int argc, char** argv) {
 				if (b.id != c.shipId) {
 					continue;
 				}
+				std::uint64_t shellReadyStep = globalPhysicsStep;
+				if (c.shellCooldownWallSeconds > 1e-9) {
+					const double steps =
+					    std::ceil(c.shellCooldownWallSeconds / net::kRealSecondsPerPhysicsStep);
+					shellReadyStep += static_cast<std::uint64_t>(std::max(1.0, steps));
+				}
 				std::vector<std::uint8_t> payload;
 				net::writeShipState(serverTick, globalPhysicsStep, b.id, b.x, b.y, b.vx, b.vy,
 				                    c.lastInput.facingRadians, c.appliedThrustForward,
 				                    c.appliedThrustPercent, static_cast<float>(c.deltaVCurrent),
-				                    static_cast<float>(opts.maxDeltaV), payload);
+				                    static_cast<float>(opts.maxDeltaV), shellReadyStep, payload);
 				ENetPacket* packet =
 				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
 				enet_host_broadcast(host, 0, packet);
@@ -539,6 +738,9 @@ int main(int argc, char** argv) {
 			std::vector<sim::AuthoritativeBody> snapBodies;
 			snapBodies.reserve(snaps.size());
 			for (const sim::BodySnapshot& b : snaps) {
+				if (omitFromSnapshotThisTick.count(b.id) != 0) {
+					continue;
+				}
 				snapBodies.push_back(sim::AuthoritativeBody{
 				    .id = b.id,
 				    .x = b.x,

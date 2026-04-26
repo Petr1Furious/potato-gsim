@@ -44,7 +44,7 @@ int main() {
 	{
 		std::vector<std::uint8_t> buf;
 		assert(net::writeShipState(3, 777, 9, 1.1, 2.2, 3.3, 4.4, 0.5f, 1, 88, 19000.0f, 25000.0f,
-		                           buf));
+		                           9000ull, buf));
 		std::uint64_t tick = 0;
 		std::uint64_t g = 0;
 		sim::BodyId id = 0;
@@ -57,8 +57,9 @@ int main() {
 		std::uint8_t tp = 0;
 		float dvCur = 0.f;
 		float dvMax = 0.f;
+		std::uint64_t shellReadyStep = 0;
 		assert(net::readShipState(buf.data(), buf.size(), tick, g, id, px, py, vx, vy, facing, tf,
-		                          tp, dvCur, dvMax));
+		                          tp, dvCur, dvMax, shellReadyStep));
 		assert(tick == 3);
 		assert(g == 777);
 		assert(id == 9);
@@ -67,6 +68,7 @@ int main() {
 		assert(tp == 88);
 		assert(std::abs(dvCur - 19000.0f) < 1e-6f);
 		assert(std::abs(dvMax - 25000.0f) < 1e-6f);
+		assert(shellReadyStep == 9000ull);
 	}
 
 	{
@@ -131,6 +133,19 @@ int main() {
 		assert(bodiesOut.size() == 1);
 		assert(bodiesOut[0].id == 11);
 		assert(bodiesOut[0].name == "late");
+	}
+
+	{
+		std::vector<std::uint8_t> buf;
+		const std::vector<sim::BodyId> idsIn{100ull, 200ull};
+		assert(net::writeBodyDeleteBatch(7, 5000, idsIn, buf));
+		std::uint64_t tick = 0;
+		std::uint64_t step = 0;
+		std::vector<sim::BodyId> idsOut;
+		assert(net::readBodyDeleteBatch(buf.data(), buf.size(), tick, step, idsOut));
+		assert(tick == 7);
+		assert(step == 5000);
+		assert(idsOut == idsIn);
 	}
 
 	return EXIT_SUCCESS;

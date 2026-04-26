@@ -13,6 +13,7 @@
 #include <CLI11.hpp>
 
 #include <SFML/Graphics.hpp>
+#include <SFML/Window/Keyboard.hpp>
 
 #include <enet/enet.h>
 
@@ -167,6 +168,12 @@ int main(int argc, char** argv) {
 	std::uint8_t mpShipThrustPercent = 100;
 	float mpShipDeltaVCurrentMps = 0.0f;
 	float mpShipDeltaVMaxMps = 0.0f;
+	/// From last own-ship `ShipState`: physics step index in that message and first step shell may
+	/// fire again.
+	std::uint64_t mpOwnShipStateGlobalPhysicsStep = 0;
+	std::uint64_t mpShellReadyGlobalPhysicsStep = 0;
+	/// Server/client sim `timeScale` (sim s / real s) for encoding shell speed in inputs.
+	double mpNetPhysicsTimeScale = 1.0;
 
 	if (multiplayer) {
 		if (enet_initialize() != 0) {
@@ -239,6 +246,9 @@ int main(int argc, char** argv) {
 	std::vector<sf::Vector2f> shipPredictionOffsets;
 	std::optional<sim::BodyId> shipPredictionBodyId;
 	bool shipPredictionStoppedOnEncounter = false;
+	std::vector<sf::Vector2f> shellPrediction;
+	/// Reference body id for `shellPrediction` offsets (selected if any, else firer).
+	std::optional<sim::BodyId> shellPredictionAnchorBodyId;
 	std::optional<sim::BodyId> trackedFollowId;
 	std::optional<std::pair<double, double>> followViewOffset;
 	bool wasFollowCamera = false;
@@ -292,6 +302,9 @@ int main(int argc, char** argv) {
 			case ui::Action::ToggleShipPrediction:
 				ui.showShipSelfPrediction = !ui.showShipSelfPrediction;
 				break;
+			case ui::Action::ToggleShellPrediction:
+				ui.showShellPrediction = !ui.showShellPrediction;
+				break;
 		}
 	};
 
@@ -305,6 +318,8 @@ int main(int argc, char** argv) {
 			}
 		} else if (action.itemId == "predict.ship") {
 			ui.showShipSelfPrediction = !ui.showShipSelfPrediction;
+		} else if (action.itemId == "predict.shell") {
+			ui.showShellPrediction = !ui.showShellPrediction;
 		} else if (action.itemId == "follow.mode") {
 			dispatchAction(ui::Action::ToggleFollowMode);
 		} else if (action.itemId == "trace.relative") {
@@ -618,6 +633,8 @@ int main(int argc, char** argv) {
 				trackedFollowId = mpOwnShipId;
 				followViewOffset = {0.0, 0.0};
 				mpHudServerTick = joinTick;
+				mpNetPhysicsTimeScale =
+				    (std::isfinite(joinTimeScale) && joinTimeScale > 0.0) ? joinTimeScale : 1.0;
 				setStatus("Joined multiplayer session.", 2.5);
 			}
 			if (mpSessionJoined) {
@@ -627,11 +644,14 @@ int main(int argc, char** argv) {
 					mpSessionJoined = false;
 					mpShipReplica.clear();
 					mpPrevOwnShipId = 0;
-					mpShipMouseAim = false;
+					mpShipMouseAim = true;
 					mpShipHeadingInited = false;
 					mpShipThrustPercent = 100;
 					mpShipDeltaVCurrentMps = 0.0f;
 					mpShipDeltaVMaxMps = 0.0f;
+					mpOwnShipStateGlobalPhysicsStep = 0;
+					mpShellReadyGlobalPhysicsStep = 0;
+					mpNetPhysicsTimeScale = 1.0;
 				} else {
 					while (true) {
 						std::uint64_t mergeTick = 0;
@@ -643,6 +663,21 @@ int main(int argc, char** argv) {
 						ui.traces.applyMergeRemap(netMerges);
 						if (mpSim.has_value()) {
 							mpSim->postMergeDeletes(std::move(netMerges));
+						}
+					}
+					while (true) {
+						std::uint64_t delTick = 0;
+						std::uint64_t delStep = 0;
+						std::vector<sim::BodyId> delIds;
+						if (!mpClient->takeNextBodyDeleteBatch(delTick, delStep, delIds)) {
+							break;
+						}
+						(void)delTick;
+						(void)delStep;
+						ui.selection.applyBodyDeletes(delIds);
+						ui.traces.applyBodyDeletes(delIds);
+						if (mpSim.has_value()) {
+							mpSim->postBodyDeleteBatch(std::move(delIds));
 						}
 					}
 
@@ -666,6 +701,8 @@ int main(int argc, char** argv) {
 						if (s.bodyId == mpOwnShipId) {
 							mpShipDeltaVCurrentMps = s.deltaVCurrentMps;
 							mpShipDeltaVMaxMps = s.deltaVMaxMps;
+							mpOwnShipStateGlobalPhysicsStep = s.globalPhysicsStep;
+							mpShellReadyGlobalPhysicsStep = s.shellReadyGlobalPhysicsStep;
 						}
 					}
 
@@ -701,6 +738,8 @@ int main(int argc, char** argv) {
 							mpShipMouseAim = false;
 							mpShipDeltaVCurrentMps = 0.0f;
 							mpShipDeltaVMaxMps = 0.0f;
+							mpOwnShipStateGlobalPhysicsStep = 0;
+							mpShellReadyGlobalPhysicsStep = 0;
 						}
 						mpPrevOwnShipId = mpOwnShipId;
 					}
@@ -775,6 +814,30 @@ int main(int argc, char** argv) {
 						        : 0);
 						in.facingRadians = static_cast<float>(facing);
 						in.thrustPercent = mpShipThrustPercent;
+						in.firePrimary = static_cast<std::uint8_t>(
+						    windowKeyboardActive && !ui.menu.active() &&
+						            keysHeld.down(sf::Keyboard::Key::Space)
+						        ? 1
+						        : 0);
+						double shellAim = facing;
+						double shellExtraSpeed = 0.0;
+						const double shellTs =
+						    (std::isfinite(mpNetPhysicsTimeScale) && mpNetPhysicsTimeScale > 0.0)
+						        ? mpNetPhysicsTimeScale
+						        : 1.0;
+						if (shipIt != bodies.end()) {
+							const double dx = mouseWorld.x - shipIt->x;
+							const double dy = mouseWorld.y - shipIt->y;
+							const double dist = std::sqrt(dx * dx + dy * dy);
+							if (dist > 1e-6) {
+								shellAim = std::atan2(dy, dx);
+								// Aim distance is a per-real-second speed intent; packet carries
+								// per sim-second magnitude (matches body velocity units).
+								shellExtraSpeed = dist / shellTs;
+							}
+						}
+						in.shellAimRadians = static_cast<float>(shellAim);
+						in.shellExtraSpeed = static_cast<float>(shellExtraSpeed);
 						mpClient->sendInput(in);
 						// Own-ship `mpShipReplica` thrust/facing come from server `ShipState` only
 						// (applied above) so client physics matches periodic world snapshots.
@@ -789,6 +852,10 @@ int main(int argc, char** argv) {
 			mpSim->copyLatestRenderPublish(pub);
 			mpRenderFrame = std::move(pub);
 			bodies = mpRenderFrame->bodies;
+			const double pubTs = mpRenderFrame->config.timeScale;
+			if (std::isfinite(pubTs) && pubTs > 0.0) {
+				mpNetPhysicsTimeScale = pubTs;
+			}
 		}
 
 		if (multiplayer && mpSessionJoined && mpSim.has_value()) {
@@ -1045,12 +1112,67 @@ int main(int argc, char** argv) {
 				}
 			}
 		}
+		shellPrediction.clear();
+		shellPredictionAnchorBodyId.reset();
+		if (ui.showShellPrediction) {
+			const sim::BodySnapshot* shipForShell = nullptr;
+			if (mpOwnShipId != 0) {
+				if (const auto it = std::find_if(
+				        bodies.begin(), bodies.end(),
+				        [&](const sim::BodySnapshot& b) { return b.id == mpOwnShipId; });
+				    it != bodies.end()) {
+					shipForShell = &*it;
+				}
+			} else if (!multiplayer && selectedBody.has_value()) {
+				shipForShell = &*selectedBody;
+			}
+			if (shipForShell != nullptr) {
+				const render::Renderer::WorldCoordsD mouseWorld =
+				    renderer.screenToWorldD(sf::Mouse::getPosition(window));
+				const double dx = mouseWorld.x - shipForShell->x;
+				const double dy = mouseWorld.y - shipForShell->y;
+				double aim = 0.0;
+				double extraSpeed = 0.0;
+				if (dx * dx + dy * dy > 1e-12) {
+					aim = std::atan2(dy, dx);
+					extraSpeed = std::sqrt(dx * dx + dy * dy);
+				} else {
+					aim = 0.0;
+				}
+				const double ts =
+				    (std::isfinite(cfg.timeScale) && cfg.timeScale > 0.0) ? cfg.timeScale : 1.0;
+				const double speedDesiredSim = extraSpeed / ts;
+				const double speedSim =
+				    std::clamp(speedDesiredSim, net::kShellSpeedMin, net::kShellSpeedMax);
+				const double muzzleOffset =
+				    shipForShell->radius + net::kShellRadius + net::kShellMuzzleSurfaceGapWorld;
+				const sim::SpawnCommand shellSpawn{
+				    .x = shipForShell->x + std::cos(aim) * muzzleOffset,
+				    .y = shipForShell->y + std::sin(aim) * muzzleOffset,
+				    .vx = shipForShell->vx + std::cos(aim) * speedSim,
+				    .vy = shipForShell->vy + std::sin(aim) * speedSim,
+				    .mass = net::kShellMass,
+				    .radius = net::kShellRadius,
+				    .name = "shell/prediction",
+				};
+				sim::BodyId shellRelRefId = shipForShell->id;
+				if (selectedBody.has_value()) {
+					shellRelRefId = selectedBody->id;
+				}
+				const ui::PredictionPath shellPath = ui.predictor.predictSpawnRelativeToBody(
+				    bodies, shellSpawn, shellRelRefId, cfg.gravitationalConstant,
+				    cfg.softeningEpsilon);
+				shellPrediction = shellPath.points;
+				shellPredictionAnchorBodyId = shellRelRefId;
+			}
+		}
 
 		std::vector<ui::MenuItem> menuItems{
 		    {"trace.enabled", "Trails", ui.traces.settings().enabled ? "On" : "Off", false},
 		    {"trace.relative", "Trails Frame", ui.traces.settings().relative ? "Relative" : "World",
 		     false},
 		    {"predict.ship", "Ship Prediction", ui.showShipSelfPrediction ? "On" : "Off", false},
+		    {"predict.shell", "Shell Prediction", ui.showShellPrediction ? "On" : "Off", false},
 		    {"follow.mode", "Follow Mode",
 		     ui.followCameraMode == ui::UiState::FollowCameraMode::FollowOwnShip ? "Own ship"
 		                                                                         : "Selected/0,0",
@@ -1080,6 +1202,30 @@ int main(int argc, char** argv) {
 		renderer.draw(bodies,
 		              mpOwnShipId == 0 ? std::nullopt : std::optional<sim::BodyId>(mpOwnShipId),
 		              playerFacing, mpDrawShipFacingsPtr);
+		if (ui.showShellPrediction && shellPrediction.size() >= 2 &&
+		    shellPredictionAnchorBodyId.has_value()) {
+			// Points are time-synchronized (shell − reference body) from the predictor; reference
+			// is the selected body when one exists, otherwise the firer. Re-anchor with that body's
+			// current world position (trail-relative style: p − r(t) + anchor).
+			const sim::BodySnapshot* shellAnchor = nullptr;
+			if (const auto it = std::find_if(bodies.begin(), bodies.end(),
+			                                 [&](const sim::BodySnapshot& b) {
+				                                 return b.id == *shellPredictionAnchorBodyId;
+			                                 });
+			    it != bodies.end()) {
+				shellAnchor = &*it;
+			}
+			if (shellAnchor != nullptr) {
+				sf::VertexArray strip(sf::PrimitiveType::LineStrip, shellPrediction.size());
+				for (std::size_t i = 0; i < shellPrediction.size(); ++i) {
+					const double wx = static_cast<double>(shellPrediction[i].x) + shellAnchor->x;
+					const double wy = static_cast<double>(shellPrediction[i].y) + shellAnchor->y;
+					strip[i].position = renderer.worldToRenderLocal(wx, wy);
+					strip[i].color = sf::Color(255, 120, 90, 140);
+				}
+				window.draw(strip);
+			}
+		}
 		{
 			double rox = 0.0;
 			double roy = 0.0;
@@ -1153,14 +1299,22 @@ int main(int argc, char** argv) {
 		hudLines.push_back(
 		    "Trails: " + std::string(ui.traces.settings().enabled ? "On" : "Off") + " (" +
 		    std::string(ui.traces.settings().relative ? "Relative" : "World") + ")" +
-		    " | Ship prediction: " + std::string(ui.showShipSelfPrediction ? "On" : "Off"));
+		    " | Ship prediction: " + std::string(ui.showShipSelfPrediction ? "On" : "Off") +
+		    " | Shell prediction: " + std::string(ui.showShellPrediction ? "On" : "Off"));
 		if (!ui.statusMessage.empty()) {
 			hudLines.push_back("Status: " + ui.statusMessage);
 		}
 		overlay.drawHudPanel(window, hudLines, ui.input.legendLines(ui.menu.active()), false);
 		if (multiplayer && mpSessionJoined && mpOwnShipId != 0) {
+			const float shellReloadDisplaySec =
+			    (mpShellReadyGlobalPhysicsStep > mpOwnShipStateGlobalPhysicsStep)
+			        ? static_cast<float>(static_cast<double>(mpShellReadyGlobalPhysicsStep -
+			                                                 mpOwnShipStateGlobalPhysicsStep) *
+			                             net::kRealSecondsPerPhysicsStep)
+			        : 0.0f;
 			overlay.drawShipThrustHud(window, static_cast<int>(mpShipThrustPercent),
-			                          mpShipDeltaVCurrentMps, mpShipDeltaVMaxMps);
+			                          mpShipDeltaVCurrentMps, mpShipDeltaVMaxMps,
+			                          shellReloadDisplaySec);
 		}
 
 		if (ui.menu.active()) {

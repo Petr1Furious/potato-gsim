@@ -50,6 +50,12 @@ void TraceStore::applyMergeRemap(const std::vector<std::pair<sim::BodyId, sim::B
 	}
 }
 
+void TraceStore::applyBodyDeletes(const std::vector<sim::BodyId>& ids) {
+	for (const sim::BodyId id : ids) {
+		traces_.erase(id);
+	}
+}
+
 void TraceStore::ingest(const std::vector<sim::BodySnapshot>& bodies, double timeSeconds) {
 	if (!settings_.enabled) {
 		return;

@@ -73,6 +73,7 @@ void MpClient::disconnect() {
 	pendingShips_.clear();
 	pendingWorldSnapshots_.clear();
 	pendingMergeBatches_.clear();
+	pendingBodyDeleteBatches_.clear();
 	pendingAuthoritativeUpserts_.clear();
 	haveAuthoritativeUpserts_ = false;
 }
@@ -105,7 +106,7 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 			ShipNetSample s{};
 			if (readShipState(d, len, s.serverTick, s.globalPhysicsStep, s.bodyId, s.px, s.py, s.vx,
 			                  s.vy, s.facingRadians, s.thrustForward, s.thrustPercent,
-			                  s.deltaVCurrentMps, s.deltaVMaxMps)) {
+			                  s.deltaVCurrentMps, s.deltaVMaxMps, s.shellReadyGlobalPhysicsStep)) {
 				pendingShips_.push_back(s);
 			}
 		} break;
@@ -142,6 +143,18 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 				                                    std::make_move_iterator(bodies.begin()),
 				                                    std::make_move_iterator(bodies.end()));
 				haveAuthoritativeUpserts_ = true;
+			}
+		} break;
+		case MsgType::BodyDeleteBatch: {
+			std::uint64_t tick = 0;
+			std::uint64_t step = 0;
+			std::vector<sim::BodyId> ids;
+			if (readBodyDeleteBatch(d, len, tick, step, ids)) {
+				PendingBodyDeleteBatch batch;
+				batch.serverTick = tick;
+				batch.globalPhysicsStep = step;
+				batch.ids = std::move(ids);
+				pendingBodyDeleteBatches_.push_back(std::move(batch));
 			}
 		} break;
 		default:
@@ -341,6 +354,23 @@ bool MpClient::takeNextMergeRemaps(std::uint64_t& tickOut,
 	pendingMergeBatches_.pop_front();
 	tickOut = b.serverTick;
 	pairsOut = std::move(b.pairs);
+	return true;
+}
+
+bool MpClient::takeNextBodyDeleteBatch(std::uint64_t& tickOut,
+                                       std::uint64_t& globalPhysicsStepOut,
+                                       std::vector<sim::BodyId>& idsOut) {
+	if (pendingBodyDeleteBatches_.empty()) {
+		tickOut = 0;
+		globalPhysicsStepOut = 0;
+		idsOut.clear();
+		return false;
+	}
+	const PendingBodyDeleteBatch b = std::move(pendingBodyDeleteBatches_.front());
+	pendingBodyDeleteBatches_.pop_front();
+	tickOut = b.serverTick;
+	globalPhysicsStepOut = b.globalPhysicsStep;
+	idsOut = std::move(b.ids);
 	return true;
 }
 

@@ -88,6 +88,20 @@ void MpClientSim::postMergeDeletes(std::vector<std::pair<sim::BodyId, sim::BodyI
 	});
 }
 
+void MpClientSim::postBodyDeleteBatch(std::vector<sim::BodyId> ids) {
+	if (ids.empty()) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(workMutex_);
+	workQueue_.push_back([this, ids = std::move(ids)]() mutable {
+		for (const sim::BodyId id : ids) {
+			if (id != 0) {
+				engine_.queueDelete(id);
+			}
+		}
+	});
+}
+
 void MpClientSim::postAuthoritativeUpserts(std::vector<sim::AuthoritativeBody> bodies) {
 	if (bodies.empty()) {
 		return;

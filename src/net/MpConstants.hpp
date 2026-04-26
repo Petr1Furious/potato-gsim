@@ -40,4 +40,18 @@ inline constexpr double kMaxWallPhysicsDebtSeconds = 0.5;
 /// stalls (physics steps; at scale 1 this is ~2 s).
 inline constexpr std::uint64_t kMaxPredictionLeadPhysicsSteps = 480;
 
+/// Multiplayer shell weapon tuning.
+inline constexpr double kShellRadius = 4.0;
+/// Gap between ship hull and shell hull at spawn (world units); shell center is
+/// `shipRadius + kShellRadius + kShellMuzzleSurfaceGap` along aim from ship center.
+inline constexpr double kShellMuzzleSurfaceGapWorld = kShellRadius;
+inline constexpr double kShellMass = 8.0;
+inline constexpr double kShellSpeedMin = 1000.0;
+inline constexpr double kShellSpeedMax = 8000.0;
+inline constexpr double kShellExplosionRadius = 20000000.0;
+/// Wall time before a shell may damage **only the ship that fired it** (other ships: no delay).
+inline constexpr double kShellArmDelayRealSeconds = 0.50;
+inline constexpr double kShellLifetimeRealSeconds = 10.0;
+inline constexpr double kShellCooldownRealSeconds = 1.00;
+
 }  // namespace net

@@ -21,6 +21,8 @@ enum class MsgType : std::uint8_t {
 	MergeRemapBatch = 6,
 	/// Reliable: add or update server bodies (e.g. another player ship after join).
 	AuthoritativeBodyUpsert = 7,
+	/// Reliable: remove bodies immediately (e.g. shell hit, shell expiry); same channel as upserts.
+	BodyDeleteBatch = 8,
 };
 
 #pragma pack(push, 1)
@@ -30,6 +32,15 @@ struct ClientInputPayload {
 	float facingRadians = 0.f;
 	/// 0–100: scales forward thrust acceleration from this client.
 	std::uint8_t thrustPercent = 100;
+	/// Non-zero while the client requests primary fire for this input sample (server latches per
+	/// tick).
+	std::uint8_t firePrimary = 0;
+	/// World-space launch direction for shell fire.
+	float shellAimRadians = 0.f;
+	/// Extra shell launch speed magnitude in **world units per simulated second** (client: ship→
+	/// cursor distance ÷ `SimulationConfig::timeScale`). Server clamps to `kShellSpeedMin` /
+	/// `kShellSpeedMax`.
+	float shellExtraSpeed = 0.f;
 };
 #pragma pack(pop)
 
@@ -65,6 +76,7 @@ bool writeShipState(std::uint64_t serverTick,
                     std::uint8_t thrustPercent,
                     float deltaVCurrentMps,
                     float deltaVMaxMps,
+                    std::uint64_t shellReadyGlobalPhysicsStep,
                     std::vector<std::uint8_t>& out);
 bool readShipState(const std::uint8_t* data,
                    std::size_t len,
@@ -79,7 +91,8 @@ bool readShipState(const std::uint8_t* data,
                    std::uint8_t& thrustForwardOut,
                    std::uint8_t& thrustPercentOut,
                    float& deltaVCurrentMpsOut,
-                   float& deltaVMaxMpsOut);
+                   float& deltaVMaxMpsOut,
+                   std::uint64_t& shellReadyGlobalPhysicsStepOut);
 
 /// Full authoritative rows (same encoding as each `JoinAccept` body): id, pose, dynamics,
 /// mass, radius, UTF-8 name.
@@ -110,5 +123,15 @@ bool readAuthoritativeBodyUpsert(const std::uint8_t* data,
                                  std::uint64_t& serverTickOut,
                                  std::uint64_t& globalPhysicsStepOut,
                                  std::vector<sim::AuthoritativeBody>& bodiesOut);
+
+bool writeBodyDeleteBatch(std::uint64_t serverTick,
+                          std::uint64_t globalPhysicsStep,
+                          const std::vector<sim::BodyId>& ids,
+                          std::vector<std::uint8_t>& out);
+bool readBodyDeleteBatch(const std::uint8_t* data,
+                         std::size_t len,
+                         std::uint64_t& serverTickOut,
+                         std::uint64_t& globalPhysicsStepOut,
+                         std::vector<sim::BodyId>& idsOut);
 
 }  // namespace net

@@ -67,6 +67,9 @@ class MpClientSim {
 	/// Main thread: enqueue merge deletes (`from` ids), applied on sim before snapshot processing.
 	void postMergeDeletes(std::vector<std::pair<sim::BodyId, sim::BodyId>> remaps);
 
+	/// Main thread: enqueue explicit body removals (shell hits, expiry, etc.).
+	void postBodyDeleteBatch(std::vector<sim::BodyId> ids);
+
 	/// Main thread: register new server bodies or refresh existing (e.g. late-joining player
 	/// ships).
 	void postAuthoritativeUpserts(std::vector<sim::AuthoritativeBody> bodies);

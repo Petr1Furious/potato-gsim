@@ -373,7 +373,8 @@ void InspectorOverlay::drawHudPanel(sf::RenderWindow& window,
 void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
                                          const int thrustPercent,
                                          const float deltaVCurrentMps,
-                                         const float deltaVMaxMps) const {
+                                         const float deltaVMaxMps,
+                                         const float shellReloadWallSeconds) const {
 	const sf::View oldView = window.getView();
 	window.setView(makeUiView(window));
 
@@ -421,6 +422,23 @@ void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
 
 		const double dvMps = std::max(0.0, static_cast<double>(deltaVCurrentMps));
 		drawLabelAboveBar(formatSpeedLegacy(dvMps), dvX, 22.0f);
+
+		const double reload = std::max(0.0, static_cast<double>(shellReloadWallSeconds));
+		const float centerX = (dvX + thrustX + colW) * 0.5f;
+		std::string reloadStr = "Shell ready";
+		if (reload > 0.008) {
+			std::ostringstream rs;
+			rs << std::fixed << std::setprecision(2) << reload;
+			reloadStr = "Shell reload " + rs.str() + " s";
+		}
+		sf::Text reloadText(font_, reloadStr, 13);
+		reloadText.setFillColor(reload > 0.008 ? sf::Color(255, 200, 120, 240)
+		                                       : sf::Color(160, 200, 170, 200));
+		const sf::FloatRect rb = reloadText.getLocalBounds();
+		reloadText.setOrigin(
+		    sf::Vector2f(std::round(rb.position.x + rb.size.x * 0.5f), std::round(rb.position.y)));
+		reloadText.setPosition(sf::Vector2f(centerX, y + colH + 14.0f));
+		window.draw(reloadText);
 	}
 
 	window.setView(oldView);

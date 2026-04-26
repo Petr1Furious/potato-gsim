@@ -43,7 +43,8 @@ class InspectorOverlay {
 	void drawShipThrustHud(sf::RenderWindow& window,
 	                       int thrustPercent,
 	                       float deltaVCurrentMps,
-	                       float deltaVMaxMps) const;
+	                       float deltaVMaxMps,
+	                       float shellReloadWallSeconds) const;
 
 	[[nodiscard]] bool available() const { return fontReady_; }
 	[[nodiscard]] const sf::Font* fontPtr() const { return fontReady_ ? &font_ : nullptr; }

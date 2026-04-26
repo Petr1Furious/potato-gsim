@@ -20,6 +20,8 @@ std::optional<Action> InputActions::mapKeyPress(sf::Keyboard::Key key, bool menu
 			return menuActive ? std::nullopt : std::optional<Action>(Action::ToggleRelativeTrails);
 		case sf::Keyboard::Key::P:
 			return menuActive ? std::nullopt : std::optional<Action>(Action::ToggleShipPrediction);
+		case sf::Keyboard::Key::O:
+			return menuActive ? std::nullopt : std::optional<Action>(Action::ToggleShellPrediction);
 		default:
 			return std::nullopt;
 	}
@@ -61,8 +63,8 @@ std::vector<std::string> InputActions::legendLines(bool menuActive) const {
 	return {
 	    "Esc close menu | Up/Down select | Enter apply",
 	    "F follow mode | L trails on/off | T trails relative/world",
-	    "P ship prediction | R reset view | F11 fullscreen",
-	    "W/Up thrust | M aim | Shift/Ctrl thrust | X 0% / Z 100%",
+	    "P ship prediction | O shell prediction | R reset view | F11 fullscreen",
+	    "W/Up thrust | Space fire shell (multiplayer) | M aim | Shift/Ctrl thrust | X 0% / Z 100%",
 	    "Left/Middle drag pan | Wheel zoom",
 	};
 }

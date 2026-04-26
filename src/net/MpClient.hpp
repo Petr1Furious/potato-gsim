@@ -35,6 +35,8 @@ class MpClient {
 		std::uint8_t thrustPercent = 100;
 		float deltaVCurrentMps = 0.f;
 		float deltaVMaxMps = 0.f;
+		/// First `globalPhysicsStep` at which shell may fire again (`<=` sample step means ready).
+		std::uint64_t shellReadyGlobalPhysicsStep = 0;
 	};
 
 	MpClient() = default;
@@ -76,6 +78,10 @@ class MpClient {
 	[[nodiscard]] bool takeNextMergeRemaps(
 	    std::uint64_t& tickOut,
 	    std::vector<std::pair<sim::BodyId, sim::BodyId>>& pairsOut);
+	/// Pops one explicit body-delete batch (FIFO). Returns false when empty.
+	[[nodiscard]] bool takeNextBodyDeleteBatch(std::uint64_t& tickOut,
+	                                           std::uint64_t& globalPhysicsStepOut,
+	                                           std::vector<sim::BodyId>& idsOut);
 	void takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bodiesOut, bool& hadOneOut);
 
    private:
@@ -93,6 +99,11 @@ class MpClient {
 	struct PendingMergeBatch {
 		std::uint64_t serverTick = 0;
 		std::vector<std::pair<sim::BodyId, sim::BodyId>> pairs;
+	};
+	struct PendingBodyDeleteBatch {
+		std::uint64_t serverTick = 0;
+		std::uint64_t globalPhysicsStep = 0;
+		std::vector<sim::BodyId> ids;
 	};
 
 	ENetHost* host_ = nullptr;
@@ -120,6 +131,7 @@ class MpClient {
 	std::vector<ShipNetSample> pendingShips_;
 	std::deque<PendingWorldSnapshot> pendingWorldSnapshots_;
 	std::deque<PendingMergeBatch> pendingMergeBatches_;
+	std::deque<PendingBodyDeleteBatch> pendingBodyDeleteBatches_;
 
 	std::vector<sim::AuthoritativeBody> pendingAuthoritativeUpserts_;
 	bool haveAuthoritativeUpserts_ = false;

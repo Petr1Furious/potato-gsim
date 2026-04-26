@@ -17,7 +17,8 @@ enum class Action {
 	ToggleFollowMode,
 	ToggleTrails,
 	ToggleRelativeTrails,
-	ToggleShipPrediction
+	ToggleShipPrediction,
+	ToggleShellPrediction
 };
 
 struct HoldAdjustments {

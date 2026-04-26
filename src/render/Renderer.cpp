@@ -1,4 +1,5 @@
 #include "render/Renderer.hpp"
+#include "net/MpConstants.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -203,6 +204,28 @@ void drawOrientedShip(sf::RenderWindow& window,
 	window.draw(ship);
 }
 
+[[nodiscard]] bool isMpShellBody(const sim::BodySnapshot& b) {
+	constexpr double eps = 1e-6;
+	return std::abs(b.mass - net::kShellMass) < eps && std::abs(b.radius - net::kShellRadius) < eps;
+}
+
+void drawShellWithBlast(sf::RenderWindow& window, const sf::Vector2f& pos, float shellRadiusWorld) {
+	sf::CircleShape blast(static_cast<float>(net::kShellExplosionRadius));
+	blast.setOrigin(sf::Vector2f(static_cast<float>(net::kShellExplosionRadius),
+	                             static_cast<float>(net::kShellExplosionRadius)));
+	blast.setPosition(pos);
+	blast.setFillColor(sf::Color(255, 120, 90, 52));
+	blast.setOutlineColor(sf::Color(255, 200, 150, 130));
+	blast.setOutlineThickness(1.0f);
+	window.draw(blast);
+
+	sf::CircleShape core(shellRadiusWorld);
+	core.setOrigin(sf::Vector2f(shellRadiusWorld, shellRadiusWorld));
+	core.setPosition(pos);
+	core.setFillColor(sf::Color(255, 200, 160, 235));
+	window.draw(core);
+}
+
 }  // namespace
 
 void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
@@ -226,6 +249,7 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
 
 	for (const sim::BodySnapshot& body : bodies) {
 		const bool isPlayer = playerShipId.has_value() && body.id == *playerShipId;
+		const bool isShell = isMpShellBody(body);
 		const float radiusPx = static_cast<float>(body.radius) * pixelsPerWorld;
 		const float px = static_cast<float>(body.x - ox);
 		const float py = static_cast<float>(body.y - oy);
@@ -264,6 +288,9 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
 				                 sf::Color(130, 200, 255, 228), sf::Color(18, 40, 58, 235),
 				                 sf::Color(200, 235, 255, 85));
 			}
+		} else if (isShell) {
+			const float shellWorldRadiusMin = 1.5f * worldUnitsPerPixel();
+			drawShellWithBlast(window_, pos, std::max(worldRadius, shellWorldRadiusMin));
 		} else if (radiusPx > 0.5f) {
 			circle_.setRadius(worldRadius);
 			circle_.setOrigin(sf::Vector2f(worldRadius, worldRadius));

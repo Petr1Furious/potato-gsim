@@ -233,6 +233,9 @@ bool writeClientInput(const ClientInputPayload& in, std::vector<std::uint8_t>& o
 	appendU8(out, in.thrustForward);
 	appendF32(out, in.facingRadians);
 	appendU8(out, in.thrustPercent);
+	appendU8(out, in.firePrimary);
+	appendF32(out, in.shellAimRadians);
+	appendF32(out, in.shellExtraSpeed);
 	return true;
 }
 
@@ -257,6 +260,22 @@ bool readClientInput(const std::uint8_t* data, const std::size_t len, ClientInpu
 		return false;
 	}
 	out.thrustPercent = *p++;
+	out.firePrimary = 0;
+	out.shellAimRadians = out.facingRadians;
+	out.shellExtraSpeed = 0.f;
+	if (static_cast<std::size_t>(end - p) >= 1) {
+		out.firePrimary = *p++;
+	}
+	if (static_cast<std::size_t>(end - p) >= 4) {
+		if (!readF32(p, end, out.shellAimRadians)) {
+			return false;
+		}
+	}
+	if (static_cast<std::size_t>(end - p) >= 4) {
+		if (!readF32(p, end, out.shellExtraSpeed)) {
+			return false;
+		}
+	}
 	return p == end;
 }
 
@@ -272,6 +291,7 @@ bool writeShipState(const std::uint64_t serverTick,
                     const std::uint8_t thrustPercent,
                     const float deltaVCurrentMps,
                     const float deltaVMaxMps,
+                    const std::uint64_t shellReadyGlobalPhysicsStep,
                     std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::ShipState);
@@ -287,6 +307,7 @@ bool writeShipState(const std::uint64_t serverTick,
 	appendU8(out, thrustPercent);
 	appendF32(out, deltaVCurrentMps);
 	appendF32(out, deltaVMaxMps);
+	appendU64(out, shellReadyGlobalPhysicsStep);
 	return true;
 }
 
@@ -303,7 +324,8 @@ bool readShipState(const std::uint8_t* data,
                    std::uint8_t& thrustForwardOut,
                    std::uint8_t& thrustPercentOut,
                    float& deltaVCurrentMpsOut,
-                   float& deltaVMaxMpsOut) {
+                   float& deltaVMaxMpsOut,
+                   std::uint64_t& shellReadyGlobalPhysicsStepOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
@@ -311,6 +333,7 @@ bool readShipState(const std::uint8_t* data,
 	thrustPercentOut = 100;
 	deltaVCurrentMpsOut = 0.0f;
 	deltaVMaxMpsOut = 0.0f;
+	shellReadyGlobalPhysicsStepOut = 0;
 	if (!readHeader(p, end, MsgType::ShipState, ver)) {
 		return false;
 	}
@@ -330,6 +353,11 @@ bool readShipState(const std::uint8_t* data,
 	p += 2;
 	if (static_cast<std::size_t>(end - p) >= 8) {
 		if (!readF32(p, end, deltaVCurrentMpsOut) || !readF32(p, end, deltaVMaxMpsOut)) {
+			return false;
+		}
+	}
+	if (static_cast<std::size_t>(end - p) >= 8) {
+		if (!readU64(p, end, shellReadyGlobalPhysicsStepOut)) {
 			return false;
 		}
 	}
@@ -468,6 +496,55 @@ bool readAuthoritativeBodyUpsert(const std::uint8_t* data,
 			return false;
 		}
 		bodiesOut.push_back(std::move(b));
+	}
+	return p == end;
+}
+
+bool writeBodyDeleteBatch(const std::uint64_t serverTick,
+                          const std::uint64_t globalPhysicsStep,
+                          const std::vector<sim::BodyId>& ids,
+                          std::vector<std::uint8_t>& out) {
+	out.clear();
+	writeHeader(out, MsgType::BodyDeleteBatch);
+	appendU64(out, serverTick);
+	appendU64(out, globalPhysicsStep);
+	appendU32(out, static_cast<std::uint32_t>(ids.size()));
+	for (const sim::BodyId id : ids) {
+		appendU64(out, id);
+	}
+	return true;
+}
+
+bool readBodyDeleteBatch(const std::uint8_t* data,
+                         const std::size_t len,
+                         std::uint64_t& serverTickOut,
+                         std::uint64_t& globalPhysicsStepOut,
+                         std::vector<sim::BodyId>& idsOut) {
+	const std::uint8_t* p = data;
+	const std::uint8_t* end = data + len;
+	std::uint8_t ver = 0;
+	serverTickOut = 0;
+	globalPhysicsStepOut = 0;
+	if (!readHeader(p, end, MsgType::BodyDeleteBatch, ver)) {
+		return false;
+	}
+	if (!readU64(p, end, serverTickOut) || !readU64(p, end, globalPhysicsStepOut)) {
+		return false;
+	}
+	std::uint32_t n = 0;
+	if (!readU32(p, end, n) || n > 1'000'000u) {
+		return false;
+	}
+	idsOut.clear();
+	idsOut.reserve(n);
+	for (std::uint32_t i = 0; i < n; ++i) {
+		sim::BodyId id = 0;
+		if (!readU64(p, end, id)) {
+			return false;
+		}
+		if (id != 0) {
+			idsOut.push_back(id);
+		}
 	}
 	return p == end;
 }

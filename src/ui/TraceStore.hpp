@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sim/BodyId.hpp"
 #include "sim/SimulationEngine.hpp"
 
 #include <SFML/Graphics.hpp>
@@ -32,6 +33,7 @@ class TraceStore {
 
 	void clear() { traces_.clear(); }
 	void applyMergeRemap(const std::vector<std::pair<sim::BodyId, sim::BodyId>>& remap);
+	void applyBodyDeletes(const std::vector<sim::BodyId>& ids);
 	void ingest(const std::vector<sim::BodySnapshot>& bodies, double timeSeconds);
 
 	void draw(sf::RenderWindow& window,

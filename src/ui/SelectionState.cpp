@@ -24,6 +24,19 @@ void SelectionState::applyMergeRemap(
 	selectedId_ = current;
 }
 
+void SelectionState::applyBodyDeletes(const std::vector<sim::BodyId>& ids) {
+	if (!selectedId_.has_value() || ids.empty()) {
+		return;
+	}
+	const sim::BodyId want = *selectedId_;
+	for (const sim::BodyId id : ids) {
+		if (id == want) {
+			selectedId_.reset();
+			return;
+		}
+	}
+}
+
 void SelectionState::validateAgainstEngine(const sim::SimulationEngine& engine) {
 	if (!selectedId_.has_value()) {
 		return;

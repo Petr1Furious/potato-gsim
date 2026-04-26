@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sim/BodyId.hpp"
 #include "sim/SimulationEngine.hpp"
 
 #include <SFML/System/Vector2.hpp>
@@ -20,6 +21,7 @@ class SelectionState {
 	[[nodiscard]] std::optional<sim::BodyId> selectedId() const { return selectedId_; }
 
 	void applyMergeRemap(const std::vector<std::pair<sim::BodyId, sim::BodyId>>& remap);
+	void applyBodyDeletes(const std::vector<sim::BodyId>& ids);
 	void validateAgainstEngine(const sim::SimulationEngine& engine);
 	void validateAgainstBodies(const std::vector<sim::BodySnapshot>& bodies);
 

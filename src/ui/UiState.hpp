@@ -20,6 +20,7 @@ struct UiState {
 	enum class FollowCameraMode { FollowOwnShip, FollowSelectionOrOrigin };
 	FollowCameraMode followCameraMode = FollowCameraMode::FollowOwnShip;
 	bool showShipSelfPrediction = true;
+	bool showShellPrediction = false;
 	std::string statusMessage;
 };
 
