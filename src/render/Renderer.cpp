@@ -231,7 +231,8 @@ void drawShellWithBlast(sf::RenderWindow& window, const sf::Vector2f& pos, float
 void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
                     const std::optional<sim::BodyId> playerShipId,
                     const std::optional<float> playerFacingRadians,
-                    const std::unordered_map<sim::BodyId, float>* multiplayerShipFacings) {
+                    const std::unordered_map<sim::BodyId, float>* multiplayerShipFacings,
+                    const std::optional<std::string_view> ownShipDisplayName) {
 	window_.setView(view_);
 	window_.clear(sf::Color(8, 10, 16));
 
@@ -248,7 +249,11 @@ void Renderer::draw(const std::vector<sim::BodySnapshot>& bodies,
 	sf::VertexArray points(sf::PrimitiveType::Points);
 
 	for (const sim::BodySnapshot& body : bodies) {
-		const bool isPlayer = playerShipId.has_value() && body.id == *playerShipId;
+		const bool nameMatchesOwn = ownShipDisplayName.has_value() &&
+		                            !ownShipDisplayName->empty() &&
+		                            body.name == *ownShipDisplayName;
+		const bool isPlayer =
+		    (playerShipId.has_value() && body.id == *playerShipId) || nameMatchesOwn;
 		const bool isShell = isMpShellBody(body);
 		const float radiusPx = static_cast<float>(body.radius) * pixelsPerWorld;
 		const float px = static_cast<float>(body.x - ox);

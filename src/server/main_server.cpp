@@ -55,6 +55,8 @@ struct ServerOptions {
 	double physicsRealStepSeconds = net::kDefaultRealSecondsPerPhysicsStep;
 	/// Ship thrust acceleration at 100% (m/s²); sent to clients in JoinAccept.
 	double shipThrustAccel = net::kDefaultShipThrustAccel;
+	/// Wall seconds before a destroyed ship respawns (server net ticks).
+	double respawnDelaySeconds = 3.0;
 
 	scenario::RandomPresetConfig randomCfg{};
 };
@@ -78,6 +80,8 @@ struct ClientSlot {
 	std::uint8_t appliedThrustPercent = 0;
 	bool fireRequested = false;
 	double shellCooldownWallSeconds = 0.0;
+	/// When non-zero, `hasShip` is false and respawn is scheduled at this server tick (inclusive).
+	std::uint64_t respawnAtServerTick = 0;
 };
 
 struct ActiveShell {
@@ -232,6 +236,32 @@ void sendJoinReject(ENetHost* enetHost,
 	enet_peer_disconnect(peer, 0);
 }
 
+void schedulePlayerRespawn(ClientSlot& c,
+                           const std::uint64_t serverTick,
+                           const double tickPeriod,
+                           const double respawnDelaySeconds,
+                           std::uint64_t& packetsTxCounter) {
+	c.hasShip = false;
+	c.shipId = 0;
+	c.needJoinSnapshot = false;
+	c.shipAuthoritativeUpsertSent = false;
+	if (c.respawnAtServerTick != 0) {
+		return;
+	}
+	const std::uint64_t nTicks = std::max<std::uint64_t>(
+	    1, static_cast<std::uint64_t>(std::ceil(respawnDelaySeconds / tickPeriod)));
+	c.respawnAtServerTick = serverTick + nTicks;
+	if (c.peer != nullptr) {
+		const double wallRem = static_cast<double>(nTicks) * tickPeriod;
+		std::vector<std::uint8_t> rcPayload;
+		net::writeRespawnCountdown(serverTick, c.respawnAtServerTick, wallRem, rcPayload);
+		ENetPacket* rcPacket =
+		    enet_packet_create(rcPayload.data(), rcPayload.size(), ENET_PACKET_FLAG_RELIABLE);
+		enet_peer_send(c.peer, 1, rcPacket);
+		++packetsTxCounter;
+	}
+}
+
 std::string trimJoinName(std::string s) {
 	while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) {
 		s.pop_back();
@@ -322,6 +352,9 @@ int main(int argc, char** argv) {
 	app.add_option("--ship-thrust-accel", opts.shipThrustAccel,
 	               "Ship forward thrust acceleration at 100% thrust (m/s^2)")
 	    ->capture_default_str();
+	app.add_option("--respawn-delay", opts.respawnDelaySeconds,
+	               "Wall seconds before a destroyed ship respawns (0 = immediate next tick)")
+	    ->capture_default_str();
 
 	app.add_option("--random-count", opts.randomCfg.count, "Random preset body count")
 	    ->capture_default_str();
@@ -363,6 +396,7 @@ int main(int argc, char** argv) {
 	opts.deltaVRegenPerRealSecond = std::max(0.0, opts.deltaVRegenPerRealSecond);
 	opts.physicsRealStepSeconds = std::clamp(opts.physicsRealStepSeconds, 1.0 / 600.0, 1.0 / 30.0);
 	opts.shipThrustAccel = std::clamp(opts.shipThrustAccel, 1e-6, 10.0);
+	opts.respawnDelaySeconds = std::max(0.0, opts.respawnDelaySeconds);
 
 	if (enet_initialize() != 0) {
 		logErr("enet_initialize failed");
@@ -406,10 +440,11 @@ int main(int argc, char** argv) {
 
 	std::fprintf(stderr,
 	             "potato_gsim_server *:%d | preset=%s | timeScale=%.6g | netTickHz=%d | "
-	             "snapshotEvery=%llu ticks | maxClients=%d | physStep=%.6g s | thrustAccel=%.6g\n",
+	             "snapshotEvery=%llu ticks | maxClients=%d | physStep=%.6g s | thrustAccel=%.6g | "
+	             "respawnDelay=%.3g s\n",
 	             opts.port, presetName(opts.presetKind), opts.simTimeScale, opts.netTickHz,
 	             static_cast<unsigned long long>(opts.worldSnapshotIntervalTicks), opts.maxClients,
-	             opts.physicsRealStepSeconds, opts.shipThrustAccel);
+	             opts.physicsRealStepSeconds, opts.shipThrustAccel, opts.respawnDelaySeconds);
 
 	std::uint64_t serverTick = 0;
 	std::uint64_t globalPhysicsStep = 0;
@@ -562,6 +597,31 @@ int main(int argc, char** argv) {
 		}
 		lastTick = now;
 		++serverTick;
+
+		for (ClientSlot& c : clients) {
+			if (c.peer == nullptr || c.shipName.empty()) {
+				continue;
+			}
+			if (c.hasShip || c.respawnAtServerTick == 0 || serverTick < c.respawnAtServerTick) {
+				continue;
+			}
+			sim::SpawnCommand shipSpawn = makeShipSpawn(nextShipSpawnIndex, opts);
+			++nextShipSpawnIndex;
+			shipSpawn.name = c.shipName;
+			engine.queueSpawn(std::move(shipSpawn));
+			c.shipAuthoritativeUpsertSent = false;
+			c.deltaVCurrent = opts.maxDeltaV;
+			c.wallSecondsSinceThrust = 0.0;
+			c.respawnAtServerTick = 0;
+			std::vector<std::uint8_t> rspPayload;
+			net::writeRespawnCountdown(serverTick, 0, 0.0, rspPayload);
+			ENetPacket* rspPacket =
+			    enet_packet_create(rspPayload.data(), rspPayload.size(), ENET_PACKET_FLAG_RELIABLE);
+			enet_peer_send(c.peer, 1, rspPacket);
+			++packetsTxSinceStressLog;
+			std::fprintf(stderr, "[respawn] client#%llu ship=%s queued\n",
+			             static_cast<unsigned long long>(c.clientLogId), c.shipName.c_str());
+		}
 
 		const sim::SimulationConfig liveCfg = engine.config();
 		const double ts =
@@ -738,6 +798,20 @@ int main(int argc, char** argv) {
 		}
 
 		engine.copyBodies(snaps);
+		for (ClientSlot& c : clients) {
+			if (c.peer == nullptr || !c.hasShip || c.shipId == 0) {
+				continue;
+			}
+			const sim::BodySnapshot* body = findBodyById(snaps, c.shipId);
+			if (body == nullptr || body->name != c.shipName) {
+				std::fprintf(stderr,
+				             "[ship-lost] client#%llu shipId=%llu (merged away or renamed)\n",
+				             static_cast<unsigned long long>(c.clientLogId),
+				             static_cast<unsigned long long>(c.shipId));
+				schedulePlayerRespawn(c, serverTick, tickPeriod, opts.respawnDelaySeconds,
+				                      packetsTxSinceStressLog);
+			}
+		}
 		if (!mergesThisTick.empty()) {
 			std::unordered_set<sim::BodyId> survivorIds;
 			survivorIds.reserve(mergesThisTick.size());
@@ -853,10 +927,8 @@ int main(int argc, char** argv) {
 						    "[ship-destroyed] client#%llu shipId=%llu reason=shell-proximity\n",
 						    static_cast<unsigned long long>(c.clientLogId),
 						    static_cast<unsigned long long>(id));
-						c.hasShip = false;
-						c.shipId = 0;
-						c.needJoinSnapshot = false;
-						c.shipAuthoritativeUpsertSent = false;
+						schedulePlayerRespawn(c, serverTick, tickPeriod, opts.respawnDelaySeconds,
+						                      packetsTxSinceStressLog);
 					}
 				}
 			}
@@ -904,6 +976,8 @@ int main(int argc, char** argv) {
 			++packetsTxSinceStressLog;
 		}
 
+		std::vector<net::ShipStateWire> shipStates;
+		shipStates.reserve(clients.size());
 		for (ClientSlot& c : clients) {
 			if (!c.hasShip) {
 				continue;
@@ -918,17 +992,29 @@ int main(int argc, char** argv) {
 					    std::ceil(c.shellCooldownWallSeconds / opts.physicsRealStepSeconds);
 					shellReadyStep += static_cast<std::uint64_t>(std::max(1.0, steps));
 				}
-				std::vector<std::uint8_t> payload;
-				net::writeShipState(serverTick, globalPhysicsStep, b.id, b.x, b.y, b.vx, b.vy,
-				                    c.lastInput.facingRadians, c.appliedThrustForward,
-				                    c.appliedThrustPercent, static_cast<float>(c.deltaVCurrent),
-				                    static_cast<float>(opts.maxDeltaV), shellReadyStep, payload);
-				ENetPacket* packet =
-				    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
-				enet_host_broadcast(host, 0, packet);
-				++packetsTxSinceStressLog;
+				shipStates.push_back(net::ShipStateWire{
+				    .bodyId = b.id,
+				    .px = b.x,
+				    .py = b.y,
+				    .vx = b.vx,
+				    .vy = b.vy,
+				    .facing = c.lastInput.facingRadians,
+				    .thrustForward = c.appliedThrustForward,
+				    .thrustPercent = c.appliedThrustPercent,
+				    .deltaVCurrentMps = static_cast<float>(c.deltaVCurrent),
+				    .deltaVMaxMps = static_cast<float>(opts.maxDeltaV),
+				    .shellReadyGlobalPhysicsStep = shellReadyStep,
+				});
 				break;
 			}
+		}
+		{
+			std::vector<std::uint8_t> payload;
+			net::writeShipStateBatch(serverTick, globalPhysicsStep, shipStates, payload);
+			ENetPacket* packet =
+			    enet_packet_create(payload.data(), payload.size(), ENET_PACKET_FLAG_RELIABLE);
+			enet_host_broadcast(host, 0, packet);
+			++packetsTxSinceStressLog;
 		}
 
 		if ((serverTick % opts.worldSnapshotIntervalTicks) == 0) {

@@ -40,6 +40,12 @@ class MpClient {
 		std::uint64_t shellReadyGlobalPhysicsStep = 0;
 	};
 
+	struct RespawnCountdownState {
+		std::uint64_t serverTick = 0;
+		std::uint64_t respawnAtServerTick = 0;
+		double wallSecondsRemaining = 0.0;
+	};
+
 	MpClient() = default;
 	MpClient(const MpClient&) = delete;
 	MpClient& operator=(const MpClient&) = delete;
@@ -81,6 +87,8 @@ class MpClient {
 	/// Returns true if a `JoinReject` arrived since last call; fills outputs and clears the latch.
 	[[nodiscard]] bool takeJoinReject(JoinRejectReason& reasonOut, std::string& detailOut);
 	void takeShipSamples(std::vector<ShipNetSample>& out);
+	/// Pops latest received ship-batch server tick (true even if that batch had zero ships).
+	[[nodiscard]] bool takeLatestShipBatchTick(std::uint64_t& tickOut);
 	/// Pops one queued world snapshot (FIFO). Returns false when empty.
 	[[nodiscard]] bool takeNextWorldSnapshot(std::uint64_t& tickOut,
 	                                         std::uint64_t& globalPhysicsStepOut,
@@ -94,6 +102,9 @@ class MpClient {
 	                                           std::uint64_t& globalPhysicsStepOut,
 	                                           std::vector<sim::BodyId>& idsOut);
 	void takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bodiesOut, bool& hadOneOut);
+
+	/// Last received respawn countdown state (valid when `haveAnyOut` is true).
+	void getRespawnCountdownState(RespawnCountdownState& out, bool& haveAnyOut) const;
 
    private:
 	enum class OutboundKind : std::uint8_t { JoinReliable, InputUnreliable };
@@ -146,12 +157,17 @@ class MpClient {
 	std::string pendingJoinRejectDetail_;
 
 	std::vector<ShipNetSample> pendingShips_;
+	std::optional<std::uint64_t> latestShipBatchTick_;
 	std::deque<PendingWorldSnapshot> pendingWorldSnapshots_;
 	std::deque<PendingMergeBatch> pendingMergeBatches_;
 	std::deque<PendingBodyDeleteBatch> pendingBodyDeleteBatches_;
 
 	std::vector<sim::AuthoritativeBody> pendingAuthoritativeUpserts_;
 	bool haveAuthoritativeUpserts_ = false;
+
+	mutable std::mutex respawnMutex_;
+	RespawnCountdownState respawnCountdownState_{};
+	bool haveRespawnCountdownState_ = false;
 };
 
 }  // namespace net

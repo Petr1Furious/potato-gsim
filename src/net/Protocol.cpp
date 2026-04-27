@@ -369,87 +369,76 @@ bool readClientInput(const std::uint8_t* data, const std::size_t len, ClientInpu
 	return p == end;
 }
 
-bool writeShipState(const std::uint64_t serverTick,
-                    const std::uint64_t globalPhysicsStep,
-                    const sim::BodyId bodyId,
-                    const double px,
-                    const double py,
-                    const double vx,
-                    const double vy,
-                    const float facing,
-                    const std::uint8_t thrustForward,
-                    const std::uint8_t thrustPercent,
-                    const float deltaVCurrentMps,
-                    const float deltaVMaxMps,
-                    const std::uint64_t shellReadyGlobalPhysicsStep,
-                    std::vector<std::uint8_t>& out) {
+bool writeShipStateBatch(const std::uint64_t serverTick,
+                         const std::uint64_t globalPhysicsStep,
+                         const std::vector<ShipStateWire>& ships,
+                         std::vector<std::uint8_t>& out) {
 	out.clear();
 	writeHeader(out, MsgType::ShipState);
 	appendU64(out, serverTick);
 	appendU64(out, globalPhysicsStep);
-	appendU64(out, bodyId);
-	appendF64(out, px);
-	appendF64(out, py);
-	appendF64(out, vx);
-	appendF64(out, vy);
-	appendF32(out, facing);
-	appendU8(out, thrustForward);
-	appendU8(out, thrustPercent);
-	appendF32(out, deltaVCurrentMps);
-	appendF32(out, deltaVMaxMps);
-	appendU64(out, shellReadyGlobalPhysicsStep);
+	appendU32(out, static_cast<std::uint32_t>(ships.size()));
+	for (const ShipStateWire& s : ships) {
+		appendU64(out, s.bodyId);
+		appendF64(out, s.px);
+		appendF64(out, s.py);
+		appendF64(out, s.vx);
+		appendF64(out, s.vy);
+		appendF32(out, s.facing);
+		appendU8(out, s.thrustForward);
+		appendU8(out, s.thrustPercent);
+		appendF32(out, s.deltaVCurrentMps);
+		appendF32(out, s.deltaVMaxMps);
+		appendU64(out, s.shellReadyGlobalPhysicsStep);
+	}
 	return true;
 }
 
-bool readShipState(const std::uint8_t* data,
-                   const std::size_t len,
-                   std::uint64_t& tickOut,
-                   std::uint64_t& globalPhysicsStepOut,
-                   sim::BodyId& bodyIdOut,
-                   double& px,
-                   double& py,
-                   double& vx,
-                   double& vy,
-                   float& facingOut,
-                   std::uint8_t& thrustForwardOut,
-                   std::uint8_t& thrustPercentOut,
-                   float& deltaVCurrentMpsOut,
-                   float& deltaVMaxMpsOut,
-                   std::uint64_t& shellReadyGlobalPhysicsStepOut) {
+bool readShipStateBatch(const std::uint8_t* data,
+                        const std::size_t len,
+                        std::uint64_t& tickOut,
+                        std::uint64_t& globalPhysicsStepOut,
+                        std::vector<ShipStateWire>& shipsOut) {
 	const std::uint8_t* p = data;
 	const std::uint8_t* end = data + len;
 	std::uint8_t ver = 0;
 	globalPhysicsStepOut = 0;
-	thrustPercentOut = 100;
-	deltaVCurrentMpsOut = 0.0f;
-	deltaVMaxMpsOut = 0.0f;
-	shellReadyGlobalPhysicsStepOut = 0;
+	shipsOut.clear();
 	if (!readHeader(p, end, MsgType::ShipState, ver)) {
 		return false;
 	}
-	if (!readU64(p, end, tickOut) || !readU64(p, end, globalPhysicsStepOut) ||
-	    !readU64(p, end, bodyIdOut)) {
+	if (!readU64(p, end, tickOut) || !readU64(p, end, globalPhysicsStepOut)) {
 		return false;
 	}
-	if (!readF64(p, end, px) || !readF64(p, end, py) || !readF64(p, end, vx) ||
-	    !readF64(p, end, vy) || !readF32(p, end, facingOut)) {
+	std::uint32_t n = 0;
+	if (!readU32(p, end, n) || n > 1'000'000u) {
 		return false;
 	}
-	if (end - p < 2) {
-		return false;
-	}
-	thrustForwardOut = p[0];
-	thrustPercentOut = p[1];
-	p += 2;
-	if (static_cast<std::size_t>(end - p) >= 8) {
-		if (!readF32(p, end, deltaVCurrentMpsOut) || !readF32(p, end, deltaVMaxMpsOut)) {
+	shipsOut.reserve(n);
+	for (std::uint32_t i = 0; i < n; ++i) {
+		ShipStateWire s{};
+		s.thrustPercent = 100;
+		if (!readU64(p, end, s.bodyId) || !readF64(p, end, s.px) || !readF64(p, end, s.py) ||
+		    !readF64(p, end, s.vx) || !readF64(p, end, s.vy) || !readF32(p, end, s.facing)) {
 			return false;
 		}
-	}
-	if (static_cast<std::size_t>(end - p) >= 8) {
-		if (!readU64(p, end, shellReadyGlobalPhysicsStepOut)) {
+		if (end - p < 2) {
 			return false;
 		}
+		s.thrustForward = p[0];
+		s.thrustPercent = p[1];
+		p += 2;
+		if (static_cast<std::size_t>(end - p) >= 8) {
+			if (!readF32(p, end, s.deltaVCurrentMps) || !readF32(p, end, s.deltaVMaxMps)) {
+				return false;
+			}
+		}
+		if (static_cast<std::size_t>(end - p) >= 8) {
+			if (!readU64(p, end, s.shellReadyGlobalPhysicsStep)) {
+				return false;
+			}
+		}
+		shipsOut.push_back(s);
 	}
 	return p == end;
 }
@@ -635,6 +624,41 @@ bool readBodyDeleteBatch(const std::uint8_t* data,
 		if (id != 0) {
 			idsOut.push_back(id);
 		}
+	}
+	return p == end;
+}
+
+bool writeRespawnCountdown(const std::uint64_t serverTick,
+                           const std::uint64_t respawnAtServerTick,
+                           const double wallSecondsRemaining,
+                           std::vector<std::uint8_t>& out) {
+	out.clear();
+	writeHeader(out, MsgType::RespawnCountdown);
+	appendU64(out, serverTick);
+	appendU64(out, respawnAtServerTick);
+	appendF64(out, wallSecondsRemaining);
+	return true;
+}
+
+bool readRespawnCountdown(const std::uint8_t* data,
+                          const std::size_t len,
+                          std::uint64_t& serverTickOut,
+                          std::uint64_t& respawnAtServerTickOut,
+                          double& wallSecondsRemainingOut) {
+	const std::uint8_t* p = data;
+	const std::uint8_t* end = data + len;
+	std::uint8_t ver = 0;
+	serverTickOut = 0;
+	respawnAtServerTickOut = 0;
+	wallSecondsRemainingOut = 0.0;
+	if (!readHeader(p, end, MsgType::RespawnCountdown, ver)) {
+		return false;
+	}
+	if (!readU64(p, end, serverTickOut) || !readU64(p, end, respawnAtServerTickOut)) {
+		return false;
+	}
+	if (!readF64(p, end, wallSecondsRemainingOut)) {
+		return false;
 	}
 	return p == end;
 }

@@ -46,6 +46,9 @@ class InspectorOverlay {
 	                       float deltaVMaxMps,
 	                       float shellReloadWallSeconds) const;
 
+	/// Center-bottom banner when waiting to respawn (multiplayer).
+	void drawRespawnCountdownBanner(sf::RenderWindow& window, double wallSecondsRemaining) const;
+
 	[[nodiscard]] bool available() const { return fontReady_; }
 	[[nodiscard]] const sf::Font* fontPtr() const { return fontReady_ ? &font_ : nullptr; }
 

@@ -444,4 +444,32 @@ void InspectorOverlay::drawShipThrustHud(sf::RenderWindow& window,
 	window.setView(oldView);
 }
 
+void InspectorOverlay::drawRespawnCountdownBanner(sf::RenderWindow& window,
+                                                  const double wallSecondsRemaining) const {
+	if (!fontReady_) {
+		return;
+	}
+	const sf::View oldView = window.getView();
+	window.setView(makeUiView(window));
+	const sf::Vector2f uiSize = window.getView().getSize();
+	std::ostringstream line;
+	line.setf(std::ios::fixed);
+	line << std::setprecision(1);
+	if (wallSecondsRemaining > 0.05) {
+		line << "Respawning in " << wallSecondsRemaining << " s";
+	} else {
+		line << "Respawning…";
+	}
+	sf::Text text(font_, line.str(), 22);
+	text.setFillColor(sf::Color(255, 220, 170, 245));
+	text.setOutlineColor(sf::Color(24, 22, 32, 240));
+	text.setOutlineThickness(2.0f);
+	const sf::FloatRect b = text.getLocalBounds();
+	text.setOrigin(sf::Vector2f(std::round(b.position.x + b.size.x * 0.5f),
+	                            std::round(b.position.y + b.size.y * 0.5f)));
+	text.setPosition(sf::Vector2f(uiSize.x * 0.5f, uiSize.y - 130.0f));
+	window.draw(text);
+	window.setView(oldView);
+}
+
 }  // namespace ui

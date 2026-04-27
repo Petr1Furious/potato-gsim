@@ -5,6 +5,7 @@
 #include <SFML/Graphics.hpp>
 
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 
 namespace render {
@@ -51,7 +52,8 @@ class Renderer {
 	void draw(const std::vector<sim::BodySnapshot>& bodies,
 	          std::optional<sim::BodyId> playerShipId = std::nullopt,
 	          std::optional<float> playerFacingRadians = std::nullopt,
-	          const std::unordered_map<sim::BodyId, float>* multiplayerShipFacings = nullptr);
+	          const std::unordered_map<sim::BodyId, float>* multiplayerShipFacings = nullptr,
+	          std::optional<std::string_view> ownShipDisplayName = std::nullopt);
 	void draw(const sim::SimulationEngine& engine);
 
    private:

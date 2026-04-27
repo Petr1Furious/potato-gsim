@@ -27,6 +27,8 @@ enum class MsgType : std::uint8_t {
 	BodyDeleteBatch = 8,
 	/// Reliable: join denied; disconnect typically follows.
 	JoinReject = 9,
+	/// Reliable: respawn countdown for the receiving client (`respawnAtServerTick` = 0 clears).
+	RespawnCountdown = 10,
 };
 
 /// Max UTF-8 bytes encoded in `writeJoinRequest` (after trim).
@@ -89,35 +91,29 @@ bool readJoinAccept(const std::uint8_t* data,
 bool writeClientInput(const ClientInputPayload& in, std::vector<std::uint8_t>& out);
 bool readClientInput(const std::uint8_t* data, std::size_t len, ClientInputPayload& out);
 
-bool writeShipState(std::uint64_t serverTick,
-                    std::uint64_t globalPhysicsStep,
-                    sim::BodyId bodyId,
-                    double px,
-                    double py,
-                    double vx,
-                    double vy,
-                    float facing,
-                    std::uint8_t thrustForward,
-                    std::uint8_t thrustPercent,
-                    float deltaVCurrentMps,
-                    float deltaVMaxMps,
-                    std::uint64_t shellReadyGlobalPhysicsStep,
-                    std::vector<std::uint8_t>& out);
-bool readShipState(const std::uint8_t* data,
-                   std::size_t len,
-                   std::uint64_t& tickOut,
-                   std::uint64_t& globalPhysicsStepOut,
-                   sim::BodyId& bodyIdOut,
-                   double& px,
-                   double& py,
-                   double& vx,
-                   double& vy,
-                   float& facingOut,
-                   std::uint8_t& thrustForwardOut,
-                   std::uint8_t& thrustPercentOut,
-                   float& deltaVCurrentMpsOut,
-                   float& deltaVMaxMpsOut,
-                   std::uint64_t& shellReadyGlobalPhysicsStepOut);
+struct ShipStateWire {
+	sim::BodyId bodyId = 0;
+	double px = 0.0;
+	double py = 0.0;
+	double vx = 0.0;
+	double vy = 0.0;
+	float facing = 0.0f;
+	std::uint8_t thrustForward = 0;
+	std::uint8_t thrustPercent = 100;
+	float deltaVCurrentMps = 0.0f;
+	float deltaVMaxMps = 0.0f;
+	std::uint64_t shellReadyGlobalPhysicsStep = 0;
+};
+
+bool writeShipStateBatch(std::uint64_t serverTick,
+                         std::uint64_t globalPhysicsStep,
+                         const std::vector<ShipStateWire>& ships,
+                         std::vector<std::uint8_t>& out);
+bool readShipStateBatch(const std::uint8_t* data,
+                        std::size_t len,
+                        std::uint64_t& tickOut,
+                        std::uint64_t& globalPhysicsStepOut,
+                        std::vector<ShipStateWire>& shipsOut);
 
 /// Full authoritative rows (same encoding as each `JoinAccept` body): id, pose, dynamics,
 /// mass, radius, UTF-8 name.
@@ -158,5 +154,15 @@ bool readBodyDeleteBatch(const std::uint8_t* data,
                          std::uint64_t& serverTickOut,
                          std::uint64_t& globalPhysicsStepOut,
                          std::vector<sim::BodyId>& idsOut);
+
+bool writeRespawnCountdown(std::uint64_t serverTick,
+                           std::uint64_t respawnAtServerTick,
+                           double wallSecondsRemaining,
+                           std::vector<std::uint8_t>& out);
+bool readRespawnCountdown(const std::uint8_t* data,
+                          std::size_t len,
+                          std::uint64_t& serverTickOut,
+                          std::uint64_t& respawnAtServerTickOut,
+                          double& wallSecondsRemainingOut);
 
 }  // namespace net

@@ -29,6 +29,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -271,6 +272,9 @@ int main(int argc, char** argv) {
 
 	std::optional<net::MpClient> mpClient;
 	std::uint64_t mpHudServerTick = 0;
+	bool mpHaveRespawnCountdownState = false;
+	std::uint64_t mpRespawnAtServerTick = 0;
+	double mpRespawnSecondsPerServerTick = 0.0;
 	sim::BodyId mpOwnShipId = 0;
 	bool mpSessionJoined = false;
 	bool mpJoinRequestSent = false;
@@ -279,6 +283,8 @@ int main(int argc, char** argv) {
 	std::vector<net::MpClient::ShipNetSample> mpInboundShips;
 	std::unordered_map<sim::BodyId, MpShipReplica> mpShipReplica;
 	sim::BodyId mpPrevOwnShipId = 0;
+	/// Tracks `BodyId` for `playerName` from world snapshots (respawn changes id).
+	sim::BodyId mpLastResolvedOwnShipBodyId = 0;
 	bool mpShipMouseAim = clientSettings.shipMouseAim;
 	double mpShipHeadingRadians = 0.0;
 	bool mpShipHeadingInited = false;
@@ -372,6 +378,30 @@ int main(int argc, char** argv) {
 	bool wasFollowCamera = false;
 	std::optional<net::MpClientRenderPublish> mpRenderFrame;
 
+	const auto resolveMpOwnShipAndCamera = [&](const std::vector<sim::BodySnapshot>& snap) {
+		if (!mpSessionJoined) {
+			return;
+		}
+		const auto it = std::find_if(snap.begin(), snap.end(), [&](const sim::BodySnapshot& b) {
+			return b.name == playerName;
+		});
+		if (it == snap.end()) {
+			mpLastResolvedOwnShipBodyId = 0;
+			return;
+		}
+		if (mpOwnShipId != it->id) {
+			mpOwnShipId = it->id;
+		}
+		if (mpLastResolvedOwnShipBodyId != it->id) {
+			renderer.setWorldOriginForRendering(it->x, it->y);
+			renderer.setCameraWorldCenterDouble(it->x, it->y);
+			trackedFollowId = it->id;
+			followViewOffset = {0.0, 0.0};
+			mpShipHeadingInited = false;
+			mpLastResolvedOwnShipBodyId = it->id;
+		}
+	};
+
 	auto statusUntil = std::chrono::steady_clock::now();
 	auto setStatus = [&](const std::string& message, double seconds) {
 		ui.statusMessage = message;
@@ -453,11 +483,15 @@ int main(int argc, char** argv) {
 				mpSim->stop();
 				mpSim.reset();
 			}
+			mpHaveRespawnCountdownState = false;
+			mpRespawnAtServerTick = 0;
+			mpRespawnSecondsPerServerTick = 0.0;
 			mpClient.reset();
 			mpJoinRequestSent = false;
 			mpSessionJoined = false;
 			mpShipReplica.clear();
 			mpPrevOwnShipId = 0;
+			mpLastResolvedOwnShipBodyId = 0;
 			mpOwnShipId = 0;
 			multiplayer = false;
 			menuPhase = MenuPhase::Root;
@@ -800,6 +834,20 @@ int main(int argc, char** argv) {
 				}
 			}
 
+			// In-game `Renderer::draw` leaves the window on a zoomed world `sf::View`. The
+			// full-screen main menu text uses pixel positions; draw it in a default-sized view
+			// (same idea as `ui::MenuOverlay::draw`) or it lands in world space and is invisible.
+			const sf::View menuSavedView = window.getView();
+			{
+				const sf::Vector2u winSize = window.getSize();
+				const sf::Vector2f fsz(static_cast<float>(std::max(1u, winSize.x)),
+				                       static_cast<float>(std::max(1u, winSize.y)));
+				sf::View uiView(sf::FloatRect(sf::Vector2f(0.0f, 0.0f), fsz));
+				uiView.setViewport(
+				    sf::FloatRect(sf::Vector2f(0.0f, 0.0f), sf::Vector2f(1.0f, 1.0f)));
+				window.setView(uiView);
+			}
+
 			const sf::Font* f = overlay.fontPtr();
 			window.clear(sf::Color(24, 28, 32));
 			if (f != nullptr) {
@@ -862,6 +910,7 @@ int main(int argc, char** argv) {
 					window.draw(st);
 				}
 			}
+			window.setView(menuSavedView);
 			window.display();
 			continue;
 		}
@@ -1075,6 +1124,30 @@ int main(int argc, char** argv) {
 
 		if (multiplayer && mpClient.has_value()) {
 			mpClient->service(0);
+			if (mpSessionJoined) {
+				net::MpClient::RespawnCountdownState rc{};
+				bool haveRc = false;
+				mpClient->getRespawnCountdownState(rc, haveRc);
+				if (haveRc) {
+					mpHaveRespawnCountdownState = true;
+					mpHudServerTick = std::max(mpHudServerTick, rc.serverTick);
+					if (rc.respawnAtServerTick == 0) {
+						mpHaveRespawnCountdownState = false;
+						mpRespawnAtServerTick = 0;
+						mpRespawnSecondsPerServerTick = 0.0;
+					} else {
+						mpRespawnAtServerTick = rc.respawnAtServerTick;
+						const std::uint64_t ticksLeft =
+						    (rc.respawnAtServerTick > rc.serverTick)
+						        ? (rc.respawnAtServerTick - rc.serverTick)
+						        : 0u;
+						if (ticksLeft > 0u && rc.wallSecondsRemaining > 1e-9) {
+							mpRespawnSecondsPerServerTick =
+							    rc.wallSecondsRemaining / static_cast<double>(ticksLeft);
+						}
+					}
+				}
+			}
 			{
 				net::JoinRejectReason rj = net::JoinRejectReason::NameInvalid;
 				std::string rjDetail;
@@ -1085,6 +1158,9 @@ int main(int argc, char** argv) {
 						mpSim->stop();
 						mpSim.reset();
 					}
+					mpHaveRespawnCountdownState = false;
+					mpRespawnAtServerTick = 0;
+					mpRespawnSecondsPerServerTick = 0.0;
 					mpClient.reset();
 					mpJoinRequestSent = false;
 					mpSessionJoined = false;
@@ -1157,8 +1233,12 @@ int main(int argc, char** argv) {
 					mpSim->stop();
 					mpSim.reset();
 					mpSessionJoined = false;
+					mpHaveRespawnCountdownState = false;
+					mpRespawnAtServerTick = 0;
+					mpRespawnSecondsPerServerTick = 0.0;
 					mpShipReplica.clear();
 					mpPrevOwnShipId = 0;
+					mpLastResolvedOwnShipBodyId = 0;
 					mpShipMouseAim = clientSettings.shipMouseAim;
 					mpShipHeadingInited = false;
 					mpShipThrustPercent = 100;
@@ -1178,6 +1258,9 @@ int main(int argc, char** argv) {
 						menuPhase = MenuPhase::Root;
 					}
 				} else {
+					if (mpRenderFrame.has_value()) {
+						resolveMpOwnShipAndCamera(mpRenderFrame->bodies);
+					}
 					while (true) {
 						std::uint64_t mergeTick = 0;
 						std::vector<std::pair<sim::BodyId, sim::BodyId>> netMerges;
@@ -1204,6 +1287,10 @@ int main(int argc, char** argv) {
 						(void)delStep;
 						for (const sim::BodyId id : delIds) {
 							mpShipReplica.erase(id);
+							if (id == mpOwnShipId) {
+								mpOwnShipId = 0;
+								mpLastResolvedOwnShipBodyId = 0;
+							}
 						}
 						ui.selection.applyBodyDeletes(delIds);
 						ui.traces.applyBodyDeletes(delIds);
@@ -1221,7 +1308,14 @@ int main(int argc, char** argv) {
 					}
 
 					mpClient->takeShipSamples(mpInboundShips);
+					{
+						std::uint64_t shipBatchTick = 0;
+						if (mpClient->takeLatestShipBatchTick(shipBatchTick)) {
+							mpHudServerTick = std::max(mpHudServerTick, shipBatchTick);
+						}
+					}
 					for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
+						mpHudServerTick = std::max(mpHudServerTick, s.serverTick);
 						MpShipReplica& rep = mpShipReplica[s.bodyId];
 						rep.facing = s.facingRadians;
 						rep.thrustForward = s.thrustForward;
@@ -1568,6 +1662,7 @@ int main(int argc, char** argv) {
 			mpSim->copyLatestRenderPublish(pub);
 			mpRenderFrame = std::move(pub);
 			bodies = mpRenderFrame->bodies;
+			resolveMpOwnShipAndCamera(bodies);
 			const double pubTs = mpRenderFrame->config.timeScale;
 			if (std::isfinite(pubTs) && pubTs > 0.0) {
 				mpNetPhysicsTimeScale = pubTs;
@@ -1658,15 +1753,6 @@ int main(int argc, char** argv) {
 					}
 					std::fprintf(stderr, "\n");
 					mpLastClientStressLog = t;
-				}
-			}
-		}
-
-		if (multiplayer && mpSessionJoined && mpSim.has_value()) {
-			const bool simPaused = mpRenderFrame.has_value() && mpRenderFrame->config.paused;
-			if (!simPaused) {
-				for (const net::MpClient::ShipNetSample& s : mpInboundShips) {
-					mpHudServerTick = std::max(mpHudServerTick, s.serverTick);
 				}
 			}
 		}
@@ -2001,6 +2087,15 @@ int main(int argc, char** argv) {
 		if (mpOwnShipId != 0) {
 			if (const auto it = mpShipReplica.find(mpOwnShipId); it != mpShipReplica.end()) {
 				playerFacing = it->second.facing;
+			} else if (multiplayer && mpSessionJoined) {
+				if (const auto it = std::find_if(
+				        bodies.begin(), bodies.end(),
+				        [&](const sim::BodySnapshot& b) { return b.id == mpOwnShipId; });
+				    it != bodies.end()) {
+					const double vmag = std::hypot(it->vx, it->vy);
+					playerFacing =
+					    static_cast<float>(vmag > 1e-9 ? std::atan2(it->vy, it->vx) : 0.0);
+				}
 			} else if (!multiplayer && spSessionActive) {
 				if (const auto it = std::find_if(
 				        bodies.begin(), bodies.end(),
@@ -2023,6 +2118,9 @@ int main(int argc, char** argv) {
 				if (bit == bodies.end()) {
 					continue;
 				}
+				if (bit->name == playerName) {
+					continue;
+				}
 				if (id != mpOwnShipId && !bodyLooksLikeDefaultPlayerShip(*bit)) {
 					continue;
 				}
@@ -2034,7 +2132,9 @@ int main(int argc, char** argv) {
 		}
 		renderer.draw(bodies,
 		              mpOwnShipId == 0 ? std::nullopt : std::optional<sim::BodyId>(mpOwnShipId),
-		              playerFacing, mpDrawShipFacingsPtr);
+		              playerFacing, mpDrawShipFacingsPtr,
+		              (multiplayer && mpSessionJoined) ? std::optional<std::string_view>(playerName)
+		                                               : std::nullopt);
 		if (ui.showShellPrediction && shellPrediction.size() >= 2 &&
 		    shellPredictionAnchorBodyId.has_value()) {
 			// Points are time-synchronized (shell − reference body) from the predictor; reference
@@ -2143,6 +2243,19 @@ int main(int argc, char** argv) {
 			hudLines.push_back("Status: " + ui.statusMessage);
 		}
 		overlay.drawHudPanel(window, hudLines, ui.input.legendLines(ui.menu.active()), false);
+		double respawnHudSeconds = 0.0;
+		bool showRespawnHud = false;
+		if (multiplayer && mpSessionJoined && mpHaveRespawnCountdownState &&
+		    mpRespawnAtServerTick != 0 && mpRespawnSecondsPerServerTick > 0.0) {
+			const std::uint64_t baseTick = mpHudServerTick;
+			const std::uint64_t ticksLeft =
+			    (mpRespawnAtServerTick > baseTick) ? (mpRespawnAtServerTick - baseTick) : 0u;
+			respawnHudSeconds = static_cast<double>(ticksLeft) * mpRespawnSecondsPerServerTick;
+			showRespawnHud = ticksLeft > 0u;
+		}
+		if (showRespawnHud && multiplayer && mpSessionJoined) {
+			overlay.drawRespawnCountdownBanner(window, respawnHudSeconds);
+		}
 		if (mpOwnShipId != 0 && ((multiplayer && mpSessionJoined && mpSim.has_value()) ||
 		                         (!multiplayer && spSessionActive))) {
 			float shellReloadDisplaySec = 0.0f;

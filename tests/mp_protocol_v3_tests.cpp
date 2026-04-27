@@ -70,32 +70,36 @@ int main() {
 
 	{
 		std::vector<std::uint8_t> buf;
-		assert(net::writeShipState(3, 777, 9, 1.1, 2.2, 3.3, 4.4, 0.5f, 1, 88, 19000.0f, 25000.0f,
-		                           9000ull, buf));
+		std::vector<net::ShipStateWire> shipsIn{
+		    net::ShipStateWire{
+		        .bodyId = 9,
+		        .px = 1.1,
+		        .py = 2.2,
+		        .vx = 3.3,
+		        .vy = 4.4,
+		        .facing = 0.5f,
+		        .thrustForward = 1,
+		        .thrustPercent = 88,
+		        .deltaVCurrentMps = 19000.0f,
+		        .deltaVMaxMps = 25000.0f,
+		        .shellReadyGlobalPhysicsStep = 9000ull,
+		    },
+		};
+		assert(net::writeShipStateBatch(3, 777, shipsIn, buf));
 		std::uint64_t tick = 0;
 		std::uint64_t g = 0;
-		sim::BodyId id = 0;
-		double px = 0;
-		double py = 0;
-		double vx = 0;
-		double vy = 0;
-		float facing = 0.f;
-		std::uint8_t tf = 0;
-		std::uint8_t tp = 0;
-		float dvCur = 0.f;
-		float dvMax = 0.f;
-		std::uint64_t shellReadyStep = 0;
-		assert(net::readShipState(buf.data(), buf.size(), tick, g, id, px, py, vx, vy, facing, tf,
-		                          tp, dvCur, dvMax, shellReadyStep));
+		std::vector<net::ShipStateWire> shipsOut;
+		assert(net::readShipStateBatch(buf.data(), buf.size(), tick, g, shipsOut));
 		assert(tick == 3);
 		assert(g == 777);
-		assert(id == 9);
-		assert(std::abs(px - 1.1) < 1e-12);
-		assert(tf == 1);
-		assert(tp == 88);
-		assert(std::abs(dvCur - 19000.0f) < 1e-6f);
-		assert(std::abs(dvMax - 25000.0f) < 1e-6f);
-		assert(shellReadyStep == 9000ull);
+		assert(shipsOut.size() == 1);
+		assert(shipsOut[0].bodyId == 9);
+		assert(std::abs(shipsOut[0].px - 1.1) < 1e-12);
+		assert(shipsOut[0].thrustForward == 1);
+		assert(shipsOut[0].thrustPercent == 88);
+		assert(std::abs(shipsOut[0].deltaVCurrentMps - 19000.0f) < 1e-6f);
+		assert(std::abs(shipsOut[0].deltaVMaxMps - 25000.0f) < 1e-6f);
+		assert(shipsOut[0].shellReadyGlobalPhysicsStep == 9000ull);
 	}
 
 	{
@@ -175,5 +179,16 @@ int main() {
 		assert(idsOut == idsIn);
 	}
 
+	{
+		std::vector<std::uint8_t> buf;
+		assert(net::writeRespawnCountdown(100, 190, 2.5, buf));
+		std::uint64_t tickOut = 0;
+		std::uint64_t respawnAtOut = 0;
+		double wallOut = 0.0;
+		assert(net::readRespawnCountdown(buf.data(), buf.size(), tickOut, respawnAtOut, wallOut));
+		assert(tickOut == 100);
+		assert(respawnAtOut == 190);
+		assert(std::abs(wallOut - 2.5) < 1e-12);
+	}
 	return EXIT_SUCCESS;
 }

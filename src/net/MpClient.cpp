@@ -74,6 +74,7 @@ void MpClient::disconnect() {
 	pendingJoinShipThrustAccel_ = 0.0;
 	pendingJoinBodies_.clear();
 	pendingShips_.clear();
+	latestShipBatchTick_.reset();
 	pendingWorldSnapshots_.clear();
 	pendingMergeBatches_.clear();
 	pendingBodyDeleteBatches_.clear();
@@ -81,6 +82,11 @@ void MpClient::disconnect() {
 	haveAuthoritativeUpserts_ = false;
 	haveJoinReject_ = false;
 	pendingJoinRejectDetail_.clear();
+	{
+		std::lock_guard<std::mutex> r(respawnMutex_);
+		haveRespawnCountdownState_ = false;
+		respawnCountdownState_ = {};
+	}
 }
 
 void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
@@ -122,11 +128,29 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 			}
 		} break;
 		case MsgType::ShipState: {
-			ShipNetSample s{};
-			if (readShipState(d, len, s.serverTick, s.globalPhysicsStep, s.bodyId, s.px, s.py, s.vx,
-			                  s.vy, s.facingRadians, s.thrustForward, s.thrustPercent,
-			                  s.deltaVCurrentMps, s.deltaVMaxMps, s.shellReadyGlobalPhysicsStep)) {
-				pendingShips_.push_back(s);
+			std::uint64_t tick = 0;
+			std::uint64_t gstep = 0;
+			std::vector<ShipStateWire> ships;
+			if (readShipStateBatch(d, len, tick, gstep, ships)) {
+				latestShipBatchTick_ = tick;
+				pendingShips_.reserve(pendingShips_.size() + ships.size());
+				for (const ShipStateWire& r : ships) {
+					pendingShips_.push_back(ShipNetSample{
+					    .serverTick = tick,
+					    .globalPhysicsStep = gstep,
+					    .bodyId = r.bodyId,
+					    .px = r.px,
+					    .py = r.py,
+					    .vx = r.vx,
+					    .vy = r.vy,
+					    .facingRadians = r.facing,
+					    .thrustForward = r.thrustForward,
+					    .thrustPercent = r.thrustPercent,
+					    .deltaVCurrentMps = r.deltaVCurrentMps,
+					    .deltaVMaxMps = r.deltaVMaxMps,
+					    .shellReadyGlobalPhysicsStep = r.shellReadyGlobalPhysicsStep,
+					});
+				}
 			}
 		} break;
 		case MsgType::WorldDynamicSnapshot: {
@@ -174,6 +198,15 @@ void MpClient::processPacket(const std::uint8_t* d, const std::size_t len) {
 				batch.globalPhysicsStep = step;
 				batch.ids = std::move(ids);
 				pendingBodyDeleteBatches_.push_back(std::move(batch));
+			}
+		} break;
+		case MsgType::RespawnCountdown: {
+			RespawnCountdownState s{};
+			if (readRespawnCountdown(d, len, s.serverTick, s.respawnAtServerTick,
+			                         s.wallSecondsRemaining)) {
+				std::lock_guard<std::mutex> lock(respawnMutex_);
+				respawnCountdownState_ = s;
+				haveRespawnCountdownState_ = true;
 			}
 		} break;
 		default:
@@ -365,6 +398,16 @@ void MpClient::takeShipSamples(std::vector<ShipNetSample>& out) {
 	out.swap(pendingShips_);
 }
 
+bool MpClient::takeLatestShipBatchTick(std::uint64_t& tickOut) {
+	if (!latestShipBatchTick_.has_value()) {
+		tickOut = 0;
+		return false;
+	}
+	tickOut = *latestShipBatchTick_;
+	latestShipBatchTick_.reset();
+	return true;
+}
+
 bool MpClient::takeNextWorldSnapshot(std::uint64_t& tickOut,
                                      std::uint64_t& globalPhysicsStepOut,
                                      std::vector<sim::AuthoritativeBody>& bodiesOut) {
@@ -423,6 +466,12 @@ void MpClient::takeAuthoritativeUpserts(std::vector<sim::AuthoritativeBody>& bod
 	hadOneOut = true;
 	bodiesOut = std::move(pendingAuthoritativeUpserts_);
 	haveAuthoritativeUpserts_ = false;
+}
+
+void MpClient::getRespawnCountdownState(RespawnCountdownState& out, bool& haveAnyOut) const {
+	std::lock_guard<std::mutex> lock(respawnMutex_);
+	haveAnyOut = haveRespawnCountdownState_;
+	out = respawnCountdownState_;
 }
 
 }  // namespace net
