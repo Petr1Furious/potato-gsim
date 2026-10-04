@@ -2,6 +2,7 @@
 //! `gsim-client-core`; this file only looks at the replica and draws it.
 
 use crate::fmt;
+use crate::style;
 use crate::predictor::{Job, Predictor};
 use crate::settings::Settings;
 use egui_macroquad::egui;
@@ -147,7 +148,7 @@ const TRAIL_FRAMES: usize = 150;
 const PICK_RADIUS_PX: f32 = 26.0;
 const TURN_RATE: f64 = 2.85;
 /// Font size of labels drawn in the world, before marker scaling.
-const LABEL: f32 = 10.0;
+const LABEL: f32 = 12.0;
 
 impl Game {
     pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32, show_net: bool) -> Result<Self, String> {
@@ -301,12 +302,12 @@ impl Game {
         if let Some(reason) = self.net.disconnect_reason() {
             return Outcome::ToMenu(format!("Disconnected: {reason}"));
         }
-        clear_background(Color::from_rgba(8, 10, 16, 255));
+        clear_background(style::BACKGROUND);
         if self.net.session.world.is_none() {
             let waited = get_time() - self.started;
             let msg = if self.net.is_connected() { "Receiving world..." } else { "Connecting..." };
-            draw_text(msg, 40.0 * ui, 60.0 * ui, 30.0 * ui, WHITE);
-            draw_text("Esc to cancel", 40.0 * ui, 90.0 * ui, 20.0 * ui, GRAY);
+            style::text(msg, 40.0 * ui, 60.0 * ui, 30.0 * ui, WHITE);
+            style::text("Esc to cancel", 40.0 * ui, 90.0 * ui, 20.0 * ui, GRAY);
             if is_key_pressed(KeyCode::Escape) || waited > 12.0 {
                 return Outcome::ToMenu(if waited > 12.0 { "Connection timed out".into() } else { String::new() });
             }
@@ -324,7 +325,7 @@ impl Game {
         // Draw the newest instant for which every entity has a state on both sides.
         let tick_f = present.min(world.head as f64).max(0.0);
         let Some((row, tau)) = world.row_at(tick_f).or_else(|| world.row_at(world.head.saturating_sub(1) as f64)) else {
-            draw_text("Computing ephemeris...", 40.0 * ui, 60.0 * ui, 30.0 * ui, WHITE);
+            style::text("Computing ephemeris...", 40.0 * ui, 60.0 * ui, 30.0 * ui, WHITE);
             return Outcome::Continue;
         };
         let body = |j: u32| World::body_at(&row, j as usize, tau);
@@ -504,23 +505,11 @@ impl Game {
             } else {
                 1.0
             };
-            let color = if mass < 0.0 {
-                Color::from_rgba(255, 110, 200, 255)
-            } else if mass > 1.0e29 {
-                Color::from_rgba(255, 225, 150, 255)
-            } else {
-                Color::from_rgba(180, 220, 255, 255)
-            };
-            let color = Color::new(color.r, color.g, color.b, fade);
-            if r_px >= ui {
-                draw_circle(s.0, s.1, r_px.min(1.0e5), color);
-            } else {
-                draw_circle(s.0, s.1, 1.1 * ui, color);
-            }
+            style::body(s, r_px, mass, j, fade, ui);
             if let Some(name) = world.names.get(&j).filter(|_| self.selected != Some(j)) {
                 let size = LABEL * ui;
                 let below = s.1 + r_px.max(1.1 * ui).min(4000.0) + size;
-                draw_centered(name, s.0, below, size, Color::new(0.78, 0.78, 0.82, 0.78 * fade));
+                style::centered(name, s.0, below, size, style::alpha(style::DIM, fade));
             }
         }
 
@@ -535,10 +524,10 @@ impl Game {
             let armed = tick_f >= (shell.spawn_tick + world.rules.shell_arm_ticks as Tick) as f64;
             if blast_px > 2.0 {
                 let a = if armed { 0.20 } else { 0.05 };
-                draw_circle(s.0, s.1, blast_px, Color::new(1.0, 0.47, 0.35, a));
-                draw_circle_lines(s.0, s.1, blast_px, 1.0, Color::new(1.0, 0.47, 0.35, if armed { 0.8 } else { 0.25 }));
+                style::disc(s.0, s.1, blast_px, Color::new(1.0, 0.47, 0.35, a));
+                style::ring(s.0, s.1, blast_px, 1.0, Color::new(1.0, 0.47, 0.35, if armed { 0.8 } else { 0.25 }));
             }
-            draw_circle(s.0, s.1, 2.0 * ui, Color::from_rgba(255, 210, 160, 255));
+            style::disc(s.0, s.1, 2.0 * ui, Color::from_rgba(255, 210, 160, 255));
         }
         for e in &world.effects {
             let age = (tick_f - e.tick as f64) / world.rules.tick_hz as f64;
@@ -549,10 +538,10 @@ impl Game {
             let s = view.to_screen(e.at.x + e.at.vx * sim_age, e.at.y + e.at.vy * sim_age);
             let fade = (1.0 - age / 1.5) as f32;
             match e.kind {
-                EffectKind::ShellBlast => draw_circle(s.0, s.1, blast_px.max(6.0), Color::new(1.0, 0.6, 0.3, 0.5 * fade)),
+                EffectKind::ShellBlast => style::disc(s.0, s.1, blast_px.max(6.0), Color::new(1.0, 0.6, 0.3, 0.5 * fade)),
                 EffectKind::ShipDestroyed => {
                     let r = (10.0 + 60.0 * age as f32) * ui;
-                    draw_circle_lines(s.0, s.1, r, 3.0 * ui, Color::new(1.0, 0.9, 0.5, fade));
+                    style::ring(s.0, s.1, r, 3.0 * ui, Color::new(1.0, 0.9, 0.5, fade));
                 }
             }
         }
@@ -596,23 +585,23 @@ impl Game {
         if let Some(q) = shell_live {
             // From here on the shell is live.
             let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
-            draw_circle_lines(s.0, s.1, 4.0 * ui, 1.5 * ui, Color::from_rgba(255, 130, 90, 220));
+            style::ring(s.0, s.1, 4.0 * ui, 1.5 * ui, Color::from_rgba(255, 130, 90, 220));
         }
         if stale {
         } else if let (true, Some(q)) = (paths.coast_impact, paths.coast.last()) {
             let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
             draw_line(s.0 - 6.0 * ui, s.1 - 6.0 * ui, s.0 + 6.0 * ui, s.1 + 6.0 * ui, 2.0 * ui, RED);
             draw_line(s.0 - 6.0 * ui, s.1 + 6.0 * ui, s.0 + 6.0 * ui, s.1 - 6.0 * ui, 2.0 * ui, RED);
-            draw_centered("impact", s.0, s.1 + 20.0 * ui, LABEL * ui, RED);
+            style::centered("impact", s.0, s.1 + 20.0 * ui, LABEL * ui, RED);
         } else if let Some((i, d)) = paths.closest {
             if i > 0 && i + 1 < paths.coast.len() {
                 let q = paths.coast[i];
                 let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
-                draw_circle_lines(s.0, s.1, 5.0 * ui, 1.5 * ui, Color::from_rgba(90, 255, 120, 255));
+                style::ring(s.0, s.1, 5.0 * ui, 1.5 * ui, Color::from_rgba(90, 255, 120, 255));
                 let eta = i as f64 / world.rules.tick_hz as f64;
                 let c = Color::from_rgba(150, 255, 170, 255);
-                draw_centered(&format!("closest {}", fmt::distance(d)), s.0, s.1 + 18.0 * ui, LABEL * ui, c);
-                draw_centered(&format!("in {eta:.1} s"), s.0, s.1 + 30.0 * ui, LABEL * ui, c);
+                style::centered(&format!("closest {}", fmt::distance(d)), s.0, s.1 + 18.0 * ui, LABEL * ui, c);
+                style::centered(&format!("in {eta:.1} s"), s.0, s.1 + 30.0 * ui, LABEL * ui, c);
             }
         }
 
@@ -629,15 +618,15 @@ impl Game {
             // Our own heading is shown instantly; the simulation follows a few ticks later.
             let facing = if mine { self.heading } else { math::angle_to_radians(input.angle) };
             let fuel = p.ship.as_ref().map_or(0, |t| t.last().fuel);
-            let color = if mine { Color::from_rgba(255, 225, 150, 255) } else { Color::from_rgba(130, 200, 255, 255) };
+            let color = if mine { style::OWN_SHIP } else { style::OTHER_SHIP };
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
             if !mine {
-                draw_centered(&p.name, s.0, s.1 + 20.0 * ui, LABEL * ui, color);
+                style::centered(&p.name, s.0, s.1 + 20.0 * ui, LABEL * ui, color);
             }
         }
 
         // --- objective -------------------------------------------------------------------------
-        let gold = Color::from_rgba(255, 200, 60, 255);
+        let gold = style::GOLD;
         let target = world.target.filter(|t| alive(*t) && world.next_round_tick.is_none());
         let mut orbit = None;
         if let Some(slot) = target {
@@ -650,12 +639,12 @@ impl Game {
                 let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
                 let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
                 if outer > 14.0 * ui {
-                    draw_circle_lines(s.0, s.1, outer.min(1.0e5), ui, Color::new(1.0, 0.78, 0.24, 0.35));
-                    draw_circle_lines(s.0, s.1, inner.min(1.0e5), ui, Color::new(1.0, 0.78, 0.24, 0.35));
+                    style::ring(s.0, s.1, outer.min(1.0e5), ui, Color::new(1.0, 0.78, 0.24, 0.35));
+                    style::ring(s.0, s.1, inner.min(1.0e5), ui, Color::new(1.0, 0.78, 0.24, 0.35));
                 }
                 let ring = r_px.min(4000.0) + 9.0 * ui;
-                draw_circle_lines(s.0, s.1, ring, 2.0 * ui, gold);
-                draw_centered("TARGET", s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold);
+                style::ring(s.0, s.1, ring, 2.0 * ui, gold);
+                style::centered("TARGET", s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold);
             } else {
                 // Off screen: an arrow on the edge pointing at it.
                 let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
@@ -667,7 +656,7 @@ impl Game {
                 draw_triangle(tip(10.0 * ui, 0.0), tip(-6.0 * ui, 7.0 * ui), tip(-6.0 * ui, -7.0 * ui), gold);
                 if let Some(ship) = own {
                     let d = ((b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)).sqrt();
-                    draw_centered(&fmt::distance(d), ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui, LABEL * ui, gold);
+                    style::centered(&fmt::distance(d), ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui, LABEL * ui, gold);
                 }
             }
             if let Some(ship) = own {
@@ -692,7 +681,7 @@ impl Game {
                 lines.push(format!("rel v = {}", fmt::speed(v)));
             }
             for (i, l) in lines.iter().enumerate() {
-                draw_centered(l, s.0, s.1 + r_px + (12.0 + 12.0 * i as f32) * ui, LABEL * ui, WHITE);
+                style::centered(l, s.0, s.1 + r_px + (12.0 + 12.0 * i as f32) * ui, LABEL * ui, WHITE);
             }
         }
 
@@ -728,19 +717,12 @@ impl Game {
             .map(|f| f.1.clone())
             .collect();
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
-        let info = format!(
-            "{}  |  round {}{}  |  {} bodies  |  time x{:.0}  |  {}/px  |  {} FPS",
-            world.preset,
-            world.round,
-            round_left.map_or(String::new(), |s| format!(", {}:{:02} left", s as u32 / 60, s as u32 % 60)),
-            alive_bodies,
-            world.rules.time_scale(),
-            fmt::distance(view.mpp),
-            get_fps()
-        );
+        let clock = |s: f64| format!("{}:{:02}", s as u32 / 60, s as u32 % 60);
+        let title = format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round);
         let horizon = (paths.coast.len().max(1) - 1) as f64 / world.rules.tick_hz as f64;
         let predict_ms = paths.compute_ms;
         let net_lines: Vec<String> = vec![
+            format!("{} bodies   time x{:.0}   {} fps", alive_bodies, world.rules.time_scale(), get_fps()),
             format!("tick {:.1}  head {}  ephemeris +{} ticks", tick_f, world.head, world.eph.end_tick().unwrap_or(0).saturating_sub(world.head)),
             format!("rtt {:.0} ms   input lead {} ticks ({:.0} ms)", rtt.unwrap_or(0.0) * 1e3, lead, lead as f64 * 1e3 / world.rules.tick_hz as f64),
             format!("world hash: {} checks, {} mismatches, {} resyncs", stats.hash_checks, stats.hash_mismatches, stats.resyncs),
@@ -752,8 +734,11 @@ impl Game {
         ];
         let status = self.status.as_ref().filter(|s| s.1 > get_time()).map(|s| s.0.clone());
         let fuel_max = world.rules.fuel_max_mmps;
+        let cooldown = world.rules.shell_cooldown_ticks as f64 / world.rules.tick_hz as f64;
         let thrust_pct = self.thrust_pct;
         let mouse_aim = self.mouse_aim;
+        // The ruler replaces a "metres per pixel" readout.
+        style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
         let mut outcome = Outcome::Continue;
         let (mut trails, mut trails_rel, mut pred, mut shell_pred, mut follow_sel, mut net_dbg, mut menu) = (
@@ -768,104 +753,141 @@ impl Game {
         let (mut has_ptr, mut has_kb) = (false, false);
         let (mut ui_scale, mut zoom_speed) = (settings.ui_scale, settings.zoom_speed);
         egui_macroquad::ui(|ctx| {
+            use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
-            let frame = egui::Frame::NONE.fill(egui::Color32::from_black_alpha(140)).inner_margin(8.0).corner_radius(4.0);
-            egui::Area::new(egui::Id::new("info")).anchor(egui::Align2::LEFT_TOP, [8.0, 8.0]).show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    ui.label(&info);
+            let (gold, dim, good, bad) = (style::c32(style::GOLD), style::c32(style::DIM), style::c32(style::GOOD), style::c32(style::EMBER));
+
+            // Top centre: where we are and how long is left.
+            Area::new(Id::new("round")).anchor(Align2::CENTER_TOP, [0.0, 10.0]).show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(&title).small().color(dim).extra_letter_spacing(2.0));
+                    match (intermission, round_left) {
+                        (Some(left), _) => {
+                            let verdict = match scores.first() {
+                                Some(best) if best.1 > 0 => format!("{} wins with {}", best.0, best.1),
+                                _ => "Nobody scored".to_string(),
+                            };
+                            ui.label(RichText::new(verdict).heading().color(gold));
+                            ui.label(RichText::new(format!("new world in {left:.0} s")).color(dim));
+                        }
+                        (None, Some(left)) => {
+                            let colour = if left < 30.0 { bad } else { style::c32(style::TEXT) };
+                            ui.label(RichText::new(clock(left)).heading().color(colour));
+                        }
+                        _ => {}
+                    }
                     if let Some(s) = &status {
-                        ui.colored_label(egui::Color32::YELLOW, s);
+                        ui.label(RichText::new(s).color(gold));
                     }
-                    if net_dbg {
-                        ui.separator();
+                });
+            });
+
+            // Top left: diagnostics, only on request.
+            if net_dbg {
+                Area::new(Id::new("net")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).show(ctx, |ui| {
+                    style::panel().show(ui, |ui| {
                         for l in &net_lines {
-                            ui.monospace(l);
-                        }
-                    }
-                });
-            });
-            egui::Area::new(egui::Id::new("score")).anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0]).show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    egui::Grid::new("scores").num_columns(5).show(ui, |ui| {
-                        ui.strong("Pilot");
-                        ui.strong("Score");
-                        ui.strong("Orbits");
-                        ui.strong("K");
-                        ui.strong("D");
-                        ui.end_row();
-                        for (name, score, k, d, caps, mine) in &scores {
-                            let c = if *mine { egui::Color32::from_rgb(255, 225, 150) } else { egui::Color32::LIGHT_GRAY };
-                            ui.colored_label(c, name);
-                            ui.strong(score.to_string());
-                            ui.label(caps.to_string());
-                            ui.label(k.to_string());
-                            ui.label(d.to_string());
-                            ui.end_row();
-                        }
-                    });
-                    for f in &feed {
-                        ui.small(f);
-                    }
-                });
-            });
-            egui::Area::new(egui::Id::new("ship")).anchor(egui::Align2::RIGHT_BOTTOM, [-8.0, -8.0]).show(ctx, |ui| {
-                frame.show(ui, |ui| {
-                    ui.set_width(230.0);
-                    match fuel {
-                        Some(f) => {
-                            let frac = f as f32 / fuel_max as f32;
-                            ui.add(egui::ProgressBar::new(frac).text(format!("delta-v {}", fmt::speed(f as f64 / 1000.0))));
-                            ui.add(egui::ProgressBar::new(thrust_pct / 100.0).text(format!("thrust {thrust_pct:.0} %")));
-                            ui.label(if reload > 0.0 { format!("Shell reload {reload:.2} s") } else { "Shell ready".into() });
-                            ui.small(if mouse_aim { "aim: mouse (M)" } else { "aim: A/D (M)" });
-                        }
-                        None => {
-                            ui.heading(match respawn_in {
-                                Some(s) => format!("Respawning in {s:.1} s"),
-                                None => "Waiting for ship...".into(),
-                            });
-                        }
-                    }
-                });
-            });
-            if let Some(name) = &target_name {
-                egui::Area::new(egui::Id::new("objective")).anchor(egui::Align2::LEFT_BOTTOM, [8.0, -8.0]).show(ctx, |ui| {
-                    frame.show(ui, |ui| {
-                        ui.set_width(250.0);
-                        let goldc = egui::Color32::from_rgb(255, 200, 60);
-                        ui.colored_label(goldc, format!("Hold an orbit around {name} (+{capture_points})"));
-                        match orbit {
-                            Some((o, radius)) if o.bound => {
-                                let mark = |ok: bool| if ok { egui::Color32::LIGHT_GREEN } else { egui::Color32::from_rgb(255, 140, 120) };
-                                ui.colored_label(mark(o.ecc <= limits.0), format!("eccentricity {:.2} (max {:.1})", o.ecc, limits.0));
-                                let lo = o.peri / radius;
-                                ui.colored_label(mark(lo >= limits.1), format!("lowest point {lo:.1} radii (min {:.1})", limits.1));
-                                let hi = o.apo / radius;
-                                ui.colored_label(mark(hi <= limits.2), format!("highest point {hi:.1} radii (max {:.0})", limits.2));
-                            }
-                            Some(_) => {
-                                ui.label("Not in orbit: match its speed, close by");
-                            }
-                            None => {}
-                        }
-                        ui.add(egui::ProgressBar::new(my_hold.min(1.0)).text("held"));
-                        for (rival, frac) in &rivals {
-                            ui.add(egui::ProgressBar::new(frac.min(1.0)).text(rival.as_str()));
+                            ui.label(RichText::new(l).monospace().color(dim));
                         }
                     });
                 });
             }
-            if let Some(left) = intermission {
-                egui::Window::new("Round over").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_TOP, [0.0, 60.0]).show(
-                    ctx,
-                    |ui| {
-                        match scores.first() {
-                            Some(best) if best.1 > 0 => ui.heading(format!("{} wins with {} points", best.0, best.1)),
-                            _ => ui.heading("Nobody scored"),
+
+            // Top right: standings and what just happened.
+            Area::new(Id::new("score")).anchor(Align2::RIGHT_TOP, [-10.0, 10.0]).show(ctx, |ui| {
+                style::panel().show(ui, |ui| {
+                    egui::Grid::new("scores").num_columns(5).spacing([14.0, 3.0]).show(ui, |ui| {
+                        for head in ["PILOT", "PTS", "ORB", "K", "D"] {
+                            style::caption(ui, head);
+                        }
+                        ui.end_row();
+                        for (name, score, k, d, caps, mine) in &scores {
+                            let colour = if *mine { style::c32(style::OWN_SHIP) } else { style::c32(style::TEXT) };
+                            ui.label(RichText::new(name).color(colour));
+                            ui.label(RichText::new(score.to_string()).color(colour).strong());
+                            for n in [caps, k, d] {
+                                ui.label(RichText::new(n.to_string()).color(dim));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    if !feed.is_empty() {
+                        ui.add_space(4.0);
+                    }
+                    for f in &feed {
+                        ui.label(RichText::new(f).small().color(dim));
+                    }
+                });
+            });
+
+            // Bottom right: the ship.
+            Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
+                style::panel().show(ui, |ui| {
+                    ui.set_width(220.0);
+                    match fuel {
+                        Some(f) => {
+                            let frac = f as f32 / fuel_max as f32;
+                            let fuel_colour = if frac < 0.2 { style::EMBER } else { style::ACCENT };
+                            style::gauge(ui, "DELTA-V", &fmt::speed(f as f64 / 1000.0), frac, fuel_colour);
+                            style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
+                            let loaded = (1.0 - reload / cooldown.max(1e-6)).clamp(0.0, 1.0) as f32;
+                            let shell = if reload > 0.0 { format!("{reload:.1} s") } else { "ready".to_string() };
+                            style::gauge(ui, "SHELL", &shell, loaded, if reload > 0.0 { style::DIM } else { style::EMBER });
+                            style::caption(ui, if mouse_aim { "AIM  MOUSE  (M)" } else { "AIM  A / D  (M)" });
+                        }
+                        None => {
+                            style::caption(ui, "SHIP LOST");
+                            ui.label(RichText::new(match respawn_in {
+                                Some(s) => format!("respawn in {s:.1} s"),
+                                None => "waiting for a ship".into(),
+                            })
+                            .heading()
+                            .color(bad));
+                        }
+                    }
+                });
+            });
+
+            // Bottom left: the objective.
+            if let Some(name) = &target_name {
+                Area::new(Id::new("objective")).anchor(Align2::LEFT_BOTTOM, [10.0, -10.0]).show(ctx, |ui| {
+                    style::panel().show(ui, |ui| {
+                        ui.set_width(220.0);
+                        ui.horizontal(|ui| {
+                            style::caption(ui, "ORBIT");
+                            ui.label(RichText::new(name).color(gold).strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(format!("+{capture_points}")).color(gold));
+                            });
+                        });
+                        let check = |ui: &mut egui::Ui, ok: bool, what: &str, value: String, limit: String| {
+                            ui.horizontal(|ui| {
+                                style::caption(ui, what);
+                                ui.label(RichText::new(value).small().color(if ok { good } else { bad }));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(limit).small().color(dim));
+                                });
+                            });
                         };
-                        ui.label(format!("New world in {left:.0} s"));
-                    },
-                );
+                        match orbit {
+                            Some((o, radius)) if o.bound => {
+                                let (lo, hi) = (o.peri / radius, o.apo / radius);
+                                check(ui, o.ecc <= limits.0, "ECC", format!("{:.2}", o.ecc), format!("max {:.1}", limits.0));
+                                check(ui, lo >= limits.1, "LOW", format!("{lo:.1} r"), format!("min {:.1} r", limits.1));
+                                check(ui, hi <= limits.2, "HIGH", format!("{hi:.1} r"), format!("max {:.0} r", limits.2));
+                            }
+                            Some(_) => {
+                                ui.label(RichText::new("not in orbit: get close and match its speed").small().color(dim));
+                            }
+                            None => {}
+                        }
+                        ui.add_space(2.0);
+                        style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
+                        for (rival, frac) in &rivals {
+                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
+                        }
+                    });
+                });
             }
             if menu {
                 egui::Window::new("Menu").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
@@ -1045,13 +1067,6 @@ fn draw_ship(s: (f32, f32), facing: f32, color: Color, burning: bool, ui: f32) {
     draw_triangle(at(-0.9, 0.3), at(-0.9, -0.3), at(-0.55, 0.0), Color::new(0.1, 0.12, 0.16, 1.0));
 }
 
-/// Text horizontally centred on `x`, baseline at `y`.
-fn draw_centered(text: &str, x: f32, y: f32, size: f32, color: Color) {
-    // Measure and draw with the same whole-pixel size, or the two disagree by a few percent.
-    let px = size.floor().max(1.0);
-    let w = measure_text(text, None, px as u16, 1.0).width;
-    draw_text(text, (x - 0.5 * w).round(), y.round(), px, color);
-}
 
 impl Game {
     /// Tell the server we are going, so our name and ship are released at once.

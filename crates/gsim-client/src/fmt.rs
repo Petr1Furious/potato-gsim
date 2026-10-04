@@ -18,3 +18,12 @@ pub fn speed(mps: f64) -> String {
 pub fn mass(kg: f64) -> String {
     format!("{kg:.3e} kg")
 }
+
+/// Like [`distance`] but without trailing zeros, for round lengths ("10 Gm", "2.5 Mm").
+pub fn distance_round(m: f64) -> String {
+    let s = distance(m);
+    match s.split_once(' ') {
+        Some((n, unit)) if n.contains('.') => format!("{} {unit}", n.trim_end_matches('0').trim_end_matches('.')),
+        _ => s,
+    }
+}

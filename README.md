@@ -15,6 +15,7 @@ cargo run --release -p gsim-client                       # menu
 cargo run --release -p gsim-client -- --connect my.host  # join directly
 cargo run --release -p gsim-client -- --solo solar       # offline, in-process server
 cargo run --release -p gsim-client -- --selftest         # check this machine can stay in sync
+cargo run --release -p gsim-client -- --gallery          # how bodies of each mass are drawn
 
 # Headless test player: exit code 0 = stayed bit-identical with the server
 cargo run --release -p gsim-client-core --bin gsim-bot -- my.host --seconds 30
@@ -71,6 +72,9 @@ Bodies flung out of the system for good fade out and are removed, and are never 
 | P, O | Ship trajectory prediction, shell trajectory preview |
 | L, T | Trails, trails relative to selection / world |
 | R, F3, F11, Esc | Recentre, network details, fullscreen, menu |
+
+Colour shows mass: dim slate for the lightest bodies, through ice blue and pale sand to amber
+and ember for the heaviest; stars glow white-gold, negative masses are violet to pink.
 
 The green line is where the ship goes if the engine stays off; yellow is with the current
 burn held. Both are exact, not estimates. Shells are armed 0.5 s after launch (small circle on

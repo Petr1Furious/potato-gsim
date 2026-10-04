@@ -5,6 +5,7 @@ mod fmt;
 mod game;
 mod predictor;
 mod settings;
+mod style;
 mod updater;
 
 use clap::Parser;
@@ -42,6 +43,9 @@ struct Args {
     /// Show the network/sync overlay from the start (F3 toggles it)
     #[arg(long)]
     net_overlay: bool,
+    /// Show how bodies of different masses and sizes are drawn, instead of the game
+    #[arg(long)]
+    gallery: bool,
     /// Run the simulation self-test, print the result and exit (no window)
     #[arg(long)]
     selftest: bool,
@@ -102,6 +106,7 @@ fn solo(settings: &Settings, args: &Args) -> Result<Game, String> {
 }
 
 async fn run(args: Args, mut settings: Settings) {
+    style::init();
     let mut message = String::new();
     let updater = updater::Updater::start(!args.no_update);
     // Closing the window or pressing Cmd+Q should still say goodbye to the server and
@@ -125,6 +130,20 @@ async fn run(args: Args, mut settings: Settings) {
     let started = get_time();
 
     loop {
+        if args.gallery {
+            gallery(settings.marker_factor());
+            if let Some(path) = &args.screenshot {
+                if get_time() - started >= args.screenshot_after {
+                    get_screen_data().export_png(path);
+                    break;
+                }
+            }
+            if is_quit_requested() || is_key_pressed(KeyCode::Escape) {
+                break;
+            }
+            next_frame().await;
+            continue;
+        }
         let mut next: Option<Screen> = None;
         let mut quit = false;
         match &mut screen {
@@ -143,7 +162,7 @@ async fn run(args: Args, mut settings: Settings) {
                     settings.save();
                     updater.apply(true);
                 }
-                clear_background(Color::from_rgba(8, 10, 16, 255));
+                clear_background(style::BACKGROUND);
                 let mut action: Option<Result<Game, String>> = None;
                 let factor = settings.ui_factor();
                 egui_macroquad::ui(|ctx| {
@@ -242,4 +261,25 @@ async fn run(args: Args, mut settings: Settings) {
 
 fn short(version: &str) -> &str {
     version.get(..7).unwrap_or(version)
+}
+
+/// Reference sheet for the body renderer: one column per mass, one row per on-screen size.
+fn gallery(ui: f32) {
+    clear_background(style::BACKGROUND);
+    let masses = [1.0e21, 1.0e22, 1.0e23, 1.0e24, 1.0e25, 1.0e26, 1.0e27, 2.0e30, -1.0e22, -1.0e24, -1.0e26];
+    let sizes = [0.5, 3.0, 8.0, 20.0, 48.0];
+    let (w, h) = (screen_width(), screen_height());
+    let (dx, mut y) = (w / (masses.len() as f32 + 1.0), 70.0 * ui);
+    for (row, size) in sizes.iter().enumerate() {
+        let r = size * ui;
+        y += r.max(8.0 * ui);
+        for (col, mass) in masses.iter().enumerate() {
+            let x = dx * (col as f32 + 1.0);
+            style::body((x, y), r, *mass, 17 + 31 * col as u32 + 7 * row as u32, 1.0, ui);
+            if row == 0 {
+                style::centered(&fmt::mass(*mass), x, 40.0 * ui, 12.0 * ui, style::DIM);
+            }
+        }
+        y += r.max(8.0 * ui) + h * 0.05;
+    }
 }
