@@ -298,7 +298,7 @@ impl Authority {
         }
     }
 
-    /// Circular orbit around the barycentre, clear of every body.
+    /// Circular orbit around the barycentre, clear of every body, near the objective if any.
     fn spawn_state(&mut self) -> ShipState {
         let m = &self.massive;
         let (mut w, mut cx, mut cy, mut cvx, mut cvy) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -316,11 +316,29 @@ impl Authority {
             cvx /= w;
             cvy /= w;
         }
+        // With an objective, spawn in a ring around it: near enough to be in the game at
+        // once, far enough (several times the scoring band) that respawning is never a
+        // shortcut to the target. Otherwise anywhere in the scenario's spawn annulus.
+        let near = self.target.filter(|t| m.alive[*t as usize]).map(|t| {
+            let j = t as usize;
+            let lo = (0.12 * self.spawn_r.1).max(4.0 * self.rules.orbit_max_apo_radii * m.radius[j]);
+            (m.x[j], m.y[j], lo, 2.0 * lo)
+        });
         let mut best = Particle { x: cx + self.spawn_r.1, y: cy, vx: cvx, vy: cvy };
         for _ in 0..64 {
-            let r = self.rng.range(self.spawn_r.0, self.spawn_r.1);
             let a = self.rng.angle();
-            let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
+            let (x, y) = match near {
+                Some((tx, ty, lo, hi)) => {
+                    let d = self.rng.range(lo, hi);
+                    (tx + d * a.cos(), ty + d * a.sin())
+                }
+                None => {
+                    let r = self.rng.range(self.spawn_r.0, self.spawn_r.1);
+                    (cx + r * a.cos(), cy + r * a.sin())
+                }
+            };
+            let (rx, ry) = (x - cx, y - cy);
+            let r = (rx * rx + ry * ry).sqrt().max(1.0);
             let mut enclosed = 0.0;
             let mut clear = true;
             for j in 0..m.len() {
@@ -337,8 +355,9 @@ impl Authority {
                     clear = false;
                 }
             }
+            // Circular orbit about the barycentre through the chosen point.
             let v = (self.rules.g * enclosed.max(0.0) / r).sqrt();
-            best = Particle { x, y, vx: cvx - v * a.sin(), vy: cvy + v * a.cos() };
+            best = Particle { x, y, vx: cvx - v * ry / r, vy: cvy + v * rx / r };
             if clear {
                 break;
             }

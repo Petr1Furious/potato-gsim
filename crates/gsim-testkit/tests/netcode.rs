@@ -341,3 +341,30 @@ fn rounds_wait_for_players() {
     assert_eq!((w.round, w.next_round_tick), (2, None));
     assert_eq!(sim.clients[b].session.stats.hash_mismatches, 0);
 }
+
+#[test]
+fn ships_spawn_near_the_target_but_not_on_top_of_it() {
+    use gsim_core::Body;
+    let mut sc = quiet_scenario();
+    // The objective: a planet on the far side of the star from the usual spawn annulus.
+    sc.bodies.push(Body { x: -3.0e11, y: 0.0, vx: 0.0, vy: 0.0, mass: 3.0e25, radius: 1.0e7 });
+    let mut sim = Sim::new(sc, 40);
+    sim.server.set_target(1);
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    let rules = sim.server.rules.clone();
+    let band = rules.orbit_max_apo_radii * 1.0e7;
+    for life in 0..6 {
+        sim.run_with(1.0, idle);
+        let pa = sim.player_id(a).unwrap();
+        let ship = sim.server.ship(pa).expect("alive").p;
+        let (tx, ty) = (sim.server.massive.x[1], sim.server.massive.y[1]);
+        let d = ((ship.x - tx).powi(2) + (ship.y - ty).powi(2)).sqrt();
+        // Spawned about a second ago and drifting slowly: still essentially the spawn distance.
+        assert!(d > 3.5 * band, "life {life}: {d:e} m is too close to the scoring band ({band:e} m)");
+        assert!(d < 0.6e11, "life {life}: {d:e} m is nowhere near the target");
+        // Die (crash into the star) and come back.
+        sim.server.place_ship(pa, ShipState::new(Particle { x: 6.0e9, y: 0.0, vx: -2.0e5, vy: 0.0 }, &rules));
+        sim.run_with(4.5, idle);
+    }
+    sim.ships_agree().unwrap();
+}
