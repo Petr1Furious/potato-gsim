@@ -21,8 +21,9 @@ cargo run --release -p gsim-client-core --bin gsim-bot -- my.host --seconds 30
 ```
 
 Prebuilt clients for Windows, macOS and Linux are attached to each
-[release](https://github.com/Petr1Furious/potato-gsim/releases); pushing a tag like `v0.2.0`
-builds and publishes one. Client and server must come from the same release.
+[release](https://github.com/Petr1Furious/potato-gsim/releases). The "Latest build" release
+is rebuilt on every push to `master`; pushing a tag like `v0.2.0` additionally
+publishes a versioned one. Client and server must be the same build.
 
 On NixOS prefix commands with `./x` (e.g. `./x cargo test --workspace`) or use `nix develop`.
 
