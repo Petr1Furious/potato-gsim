@@ -9,6 +9,10 @@ cd "$root"
 version="${GITHUB_REF_NAME:-dev}"
 case "$version" in v[0-9]*) version="${version#v}" ;; *) version="0.0.0" ;; esac
 pkg="potato-gsim-$name"
+# Only rolling-release builds know their version, so only they update themselves.
+if [ "${GITHUB_REF:-}" = "refs/heads/master" ]; then
+  export GSIM_BUILD_VERSION="$GITHUB_SHA"
+fi
 rm -rf dist stage
 mkdir -p dist "stage/$pkg"
 
@@ -17,12 +21,15 @@ case "$name" in
     cargo build --release --locked -p gsim-client -p gsim-server -p gsim-client-core
     cp target/release/gsim-client target/release/gsim-server target/release/gsim-bot README.md "stage/$pkg/"
     tar -czf "dist/$pkg.tar.gz" -C stage "$pkg"
+    # Bare client for the self-updater.
+    cp target/release/gsim-client "dist/gsim-client-$name"
     ;;
 
   windows-*)
     cargo build --release --locked -p gsim-client -p gsim-server
     cp target/release/gsim-client.exe target/release/gsim-server.exe README.md "stage/$pkg/"
     (cd stage && 7z a -tzip "../dist/$pkg.zip" "$pkg" >/dev/null)
+    cp target/release/gsim-client.exe "dist/gsim-client-$name.exe"
     ;;
 
   macos-*)
@@ -55,6 +62,10 @@ PLIST
     # all; with it, Gatekeeper shows a warning that the user can override.
     codesign --force --deep --sign - "$app"
     codesign --verify --deep --strict "$app"
+    # Whole signed bundle for the self-updater, which swaps it in as `update.app`.
+    mkdir -p stage/update
+    cp -R "$app" stage/update/update.app
+    tar -czf "dist/gsim-client-$name.tar.gz" -C stage/update update.app
     ln -s /Applications "stage/$pkg/Applications"
     # hdiutil occasionally fails with "resource busy" on CI runners.
     for attempt in 1 2 3 4 5; do

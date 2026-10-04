@@ -5,6 +5,7 @@ mod fmt;
 mod game;
 mod predictor;
 mod settings;
+mod updater;
 
 use clap::Parser;
 use egui_macroquad::egui;
@@ -35,6 +36,9 @@ struct Args {
     lookahead: f32,
     #[arg(long)]
     fullscreen: bool,
+    /// Do not check for or install updates
+    #[arg(long, env = "GSIM_NO_UPDATE")]
+    no_update: bool,
     /// Show the network/sync overlay from the start (F3 toggles it)
     #[arg(long)]
     net_overlay: bool,
@@ -99,6 +103,7 @@ fn solo(settings: &Settings, args: &Args) -> Result<Game, String> {
 
 async fn run(args: Args, mut settings: Settings) {
     let mut message = String::new();
+    let updater = updater::Updater::start(!args.no_update);
     let mut screen = Screen::Menu;
     let auto = if let Some(server) = &args.connect {
         settings.server = server.clone();
@@ -129,6 +134,12 @@ async fn run(args: Args, mut settings: Settings) {
                 Outcome::Quit => quit = true,
             },
             Screen::Menu => {
+                // Between games is the one moment a restart costs the player nothing.
+                let update = updater.status();
+                if update == updater::Status::Ready {
+                    settings.save();
+                    updater.apply(true);
+                }
                 clear_background(Color::from_rgba(8, 10, 16, 255));
                 let mut action: Option<Result<Game, String>> = None;
                 let factor = settings.ui_factor();
@@ -176,6 +187,16 @@ async fn run(args: Args, mut settings: Settings) {
                                 ui.add_space(6.0);
                                 ui.colored_label(egui::Color32::from_rgb(255, 140, 120), &message);
                             }
+                            let note = match &update {
+                                updater::Status::Disabled => format!("build {}", short(updater::build_version())),
+                                updater::Status::Checking => "checking for updates...".to_string(),
+                                updater::Status::UpToDate => format!("up to date ({})", short(updater::build_version())),
+                                updater::Status::Downloading { percent } => format!("downloading update... {percent} %"),
+                                updater::Status::Ready => "installing update...".to_string(),
+                                updater::Status::Failed(e) => e.clone(),
+                            };
+                            ui.add_space(4.0);
+                            ui.small(note);
                         });
                 });
                 egui_macroquad::draw();
@@ -198,6 +219,8 @@ async fn run(args: Args, mut settings: Settings) {
             }
         }
         if quit {
+            // Install a finished download on the way out; the next start runs the new version.
+            updater.apply(false);
             settings.save();
             break;
         }
@@ -206,4 +229,8 @@ async fn run(args: Args, mut settings: Settings) {
         }
         next_frame().await
     }
+}
+
+fn short(version: &str) -> &str {
+    version.get(..7).unwrap_or(version)
 }

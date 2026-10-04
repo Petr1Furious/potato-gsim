@@ -25,6 +25,11 @@ Prebuilt clients for Windows, macOS and Linux are attached to each
 is rebuilt on every push to `master`; pushing a tag like `v0.2.0` additionally
 publishes a versioned one. Client and server must be the same build.
 
+Clients from the "Latest build" release update themselves: at start-up they compare their
+commit with the release, download a newer client in the background, and install it when you
+are in the menu (restarting) or when you quit. `--no-update` or `GSIM_NO_UPDATE=1` turns it
+off; builds from source or from other branches never update.
+
 On NixOS prefix commands with `./x` (e.g. `./x cargo test --workspace`) or use `nix develop`.
 
 ### Docker

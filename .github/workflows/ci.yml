@@ -72,6 +72,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Publish the version the self-updater compares against
+        if: env.ROLLING == 'true'
+        run: echo "$GITHUB_SHA" > dist/version.txt
       - name: Move the "latest" tag to this commit
         if: env.ROLLING == 'true'
         run: |
@@ -93,5 +96,7 @@ jobs:
               notarised: the first time, right-click it and choose **Open**, or run
               `xattr -dr com.apple.quarantine /Applications/potato-gsim.app`.
             - Linux: `potato-gsim-linux-x86_64.tar.gz` (also contains the dedicated server).
+
+            The `gsim-client-*` files and `version.txt` are for the built-in updater.
 
             Client and server must be the same build; a mismatched client is refused with a message.

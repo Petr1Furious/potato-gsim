@@ -11,6 +11,12 @@ gsim-client-core.workspace = true
 clap.workspace = true
 macroquad = { version = "0.4", default-features = false }
 egui-macroquad = { version = "0.17", default-features = false }
+ureq = "2"
+self-replace = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+flate2 = "1"
+tar = "0.4"
 
 [[bin]]
 name = "gsim-client"
