@@ -1,0 +1,17 @@
+[package]
+name = "gsim-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gsim-core.workspace = true
+gsim-proto.workspace = true
+gsim-server.workspace = true
+gsim-client-core.workspace = true
+clap.workspace = true
+macroquad = { version = "0.4", default-features = false }
+egui-macroquad = { version = "0.17", default-features = false }
+
+[[bin]]
+name = "gsim-client"
+path = "src/main.rs"

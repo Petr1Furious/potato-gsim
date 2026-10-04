@@ -1,0 +1,10 @@
+[package]
+name = "gsim-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+libm.workspace = true
+rayon.workspace = true
+xxhash-rust.workspace = true

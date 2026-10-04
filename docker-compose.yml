@@ -1,0 +1,15 @@
+# docker compose up -d --build
+services:
+  gsim:
+    build: .
+    image: potato-gsim-server
+    container_name: potato-gsim
+    restart: unless-stopped
+    ports:
+      - "27777:27777/udp"
+    environment:
+      GSIM_PRESET: random       # random | disc | solar | binary | figure8 | repulsor | runaway
+      GSIM_SEED: "0"            # 0 = new world on every start
+      GSIM_RANDOM_COUNT: "1000"
+      GSIM_TIME_SCALE: "86400"
+      GSIM_ROUND_SECONDS: "600"   # 0 = endless

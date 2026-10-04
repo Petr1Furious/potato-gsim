@@ -1,0 +1,15 @@
+[package]
+name = "gsim-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gsim-core.workspace = true
+gsim-proto.workspace = true
+clap.workspace = true
+renet.workspace = true
+renet_netcode.workspace = true
+
+[[bin]]
+name = "gsim-server"
+path = "src/main.rs"

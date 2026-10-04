@@ -13,14 +13,32 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
+        # Loaded at run time by the Rust client's windowing layer (Linux only).
+        clientLibs = pkgs.lib.optionals pkgs.stdenv.isLinux (
+          with pkgs;
+          [
+            libx11
+            libxi
+            libxcursor
+            libxrandr
+            libxkbcommon
+            libGL
+          ]
+        );
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            gcc15
-            sfml
-            cmake
-          ];
+          packages =
+            with pkgs;
+            [
+              # Rust rewrite (crates/)
+              rustc
+              cargo
+              clippy
+              rustfmt
+            ]
+            ++ clientLibs;
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath clientLibs;
         };
       }
     );

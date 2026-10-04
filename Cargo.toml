@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+gsim-core = { path = "crates/gsim-core" }
+gsim-proto = { path = "crates/gsim-proto" }
+gsim-server = { path = "crates/gsim-server" }
+gsim-client-core = { path = "crates/gsim-client-core" }
+gsim-testkit = { path = "crates/gsim-testkit" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+libm = "0.2"
+rayon = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+clap = { version = "4", features = ["derive", "env"] }
+renet = "2"
+renet_netcode = "2"
+
+# The simulation is unusably slow unoptimised; keep debug builds and tests fast.
+[profile.dev.package.gsim-core]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"

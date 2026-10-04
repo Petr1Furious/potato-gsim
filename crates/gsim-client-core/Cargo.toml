@@ -1,0 +1,15 @@
+[package]
+name = "gsim-client-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gsim-core.workspace = true
+gsim-proto.workspace = true
+renet.workspace = true
+renet_netcode.workspace = true
+clap.workspace = true
+
+[[bin]]
+name = "gsim-bot"
+path = "src/bin/bot.rs"

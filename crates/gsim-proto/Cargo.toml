@@ -1,0 +1,10 @@
+[package]
+name = "gsim-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gsim-core.workspace = true
+serde.workspace = true
+postcard.workspace = true
+renet.workspace = true

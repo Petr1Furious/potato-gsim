@@ -1,0 +1,82 @@
+name: CI
+
+# Every push and pull request is tested and built for all platforms (downloadable as
+# workflow artifacts). Pushing a tag like v0.2.0 additionally publishes a GitHub release
+# with the same packages attached.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      # The determinism rules for the simulation core live in its clippy.toml.
+      - run: cargo clippy -p gsim-core --lib --locked -- -D clippy::disallowed_methods
+
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest }
+          - { name: windows-x86_64, os: windows-latest }
+          - { name: macos-universal, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and package
+        run: ./scripts/ci/package.sh "${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: potato-gsim-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            **Download**
+            - Windows: `potato-gsim-windows-x86_64.zip`, run `gsim-client.exe`.
+            - macOS (Apple Silicon and Intel): `potato-gsim-macos-universal.dmg`. The app is not
+              notarised: the first time, right-click it and choose **Open**, or run
+              `xattr -dr com.apple.quarantine /Applications/potato-gsim.app`.
+            - Linux: `potato-gsim-linux-x86_64.tar.gz` (also contains the dedicated server).
+
+            Client and server must come from the same release.
