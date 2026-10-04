@@ -632,7 +632,7 @@ impl Game {
             let color = if mine { Color::from_rgba(255, 225, 150, 255) } else { Color::from_rgba(130, 200, 255, 255) };
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
             if !mine {
-                draw_centered(&p.name, s.0, s.1 + 24.0 * ui, LABEL * ui, color);
+                draw_centered(&p.name, s.0, s.1 + 20.0 * ui, LABEL * ui, color);
             }
         }
 
@@ -1013,15 +1013,36 @@ fn draw_trails(
     }
 }
 
+/// A small dart with swept wings, a canopy and an engine plume. `s` is the screen position,
+/// `facing` the heading in radians (screen space, y down).
 fn draw_ship(s: (f32, f32), facing: f32, color: Color, burning: bool, ui: f32) {
-    let size = 10.0 * ui;
+    let size = 6.0 * ui;
     let (c, n) = (facing.cos(), facing.sin());
-    let at = |fwd: f32, side: f32| vec2(s.0 + c * fwd * size - n * side * size, s.1 + n * fwd * size + c * side * size);
+    // Ship-local coordinates: x forward, y to the side, in units of `size`.
+    let at = |fwd: f32, side: f32| vec2(s.0 + (c * fwd - n * side) * size, s.1 + (n * fwd + c * side) * size);
+    let shade = |k: f32, a: f32| Color::new(color.r * k, color.g * k, color.b * k, a);
+
     if burning {
-        draw_triangle(at(-1.0, 0.45), at(-1.0, -0.45), at(-2.2, 0.0), Color::from_rgba(255, 150, 60, 230));
+        // Flickering plume: a wide soft flame with a hot core.
+        let t = get_time() as f32;
+        let flick = 0.75 + 0.25 * (t * 47.0).sin() * (t * 31.0).cos();
+        let len = 2.6 * flick;
+        draw_triangle(at(-0.75, 0.34), at(-0.75, -0.34), at(-0.9 - len, 0.0), Color::new(1.0, 0.45, 0.15, 0.85));
+        draw_triangle(at(-0.75, 0.18), at(-0.75, -0.18), at(-0.9 - 0.55 * len, 0.0), Color::new(1.0, 0.92, 0.6, 0.95));
     }
-    draw_triangle(at(1.8, 0.0), at(-1.0, 0.9), at(-1.0, -0.9), color);
-    draw_line(s.0, s.1, at(3.0, 0.0).x, at(3.0, 0.0).y, ui, Color::new(color.r, color.g, color.b, 0.5));
+    // Wings, swept back, darker than the hull.
+    for side in [1.0f32, -1.0] {
+        draw_triangle(at(0.45, 0.22 * side), at(-1.25, 1.2 * side), at(-0.8, 0.22 * side), shade(0.62, 1.0));
+        // Wingtip accent.
+        draw_triangle(at(-0.95, 1.02 * side), at(-1.25, 1.2 * side), at(-1.45, 1.12 * side), shade(1.0, 1.0));
+    }
+    // Hull: a long nose tapering from the engine block.
+    draw_triangle(at(2.1, 0.0), at(-0.9, 0.5), at(-0.9, -0.5), color);
+    // Spine highlight and canopy.
+    draw_triangle(at(2.1, 0.0), at(-0.9, 0.0), at(-0.9, -0.5), shade(0.8, 1.0));
+    draw_triangle(at(1.2, 0.0), at(0.2, 0.2), at(0.2, -0.2), Color::new(0.55, 0.85, 1.0, 1.0));
+    // Engine nozzle.
+    draw_triangle(at(-0.9, 0.3), at(-0.9, -0.3), at(-0.55, 0.0), Color::new(0.1, 0.12, 0.16, 1.0));
 }
 
 /// Text horizontally centred on `x`, baseline at `y`.
