@@ -1024,3 +1024,10 @@ fn draw_centered(text: &str, x: f32, y: f32, size: f32, color: Color) {
     let w = measure_text(text, None, px as u16, 1.0).width;
     draw_text(text, (x - 0.5 * w).round(), y.round(), px, color);
 }
+
+impl Game {
+    /// Tell the server we are going, so our name and ship are released at once.
+    pub fn leave(&mut self) {
+        self.net.disconnect();
+    }
+}

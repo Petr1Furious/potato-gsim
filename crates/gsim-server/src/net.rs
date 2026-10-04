@@ -50,6 +50,8 @@ impl Default for ServerOptions {
 /// slows the game down instead of freezing the process.
 const MAX_STEPS_PER_LOOP: u32 = 8;
 const MAX_DEBT_SECONDS: f64 = 0.25;
+/// Live clients send something several times a second.
+const STALE_AFTER: Duration = Duration::from_millis(1500);
 
 pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     if !(opts.time_scale.is_finite() && opts.time_scale > 0.0) {
@@ -137,6 +139,19 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
                         if let ClientMsg::Hello { name, .. } = &msg {
                             if !opts.quiet {
                                 eprintln!("[hello] conn {client} name={name:?}");
+                            }
+                            // A client that vanished without saying goodbye (killed, crashed, lost
+                            // network) still holds its name until the transport times out. A live
+                            // client is never this quiet, so let the newcomer take the name over.
+                            if let Some(old) = authority.holder_of(name).filter(|old| *old != client) {
+                                let silent = transport.time_since_last_received_packet(old).unwrap_or(Duration::MAX);
+                                if silent >= STALE_AFTER {
+                                    if !opts.quiet {
+                                        eprintln!("[takeover] conn {old} silent for {:.1} s, releasing {name:?}", silent.as_secs_f64());
+                                    }
+                                    server.disconnect(old);
+                                    authority.disconnect(old);
+                                }
                             }
                         }
                         authority.handle(client, msg, tick_frac);

@@ -170,7 +170,7 @@ impl Authority {
         if self.by_conn.contains_key(&conn) {
             return;
         }
-        let name: String = name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect();
+        let name = clean_name(&name);
         let reject = if protocol != PROTOCOL_VERSION {
             Some(format!("protocol mismatch: server {PROTOCOL_VERSION}, client {protocol}"))
         } else if golden != selftest::GOLDEN {
@@ -670,5 +670,18 @@ impl Authority {
         let (r, escaping) = frame.escape_state(&m.kinematics(), j, self.rules.g);
         let limit = self.rules.escape_radius;
         !escaping && (limit <= 0.0 || r <= frac * limit)
+    }
+}
+
+fn clean_name(name: &str) -> String {
+    name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect()
+}
+
+impl Authority {
+    /// Connection currently playing under `name`, if any.
+    pub fn holder_of(&self, name: &str) -> Option<ConnId> {
+        let name = clean_name(name);
+        let id = self.players.values().find(|p| p.name == name)?.id;
+        self.by_conn.iter().find(|(_, p)| **p == id).map(|(c, _)| *c)
     }
 }

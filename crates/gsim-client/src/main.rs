@@ -104,6 +104,9 @@ fn solo(settings: &Settings, args: &Args) -> Result<Game, String> {
 async fn run(args: Args, mut settings: Settings) {
     let mut message = String::new();
     let updater = updater::Updater::start(!args.no_update);
+    // Closing the window or pressing Cmd+Q should still say goodbye to the server and
+    // install a pending update, so take over the quit request.
+    prevent_quit();
     let mut screen = Screen::Menu;
     let auto = if let Some(server) = &args.connect {
         settings.server = server.clone();
@@ -212,6 +215,9 @@ async fn run(args: Args, mut settings: Settings) {
                 }
             }
         }
+        if is_quit_requested() {
+            quit = true;
+        }
         if let Some(path) = &args.screenshot {
             if get_time() - started >= args.screenshot_after {
                 get_screen_data().export_png(path);
@@ -219,6 +225,9 @@ async fn run(args: Args, mut settings: Settings) {
             }
         }
         if quit {
+            if let Screen::Game(game) = &mut screen {
+                game.leave();
+            }
             // Install a finished download on the way out; the next start runs the new version.
             updater.apply(false);
             settings.save();
