@@ -276,15 +276,8 @@ fn objective_follows_a_target_that_merges() {
     for i in 0..6 {
         sc.bodies.push(Body { x: 0.0, y: 3.0e11 + 1.0e10 * i as f64, vx: 2.0e4, vy: 0.0, mass: 2.0e25, radius: 9.6e6 });
     }
-    // Try seeds until the objective lands on the lighter of the pair (slot 1).
-    let mut sim = (0..200)
-        .map(|seed| {
-            let mut sim = Sim::new(sc.clone(), seed);
-            sim.server.enable_objective();
-            sim
-        })
-        .find(|sim| sim.server.target() == Some(1))
-        .expect("some seed picks slot 1");
+    let mut sim = Sim::new(sc, 12);
+    sim.server.set_target(1); // the lighter of the pair
     sim.add_client("ann", Link::new(25.0, 5.0, 0.0));
     sim.run_with(1.5, idle);
     assert!(!sim.server.massive.alive[1], "the lighter body was absorbed");
@@ -292,4 +285,59 @@ fn objective_follows_a_target_that_merges() {
     assert_eq!(sim.server.target(), Some(2), "objective moved to the merged body, not elsewhere");
     let w = sim.clients[0].session.world.as_ref().unwrap();
     assert_eq!(w.target, Some(2));
+}
+
+#[test]
+fn targets_are_picked_near_the_players() {
+    use gsim_core::Body;
+    let mut sc = quiet_scenario();
+    // Twelve equally heavy bodies on a ring; slot k+1 sits at angle k * 30 degrees.
+    for k in 0..12 {
+        let a = k as f64 * std::f64::consts::TAU / 12.0;
+        sc.bodies.push(Body { x: 2.0e11 * a.cos(), y: 2.0e11 * a.sin(), vx: 0.0, vy: 0.0, mass: 3.0e25, radius: 1.0e7 });
+    }
+    for seed in 0..8 {
+        let mut sim = Sim::new(sc.clone(), 20 + seed);
+        let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+        sim.run_with(1.0, idle);
+        let pa = sim.player_id(a).unwrap();
+        let rules = sim.server.rules.clone();
+        // Park the only ship next to slot 4 (angle 90 degrees).
+        sim.server.place_ship(pa, ShipState::new(Particle { x: 0.0, y: 2.05e11, vx: 0.0, vy: 0.0 }, &rules));
+        sim.server.enable_objective();
+        let target = sim.server.target().expect("a target is chosen while a ship is flying");
+        assert!((3..=5).contains(&target), "target {target} should be one of the three bodies nearest the ship");
+    }
+}
+
+#[test]
+fn rounds_wait_for_players() {
+    let mut sim = Sim::new(small_world(), 30);
+    let hz = sim.server.rules.tick_hz as u64;
+    sim.server.set_rounds(3 * hz, hz, None);
+    sim.server.enable_objective();
+    // An empty server does not burn through rounds.
+    sim.run_with(10.0, idle);
+    assert_eq!(sim.server.round(), 0);
+    assert_eq!(sim.server.target(), None, "no target until somebody is flying");
+
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    assert_eq!(sim.server.round(), 1, "the first join starts round 1");
+    let w = sim.clients[a].session.world.as_ref().unwrap();
+    let left = w.round_end_tick.unwrap() - sim.server.tick();
+    assert!(left > hz && left <= 3 * hz, "the clock started at the join, {left} ticks left");
+    assert!(sim.server.target().is_some());
+
+    // Everyone leaves: the round runs out, and no new one starts.
+    sim.disconnect(a);
+    sim.run_with(12.0, idle);
+    assert_eq!(sim.server.round(), 1);
+
+    let b = sim.add_client("bob", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    assert_eq!(sim.server.round(), 2, "the next join gets a fresh round");
+    let w = sim.clients[b].session.world.as_ref().unwrap();
+    assert_eq!((w.round, w.next_round_tick), (2, None));
+    assert_eq!(sim.clients[b].session.stats.hash_mismatches, 0);
 }

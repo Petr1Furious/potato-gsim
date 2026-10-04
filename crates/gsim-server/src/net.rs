@@ -160,6 +160,10 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             }
         }
 
+        if authority.player_count() == 0 {
+            // Nothing to simulate for: the world waits, and a fresh round starts on the next join.
+            debt = 0.0;
+        }
         let mut n = 0;
         while debt >= period && n < MAX_STEPS_PER_LOOP {
             let t0 = Instant::now();

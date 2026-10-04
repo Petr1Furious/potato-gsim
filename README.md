@@ -54,6 +54,7 @@ speeds several times that budget). Score by:
 - **Destroying other ships** with shells (+1).
 
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
+An empty server pauses: the next round begins when the first player joins.
 Bodies flung out of the system for good fade out and are removed, and are never targets.
 
 ## Controls
