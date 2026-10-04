@@ -55,6 +55,11 @@ pub struct Stats {
     pub late_cmds: u64,
     pub cmds: u64,
     pub resyncs: u64,
+    /// Why the objective moved: its body merged into another, vanished, or stopped qualifying.
+    pub target_merged: u64,
+    pub target_gone: u64,
+    pub target_ineligible: u64,
+    pub captures: u64,
 }
 
 pub struct Authority {
@@ -495,6 +500,7 @@ impl Authority {
         let merged_into = self.target.and_then(|old| merges.iter().find(|e| e.absorbed.contains(&old))).and_then(|e| e.survivor);
         if let Some(survivor) = merged_into {
             self.target = Some(survivor);
+            self.stats.target_merged += 1;
             self.event(Event::Objective { tick: next, target: Some(survivor) });
         }
         // Re-pick if the target is gone (annihilated or escaped), or (checked once a second) is
@@ -504,10 +510,13 @@ impl Authority {
             !self.massive.alive[j]
                 || (next % rules.tick_hz as Tick == 0 && {
                     let view = self.massive.kinematics();
-                    !self.target_eligible(&SystemFrame::of(&view), j, 0.5)
+                    let out = !self.target_eligible(&SystemFrame::of(&view), j, 0.5, false);
+                    self.stats.target_ineligible += out as u64;
+                    out
                 })
         });
         if lost {
+            self.stats.target_gone += self.target.is_some_and(|s| !self.massive.alive[s as usize]) as u64;
             self.pick_target(next, true);
         }
         if let (true, Some(slot)) = (playing, self.target) {
@@ -527,6 +536,7 @@ impl Authority {
                 if let Some(p) = self.players.get_mut(&id) {
                     p.captures += 1;
                 }
+                self.stats.captures += 1;
                 self.event(Event::Captured { tick: next, player: id, target: slot });
                 self.pick_target(next, true);
             }
@@ -654,7 +664,7 @@ impl Authority {
             let view = self.massive.kinematics();
             let frame = SystemFrame::of(&view);
             (0..view.x.len())
-                .filter(|&j| self.target_eligible(&frame, j, 0.35))
+                .filter(|&j| self.target_eligible(&frame, j, 0.35, true))
                 .map(|j| (j as u32, view.mass[j], (view.x[j] - cx) * (view.x[j] - cx) + (view.y[j] - cy) * (view.y[j] - cy)))
                 .collect()
         };
@@ -718,16 +728,20 @@ impl Authority {
 
 
 impl Authority {
-    /// A body worth orbiting: positive mass, within `frac` of the escape radius from the
-    /// barycentre, and not leaving the system.
-    fn target_eligible(&self, frame: &SystemFrame, j: usize, frac: f64) -> bool {
+    /// A body worth orbiting: positive mass and within `frac` of the escape radius from the
+    /// barycentre. With `settled`, also not currently moving outwards faster than escape speed.
+    ///
+    /// `settled` is only for choosing a new target. A body swinging past a heavy neighbour
+    /// exceeds the escape speed for a moment without going anywhere, so an existing target
+    /// is judged on distance alone; one that really leaves crosses the distance limit soon.
+    fn target_eligible(&self, frame: &SystemFrame, j: usize, frac: f64, settled: bool) -> bool {
         let m = &self.massive;
         if !(m.alive[j] && m.mass[j] > 0.0) {
             return false;
         }
         let (r, escaping) = frame.escape_state(&m.kinematics(), j, self.rules.g);
         let limit = self.rules.escape_radius;
-        !escaping && (limit <= 0.0 || r <= frac * limit)
+        !(settled && escaping) && (limit <= 0.0 || r <= frac * limit)
     }
 }
 

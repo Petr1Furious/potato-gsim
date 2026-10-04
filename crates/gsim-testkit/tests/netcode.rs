@@ -368,3 +368,23 @@ fn ships_spawn_near_the_target_but_not_on_top_of_it() {
     }
     sim.ships_agree().unwrap();
 }
+
+#[test]
+fn target_survives_a_fast_swing_past_a_neighbour() {
+    use gsim_core::Body;
+    let mut sc = quiet_scenario();
+    // A light body in a tight, fast orbit around a heavy one, far from the star: it moves
+    // faster than the system's escape speed at that distance, half the time outwards.
+    let (m_heavy, d): (f64, f64) = (5.0e27, 4.0e8);
+    let v = (6.67430e-11 * m_heavy / d).sqrt();
+    sc.bodies.push(Body { x: 4.0e11, y: 0.0, vx: 0.0, vy: 0.0, mass: m_heavy, radius: 4.0e7 });
+    sc.bodies.push(Body { x: 4.0e11 + d, y: 0.0, vx: 0.0, vy: v, mass: 1.0e24, radius: 3.0e6 });
+    let mut sim = Sim::new(sc, 50);
+    sim.server.rules.escape_radius = 4.0e12;
+    assert!(v > (2.0 * 6.67430e-11 * 2.0e30 / 4.0e11f64).sqrt(), "the moon really is that fast: {v}");
+    sim.server.set_target(2);
+    sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(12.0, idle);
+    assert_eq!(sim.server.target(), Some(2), "{:?}", sim.server.stats);
+    assert_eq!(sim.server.stats.target_ineligible, 0);
+}

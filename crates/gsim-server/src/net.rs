@@ -191,7 +191,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             report_at = now + Duration::from_secs(10);
             let s = authority.stats;
             eprintln!(
-                "[status] tick={} players={} bodies={} step avg={:.2}ms max={:.2}ms | cmds={} late={} resyncs={}{}",
+                "[status] tick={} players={} bodies={} step avg={:.2}ms max={:.2}ms | cmds={} late={} resyncs={} | target: {} captured, {} merged, {} vanished, {} left play{}",
                 authority.tick(),
                 authority.player_count(),
                 authority.massive.alive_count(),
@@ -200,6 +200,10 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
                 s.cmds,
                 s.late_cmds,
                 s.resyncs,
+                s.captures,
+                s.target_merged,
+                s.target_gone,
+                s.target_ineligible,
                 if dropped > 0.05 { format!(" | STRESS: dropped {dropped:.2}s of sim time") } else { String::new() }
             );
             (step_sum, step_max, steps, dropped) = (0.0, 0.0, 0, 0.0);
