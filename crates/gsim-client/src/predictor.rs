@@ -45,16 +45,29 @@ pub struct Predictor {
 }
 
 fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
-    let Some(slot) = job.ref_slot.map(|s| s as usize) else { return path.points.clone() };
+    let Some(mut slot) = job.ref_slot.map(|s| s as usize) else { return path.points.clone() };
     let mut last = (0.0, 0.0);
+    // False once the reference has been annihilated or removed: it then stays where it was.
+    let mut exists = true;
     path.points
         .iter()
         .enumerate()
         .map(|(i, p)| {
             let tick = path.start_tick + i as Tick;
-            if let Some(row) = job.reader.get(tick) {
+            let row = job.reader.get(tick);
+            let before = tick.checked_sub(1).and_then(|t| job.reader.get(t));
+            // If the reference merged into another body during the previous tick, measure
+            // against that body from here on (a dead slot would otherwise read as the origin).
+            if let Some(event) = before.as_ref().and_then(|r| r.merges.iter().find(|e| e.absorbed.contains(&(slot as u32)))) {
+                match event.survivor {
+                    Some(s) => slot = s as usize,
+                    None => exists = false,
+                }
+            }
+            if !exists {
+            } else if let Some(row) = &row {
                 last = (row.x[slot], row.y[slot]);
-            } else if let Some(row) = tick.checked_sub(1).and_then(|t| job.reader.get(t)) {
+            } else if let Some(row) = &before {
                 // One past the newest row: where the body ends up after that tick.
                 let dt = job.rules.dt;
                 last = (
@@ -131,5 +144,52 @@ impl Predictor {
 
     pub fn clear(&mut self) {
         self.latest = Paths::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gsim_client_core::eph::Eph;
+    use gsim_core::{Body, MassiveState};
+
+    #[test]
+    fn reference_frame_follows_a_body_that_merges() {
+        let rules = GameRules::new(86400.0, 60);
+        let body = |x: f64, mass: f64, radius: f64| Body { x, y: 5.0e10, vx: 0.0, vy: 0.0, mass, radius };
+        // Slot 0 (light) falls into slot 1 (heavy) within a few ticks, far from the origin.
+        let state = MassiveState::from_bodies(&[body(1.0e11, 4.0e25, 1.2e7), body(1.0e11 + 5.0e7, 5.0e25, 1.3e7)]);
+        let mut eph = Eph::new(&state.snapshot(), &rules, true);
+        eph.request(40, 0);
+        let reader = eph.reader().unwrap();
+        while reader.get(39).is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let merged_at = (0..39).find(|t| !reader.get(*t).unwrap().merges.is_empty()).expect("the pair merges");
+        assert!(merged_at > 0 && merged_at < 30);
+
+        // A path that sits still at a fixed point, measured relative to the light body.
+        let fixed = (1.0e11, 6.0e10);
+        let path = Path { start_tick: 0, points: vec![fixed; 40], impact: None };
+        let job = Job {
+            reader,
+            rules,
+            ship: ShipState::default(),
+            start: 0,
+            timeline: InputTimeline::new(),
+            ticks: 40,
+            show_ship: true,
+            held: false,
+            shell: None,
+            ref_slot: Some(0),
+        };
+        let rel = relative(&job, &path);
+        // Before the fix the dead slot read as the origin, a jump of ~1e11 m at the merge.
+        for pair in rel.windows(2) {
+            let jump = ((pair[1].0 - pair[0].0).powi(2) + (pair[1].1 - pair[0].1).powi(2)).sqrt();
+            assert!(jump < 1.0e8, "relative path jumped by {jump:e} m");
+        }
+        let end = rel.last().unwrap();
+        assert!(end.0.abs() < 1.0e8 && (end.1 - 1.0e10).abs() < 1.0e8, "still measured from the merged body: {end:?}");
     }
 }

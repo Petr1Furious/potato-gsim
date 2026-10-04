@@ -329,9 +329,16 @@ impl Game {
         };
         let body = |j: u32| World::body_at(&row, j as usize, tau);
         let alive = |j: u32| row.props.alive.get(j as usize).copied().unwrap_or(false);
-        if self.selected.is_some_and(|s| !alive(s)) {
-            // A merged body hands the selection to whatever absorbed it.
-            self.selected = None;
+        if let Some(gone) = self.selected.filter(|s| !alive(*s)) {
+            // A merged body hands the selection to whatever absorbed it (looking back over the
+            // last few seconds of merge events); anything else that vanished is deselected.
+            let from = world.head.saturating_sub(4 * world.rules.tick_hz as Tick);
+            self.selected = (from..world.head)
+                .rev()
+                .filter_map(|t| world.eph.get(t))
+                .find_map(|r| r.merges.iter().find(|e| e.absorbed.contains(&gone)).map(|e| e.survivor))
+                .flatten()
+                .filter(|s| alive(*s));
         }
         let own = world.ship_at(world.my_id, tick_f);
         let me_ship = world.my_ship();
