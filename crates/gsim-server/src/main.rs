@@ -1,7 +1,10 @@
 use clap::Parser;
 use gsim_server::net::{run, ServerOptions};
 use gsim_server::scenario::{RandomOpts, PRESETS};
+use clap::Subcommand;
+use gsim_server::state::ServerState;
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -56,10 +59,21 @@ struct Args {
     /// Pause between rounds in seconds
     #[arg(long, env = "GSIM_INTERMISSION_SECONDS", default_value_t = 10.0)]
     intermission_seconds: f64,
+    /// Directory for player names, whitelist and ban lists
+    #[arg(long, env = "GSIM_STATE_DIR", default_value = "data", global = true)]
+    state_dir: PathBuf,
+    /// Only let players on the whitelist join
+    #[arg(long, env = "GSIM_WHITELIST")]
+    whitelist: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
 fn main() {
     let args = Args::parse();
+    if let Some(Command::Admin { action }) = &args.command {
+        std::process::exit(admin(&args.state_dir, action));
+    }
     if args.list_presets {
         for (name, about) in PRESETS {
             println!("{name:10} {about}");
@@ -90,6 +104,8 @@ fn main() {
         quiet: false,
         round_seconds: args.round_seconds,
         intermission_seconds: args.intermission_seconds,
+        state_dir: Some(args.state_dir.clone()),
+        whitelist: args.whitelist,
     };
     if !gsim_core::selftest::passes() {
         eprintln!("FATAL: simulation self-test failed on this machine; refusing to host.");
@@ -98,5 +114,97 @@ fn main() {
     if let Err(e) = run(opts, Arc::new(AtomicBool::new(false))) {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Manage bans, the whitelist and registered names. A running server picks changes up
+    /// within a couple of seconds and removes players who are no longer allowed.
+    Admin {
+        #[command(subcommand)]
+        action: Admin,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum Admin {
+    /// List registered players (name, key, last address)
+    Players,
+    /// Ban a player by name
+    Ban { name: String, reason: Vec<String> },
+    Unban { name: String },
+    /// Ban an address, or the last address of a named player
+    BanIp { target: String, reason: Vec<String> },
+    UnbanIp { ip: IpAddr },
+    /// Show both ban lists
+    Bans,
+    /// Add a name to the whitelist
+    Allow { name: String },
+    /// Remove a name from the whitelist
+    Disallow { name: String },
+    /// Show the whitelist
+    Whitelist,
+    /// Release a registered name so anyone can claim it
+    Forget { name: String },
+}
+
+fn admin(dir: &Path, action: &Admin) -> i32 {
+    let mut state = match ServerState::open(dir, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    let done = |ok: bool, yes: String, no: String| {
+        println!("{}", if ok { yes } else { no });
+        if ok { 0 } else { 1 }
+    };
+    match action {
+        Admin::Players => {
+            for p in state.players() {
+                let key = gsim_proto::identity::fingerprint(&p.key);
+                println!("{:24} key {key}  last address {}", p.name, p.last_ip.map_or("-".to_string(), |ip| ip.to_string()));
+            }
+            0
+        }
+        Admin::Ban { name, reason } => {
+            state.ban(name, &reason.join(" "));
+            done(true, format!("banned {name}"), String::new())
+        }
+        Admin::Unban { name } => done(state.unban(name), format!("unbanned {name}"), format!("{name} was not banned")),
+        Admin::BanIp { target, reason } => {
+            let ip = target.parse::<IpAddr>().ok().or_else(|| state.record(target).and_then(|r| r.last_ip));
+            match ip {
+                Some(ip) => {
+                    state.ban_ip(ip, &reason.join(" "));
+                    done(true, format!("banned address {ip}"), String::new())
+                }
+                None => done(false, String::new(), format!("{target} is neither an address nor a player with a known address")),
+            }
+        }
+        Admin::UnbanIp { ip } => done(state.unban_ip(*ip), format!("unbanned {ip}"), format!("{ip} was not banned")),
+        Admin::Bans => {
+            for (name, reason) in state.banned_players() {
+                println!("player  {name:24} {reason}");
+            }
+            for (ip, reason) in state.banned_ips() {
+                println!("address {:24} {reason}", ip.to_string());
+            }
+            0
+        }
+        Admin::Allow { name } => {
+            state.whitelist_add(name);
+            done(true, format!("{name} added to the whitelist"), String::new())
+        }
+        Admin::Disallow { name } => done(state.whitelist_remove(name), format!("{name} removed from the whitelist"), format!("{name} was not on the whitelist")),
+        Admin::Whitelist => {
+            for name in state.whitelist() {
+                println!("{name}");
+            }
+            0
+        }
+        Admin::Forget { name } => done(state.forget(name), format!("{name} is free to claim again"), format!("{name} is not registered")),
     }
 }

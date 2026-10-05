@@ -1,15 +1,21 @@
-# docker compose up -d --build
+# mkdir -p data && docker compose up -d --build
 services:
   gsim:
     build: .
     image: potato-gsim-server
     container_name: potato-gsim
     restart: unless-stopped
+    # Run as the owner of ./data so the state files stay editable from the host.
+    user: "${GSIM_UID:-1000}:${GSIM_GID:-1000}"
     ports:
       - "27777:27777/udp"
+    volumes:
+      # players.txt, whitelist.txt, banned-players.txt, banned-ips.txt
+      - ./data:/data
     environment:
       GSIM_PRESET: random       # random | disc | solar | binary | figure8 | repulsor | runaway
       GSIM_SEED: "0"            # 0 = new world on every start
       GSIM_RANDOM_COUNT: "1000"
       GSIM_TIME_SCALE: "86400"
       GSIM_ROUND_SECONDS: "600"   # 0 = endless
+      GSIM_WHITELIST: "false"     # true = only names in data/whitelist.txt may join

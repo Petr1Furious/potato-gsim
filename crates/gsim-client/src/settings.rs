@@ -93,3 +93,29 @@ impl Settings {
         self.ui_factor().sqrt().clamp(0.9, 1.6)
     }
 }
+
+impl Settings {
+    /// This player's key, created on first use and kept next to the settings file. Whoever
+    /// holds this file owns the player's names on every server, so it is written owner-only.
+    pub fn identity(&self) -> gsim_proto::Identity {
+        use gsim_proto::identity::{from_hex, to_hex};
+        let file = path().map(|p| p.with_file_name("identity.key"));
+        if let Some(secret) = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| from_hex(&s)) {
+            return gsim_proto::Identity::from_secret(secret);
+        }
+        let identity = gsim_proto::Identity::generate();
+        if let Some(file) = &file {
+            if let Some(dir) = file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if std::fs::write(file, to_hex(&identity.secret())).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+                }
+            }
+        }
+        identity
+    }
+}

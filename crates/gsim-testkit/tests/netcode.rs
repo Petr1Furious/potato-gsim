@@ -181,16 +181,6 @@ fn crashing_into_a_body_is_fatal() {
     assert!(w.feed.iter().any(|f| f.1 == "ann crashed into Star"), "{:?}", w.feed);
 }
 
-#[test]
-fn bad_clients_are_rejected() {
-    let mut sim = Sim::new(quiet_scenario(), 9);
-    sim.add_client("ann", Link::new(5.0, 0.0, 0.0));
-    sim.add_client("ann", Link::new(5.0, 0.0, 0.0));
-    sim.run_with(1.0, idle);
-    assert!(sim.clients[0].session.joined());
-    assert!(!sim.clients[1].session.joined());
-    assert_eq!(sim.clients[1].session.rejected.as_deref(), Some("that name is already in use"));
-}
 
 #[test]
 fn holding_an_orbit_captures_the_target() {

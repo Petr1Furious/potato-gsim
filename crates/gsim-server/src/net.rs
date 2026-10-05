@@ -6,7 +6,9 @@ use gsim_core::GameRules;
 use gsim_proto::*;
 use renet::{RenetServer, ServerEvent};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
+use crate::state::ServerState;
 use std::net::{SocketAddr, UdpSocket};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -26,6 +28,10 @@ pub struct ServerOptions {
     /// 0 = endless.
     pub round_seconds: f64,
     pub intermission_seconds: f64,
+    /// Where name ownership, whitelist and bans are kept (`None`: in memory only).
+    pub state_dir: Option<PathBuf>,
+    /// Only let whitelisted names in.
+    pub whitelist: bool,
 }
 
 impl Default for ServerOptions {
@@ -42,6 +48,8 @@ impl Default for ServerOptions {
             quiet: false,
             round_seconds: 600.0,
             intermission_seconds: 10.0,
+            state_dir: None,
+            whitelist: false,
         }
     }
 }
@@ -50,8 +58,6 @@ impl Default for ServerOptions {
 /// slows the game down instead of freezing the process.
 const MAX_STEPS_PER_LOOP: u32 = 8;
 const MAX_DEBT_SECONDS: f64 = 0.25;
-/// Live clients send something several times a second.
-const STALE_AFTER: Duration = Duration::from_millis(1500);
 
 pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     if !(opts.time_scale.is_finite() && opts.time_scale > 0.0) {
@@ -62,6 +68,11 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     rules.escape_radius = sc.escape_radius();
     let hz = rules.tick_hz as f64;
     let mut authority = Authority::new(sc, rules, opts.seed);
+    authority.state = match &opts.state_dir {
+        Some(dir) => ServerState::open(dir, opts.whitelist)?,
+        None => ServerState::in_memory(),
+    };
+    authority.state.whitelist_enabled = opts.whitelist;
     let ticks = |s: f64| if s.is_finite() && s > 0.0 { (s * hz).round() as u64 } else { 0 };
     authority.set_rounds(ticks(opts.round_seconds), ticks(opts.intermission_seconds).max(1), Some((opts.preset.clone(), opts.random.clone())));
     authority.enable_objective();
@@ -100,6 +111,9 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
     let mut last = Instant::now();
     let mut debt = 0.0f64;
     let mut report_at = Instant::now() + Duration::from_secs(10);
+    let mut reload_at = Instant::now();
+    // Connections being refused: closed a moment later so the reason reaches them first.
+    let mut closing: Vec<(u64, Instant)> = Vec::new();
     let (mut step_sum, mut step_max, mut steps, mut dropped) = (0.0f64, 0.0f64, 0u64, 0.0f64);
 
     while !stop.load(Ordering::Relaxed) {
@@ -119,9 +133,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         while let Some(event) = server.get_event() {
             match event {
                 ServerEvent::ClientConnected { client_id } => {
-                    if !opts.quiet {
-                        eprintln!("[connect] conn {client_id}");
-                    }
+                    authority.connected(client_id, transport.client_addr(client_id).map(|a| a.ip()));
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
                     if !opts.quiet {
@@ -136,23 +148,9 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             for channel in [CH_RELIABLE, CH_UNRELIABLE] {
                 while let Some(bytes) = server.receive_message(client, channel) {
                     if let Some(msg) = decode::<ClientMsg>(&bytes) {
-                        if let ClientMsg::Hello { name, .. } = &msg {
-                            if !opts.quiet {
-                                eprintln!("[hello] conn {client} name={name:?}");
-                            }
-                            // A client that vanished without saying goodbye (killed, crashed, lost
-                            // network) still holds its name until the transport times out. A live
-                            // client is never this quiet, so let the newcomer take the name over.
-                            if let Some(old) = authority.holder_of(name).filter(|old| *old != client) {
-                                let silent = transport.time_since_last_received_packet(old).unwrap_or(Duration::MAX);
-                                if silent >= STALE_AFTER {
-                                    if !opts.quiet {
-                                        eprintln!("[takeover] conn {old} silent for {:.1} s, releasing {name:?}", silent.as_secs_f64());
-                                    }
-                                    server.disconnect(old);
-                                    authority.disconnect(old);
-                                }
-                            }
+                        if let (ClientMsg::Hello { name, key, .. }, false) = (&msg, opts.quiet) {
+                            let from = transport.client_addr(client).map_or("?".to_string(), |a| a.ip().to_string());
+                            eprintln!("[hello] conn {client} from {from} name={name:?} key={}", gsim_proto::identity::fingerprint(key));
                         }
                         authority.handle(client, msg, tick_frac);
                     }
@@ -186,6 +184,19 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             }
         }
         transport.send_packets(&mut server);
+        closing.extend(authority.drain_kicks().into_iter().map(|c| (c, now + Duration::from_millis(400))));
+        closing.retain(|(conn, at)| {
+            let due = Instant::now() >= *at;
+            if due && server.is_connected(*conn) {
+                server.disconnect(*conn);
+            }
+            !due
+        });
+        if now >= reload_at {
+            // Edits made by `gsim-server admin ...` or by hand take effect here.
+            reload_at = now + Duration::from_secs(2);
+            authority.reload_state();
+        }
 
         if !opts.quiet && now >= report_at {
             report_at = now + Duration::from_secs(10);

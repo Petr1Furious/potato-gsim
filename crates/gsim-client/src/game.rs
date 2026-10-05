@@ -154,6 +154,7 @@ impl Game {
     pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32, show_net: bool) -> Result<Self, String> {
         let cfg = SessionConfig {
             name: settings.name.clone(),
+            identity: settings.identity(),
             threaded_eph: true,
             // Tick rate is only known after joining; 60 Hz is the server default.
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,

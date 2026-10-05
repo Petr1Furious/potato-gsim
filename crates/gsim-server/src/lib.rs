@@ -5,6 +5,7 @@ pub mod authority;
 pub mod net;
 pub mod rng;
 pub mod scenario;
+pub mod state;
 
 pub use authority::{Authority, ConnId, Outgoing, Target};
 pub use scenario::{RandomOpts, Scenario};

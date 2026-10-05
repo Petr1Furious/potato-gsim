@@ -4,7 +4,8 @@
 
 use gsim_client_core::{Controls, Session, SessionConfig};
 use gsim_core::{Body, GameRules};
-use gsim_proto::{decode, encode, ClientMsg, PlayerId, ServerMsg};
+use gsim_proto::{decode, encode, ClientMsg, Identity, PlayerId, ServerMsg};
+use std::net::{IpAddr, Ipv4Addr};
 use gsim_server::rng::Rng;
 use gsim_server::{Authority, ConnId, Scenario};
 
@@ -81,12 +82,20 @@ impl Sim {
     }
 
     pub fn add_client(&mut self, name: &str, link: Link) -> usize {
+        self.add_client_as(name, Identity::insecure_from_label(name), link)
+    }
+
+    /// Join as `name` with a specific identity key (the plain `add_client` derives one from
+    /// the name). Each client gets its own address, `10.0.0.<index + 1>`.
+    pub fn add_client_as(&mut self, name: &str, identity: Identity, link: Link) -> usize {
         let i = self.clients.len();
+        let conn = 100 + i as ConnId;
+        self.server.connected(conn, Some(Self::address(i)));
         self.clients.push(SimClient {
-            session: Session::new(SessionConfig::headless(name)),
+            session: Session::new(SessionConfig { identity, ..SessionConfig::headless(name) }),
             controls: Controls::default(),
             link,
-            conn: 100 + i as ConnId,
+            conn,
             skew: 1000.0 * (i as f64 + 1.0) + 0.123,
             up: Vec::new(),
             down: Vec::new(),
@@ -95,6 +104,10 @@ impl Sim {
             connected: true,
         });
         i
+    }
+
+    pub fn address(client: usize) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, client as u8 + 1))
     }
 
     pub fn player_id(&self, client: usize) -> Option<PlayerId> {
@@ -146,6 +159,8 @@ impl Sim {
                 self.server.step();
                 self.accum -= self.period;
             }
+            // Refused connections are simply dropped by the transport in real life.
+            self.server.drain_kicks();
             // Server -> client sends.
             for out in self.server.drain_out() {
                 let bytes = encode(&out.msg);

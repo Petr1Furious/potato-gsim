@@ -5,7 +5,7 @@ use gsim_core::{GameRules, MassiveSnapshot, Particle, ShipInput, ShipState, Tick
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -13,6 +13,9 @@ pub const MAX_CMDS_PER_PACKET: usize = 48;
 
 pub type PlayerId = u32;
 pub type ShellId = u32;
+
+pub mod identity;
+pub use identity::Identity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CmdKind {
@@ -33,8 +36,11 @@ pub struct Cmd {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClientMsg {
-    /// Reliable. `golden` proves the client's floating point matches (see `gsim_core::selftest`).
-    Hello { protocol: u32, golden: u64, name: String },
+    /// Reliable. `golden` proves the client's floating point matches (see `gsim_core::selftest`);
+    /// `key` is the player's public identity key, which the server then challenges.
+    Hello { protocol: u32, golden: u64, name: String, key: [u8; 32] },
+    /// Reliable: signature over the server's challenge (see [`identity`]).
+    Auth { signature: Vec<u8> },
     /// Unreliable; carries every command not yet acknowledged, oldest first.
     Cmds(Vec<Cmd>),
     /// Unreliable clock probe.
@@ -108,6 +114,8 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ServerMsg {
     Reject { reason: String },
+    /// Reliable: prove you hold the key you announced by signing this.
+    Challenge { nonce: [u8; 32] },
     /// Sent on join and again on resync.
     Welcome(Box<Welcome>),
     /// `server_tick` is fractional: tick about to be simulated plus progress towards it.
@@ -135,7 +143,7 @@ pub const CH_UNRELIABLE: u8 = 1;
 
 impl ClientMsg {
     pub fn reliable(&self) -> bool {
-        matches!(self, ClientMsg::Hello { .. } | ClientMsg::ResyncRequest)
+        matches!(self, ClientMsg::Hello { .. } | ClientMsg::Auth { .. } | ClientMsg::ResyncRequest)
     }
 }
 
@@ -172,4 +180,9 @@ pub fn connection_config() -> renet::ConnectionConfig {
 /// Netcode protocol id: ties the handshake to this protocol version.
 pub fn netcode_protocol_id() -> u64 {
     0x6773_696d_0000_0000 | PROTOCOL_VERSION as u64
+}
+
+/// The form of a player name both sides agree on: trimmed, printable, bounded.
+pub fn clean_name(name: &str) -> String {
+    name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect::<String>().trim().to_string()
 }

@@ -36,7 +36,7 @@ On NixOS prefix commands with `./x` (e.g. `./x cargo test --workspace`) or use `
 ### Docker
 
 ```sh
-docker compose up -d --build        # builds the image and runs it on 27777/udp
+mkdir -p data && docker compose up -d --build   # builds the image, runs it on 27777/udp
 docker logs -f potato-gsim          # one status line every 10 s
 ```
 
@@ -57,6 +57,30 @@ speeds several times that budget). Score by:
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
 Bodies flung out of the system for good fade out and are removed, and are never targets.
+
+## Players, bans and the whitelist
+
+There are no accounts. The game makes a key pair on first start (`identity.key` next to the
+settings file) and proves it to the server when joining. A server reserves each name for the
+first key that uses it, forever; copy `identity.key` to play under your names on another
+machine, and keep it private.
+
+The server keeps its state as plain text files in `GSIM_STATE_DIR` (`./data` with Docker
+Compose): `players.txt`, `whitelist.txt`, `banned-players.txt`, `banned-ips.txt`. Edit them by
+hand or with the admin commands; a running server applies changes within two seconds and
+removes players who are no longer allowed.
+
+```sh
+docker exec potato-gsim gsim-server admin players
+docker exec potato-gsim gsim-server admin ban NAME being rude
+docker exec potato-gsim gsim-server admin ban-ip NAME      # or an address
+docker exec potato-gsim gsim-server admin unban NAME
+docker exec potato-gsim gsim-server admin allow NAME       # whitelist (GSIM_WHITELIST=true)
+docker exec potato-gsim gsim-server admin forget NAME      # release a reserved name
+```
+
+A ban by name stops that identity; someone determined can make a new key and name, which
+is what address bans and the whitelist are for.
 
 ## Controls
 

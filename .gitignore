@@ -1,5 +1,6 @@
 target/
 dist/
 stage/
+data/
 .direnv/
 .DS_Store

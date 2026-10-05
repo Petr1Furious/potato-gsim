@@ -31,6 +31,7 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(1)
     });
+    // Bots use a key derived from their name: stable across runs, not secret.
     let mut net = NetClient::connect(addr, SessionConfig::headless(&args.name)).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)

@@ -8,3 +8,5 @@ gsim-core.workspace = true
 serde.workspace = true
 postcard.workspace = true
 renet.workspace = true
+ed25519-dalek = "2"
+getrandom = "0.2"

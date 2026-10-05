@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     pub name: String,
+    /// The key that proves who we are; the server ties our name to it.
+    pub identity: Identity,
     /// Compute the ephemeris on a worker thread (GUI) or inline (tests, bots).
     pub threaded_eph: bool,
     /// How far ahead of the present the ephemeris is kept (ticks). Bounds prediction length.
@@ -20,7 +22,7 @@ pub struct SessionConfig {
 
 impl SessionConfig {
     pub fn headless(name: &str) -> Self {
-        Self { name: name.into(), threaded_eph: false, lookahead_ticks: 8, inline_budget: 4000 }
+        Self { name: name.into(), identity: Identity::insecure_from_label(name), threaded_eph: false, lookahead_ticks: 8, inline_budget: 4000 }
     }
 }
 
@@ -71,7 +73,12 @@ pub struct Session {
 
 impl Session {
     pub fn new(cfg: SessionConfig) -> Self {
-        let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, golden: selftest::compute(), name: cfg.name.clone() };
+        let hello = ClientMsg::Hello {
+            protocol: PROTOCOL_VERSION,
+            golden: selftest::compute(),
+            name: clean_name(&cfg.name),
+            key: cfg.identity.public(),
+        };
         Self {
             cfg,
             world: None,
@@ -123,6 +130,10 @@ impl Session {
     pub fn handle(&mut self, msg: ServerMsg, now: f64) {
         match msg {
             ServerMsg::Reject { reason } => self.rejected = Some(reason),
+            ServerMsg::Challenge { nonce } => {
+                let signature = self.cfg.identity.sign(&nonce, &clean_name(&self.cfg.name));
+                self.out.push(ClientMsg::Auth { signature });
+            }
             ServerMsg::Welcome(w) => self.on_welcome(&w, now),
             ServerMsg::Pong { client_time, server_tick } => {
                 if let Some(c) = self.clock.as_mut() {

@@ -3,12 +3,14 @@
 
 use crate::rng::Rng;
 use crate::scenario::{self, RandomOpts, Scenario};
+use crate::state::ServerState;
 use gsim_core::objective::orbit_status;
 use gsim_core::particle::{step_particle, swept_min_dist2};
 use gsim_core::ship::step_ship;
 use gsim_core::{math, selftest, GameRules, InputTimeline, MassiveState, Particle, Scratch, ShipState, SystemFrame, Tick};
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
+use std::net::IpAddr;
 
 /// Transport-level connection handle.
 pub type ConnId = u64;
@@ -40,6 +42,12 @@ struct Player {
     last_seq: u32,
     last_cmd_tick: Tick,
     fires: VecDeque<(Tick, u16, f32)>,
+}
+
+struct PendingJoin {
+    name: String,
+    key: [u8; 32],
+    nonce: [u8; 32],
 }
 
 struct Shell {
@@ -77,6 +85,13 @@ pub struct Authority {
     rng: Rng,
     out: Vec<Outgoing>,
     scratch: Scratch,
+    /// Name ownership, whitelist and bans.
+    pub state: ServerState,
+    /// Connections that announced a key and were sent a challenge.
+    pending: BTreeMap<ConnId, PendingJoin>,
+    addrs: BTreeMap<ConnId, IpAddr>,
+    /// Connections the transport should close once their last message is out.
+    kicks: Vec<ConnId>,
     /// Used to restart the same world when no generator is configured.
     initial: Scenario,
     generator: Option<(String, RandomOpts)>,
@@ -121,6 +136,10 @@ impl Authority {
             rng: Rng::new(seed ^ 0xA5A5_5A5A_1234_5678),
             out: Vec::new(),
             scratch: Scratch::default(),
+            state: ServerState::in_memory(),
+            pending: BTreeMap::new(),
+            addrs: BTreeMap::new(),
+            kicks: Vec::new(),
         }
     }
 
@@ -151,7 +170,36 @@ impl Authority {
         self.send(Target::All, ServerMsg::Event(e));
     }
 
+    /// A transport connection opened (its address, when known, is used for address bans).
+    pub fn connected(&mut self, conn: ConnId, ip: Option<IpAddr>) {
+        if let Some(ip) = ip {
+            self.addrs.insert(conn, ip);
+        }
+    }
+
+    pub fn drain_kicks(&mut self) -> Vec<ConnId> {
+        std::mem::take(&mut self.kicks)
+    }
+
+    /// Pick up edits to the state files and remove anyone who is no longer allowed here.
+    pub fn reload_state(&mut self) {
+        if !self.state.reload_if_changed() {
+            return;
+        }
+        let online: Vec<(ConnId, String)> =
+            self.by_conn.iter().filter_map(|(c, id)| self.players.get(id).map(|p| (*c, p.name.clone()))).collect();
+        for (conn, name) in online {
+            if let Some(reason) = self.state.refusal(&name, self.addrs.get(&conn).copied()) {
+                self.send(Target::One(conn), ServerMsg::Reject { reason });
+                self.disconnect(conn);
+                self.kicks.push(conn);
+            }
+        }
+    }
+
     pub fn disconnect(&mut self, conn: ConnId) {
+        self.pending.remove(&conn);
+        self.addrs.remove(&conn);
         if let Some(id) = self.by_conn.remove(&conn) {
             self.players.remove(&id);
             self.event(Event::PlayerLeft { id });
@@ -164,7 +212,8 @@ impl Authority {
             ClientMsg::Ping { client_time } => {
                 self.send(Target::One(conn), ServerMsg::Pong { client_time, server_tick: tick_frac });
             }
-            ClientMsg::Hello { protocol, golden, name } => self.hello(conn, protocol, golden, name),
+            ClientMsg::Hello { protocol, golden, name, key } => self.hello(conn, protocol, golden, name, key),
+            ClientMsg::Auth { signature } => self.auth(conn, signature),
             ClientMsg::Cmds(cmds) => self.commands(conn, cmds),
             ClientMsg::ResyncRequest => {
                 if let Some(&id) = self.by_conn.get(&conn) {
@@ -176,25 +225,59 @@ impl Authority {
         }
     }
 
-    fn hello(&mut self, conn: ConnId, protocol: u32, golden: u64, name: String) {
+    /// Refuse a connection: tell it why, then have the transport close it.
+    fn reject(&mut self, conn: ConnId, reason: String) {
+        self.send(Target::One(conn), ServerMsg::Reject { reason });
+        self.pending.remove(&conn);
+        self.kicks.push(conn);
+    }
+
+    /// Step one of joining: basic checks, then challenge the announced key.
+    fn hello(&mut self, conn: ConnId, protocol: u32, golden: u64, name: String, key: [u8; 32]) {
         if self.by_conn.contains_key(&conn) {
             return;
         }
         let name = clean_name(&name);
-        let reject = if protocol != PROTOCOL_VERSION {
-            Some(format!("protocol mismatch: server {PROTOCOL_VERSION}, client {protocol}"))
+        let ip = self.addrs.get(&conn).copied();
+        let refusal = if protocol != PROTOCOL_VERSION {
+            Some(format!("protocol mismatch: server {PROTOCOL_VERSION}, client {protocol} (update the game)"))
         } else if golden != selftest::GOLDEN {
             Some("simulation self-test mismatch: this build cannot stay in sync with the server".to_string())
         } else if name.is_empty() {
             Some("empty player name".to_string())
-        } else if self.players.values().any(|p| p.name == name) {
-            Some("that name is already in use".to_string())
+        } else if let Some(reason) = self.state.refusal(&name, ip) {
+            Some(reason)
         } else {
-            None
+            // Say so before the challenge if the name is somebody else's.
+            self.state.record(&name).filter(|r| r.key != key).map(|r| {
+                format!("the name {:?} belongs to another player on this server", r.name)
+            })
         };
-        if let Some(reason) = reject {
-            self.send(Target::One(conn), ServerMsg::Reject { reason });
-            return;
+        if let Some(reason) = refusal {
+            return self.reject(conn, reason);
+        }
+        let nonce = identity::random_bytes();
+        self.pending.insert(conn, PendingJoin { name, key, nonce });
+        self.send(Target::One(conn), ServerMsg::Challenge { nonce });
+    }
+
+    /// Step two: the signature proves the key; the name is then theirs for good.
+    fn auth(&mut self, conn: ConnId, signature: Vec<u8>) {
+        let Some(PendingJoin { name, key, nonce }) = self.pending.remove(&conn) else { return };
+        if !identity::verify(&key, &nonce, &name, &signature) {
+            return self.reject(conn, "identity check failed".to_string());
+        }
+        let ip = self.addrs.get(&conn).copied();
+        if let Err(reason) = self.state.claim(&name, &key, ip) {
+            return self.reject(conn, reason);
+        }
+        // Use the spelling the name was registered with.
+        let name = self.state.record(&name).map_or(name, |r| r.name.clone());
+        // The same player connecting again (it is provably them) replaces the old connection.
+        if let Some(old) = self.holder_of(&name) {
+            self.send(Target::One(old), ServerMsg::Reject { reason: "you joined from another connection".to_string() });
+            self.disconnect(old);
+            self.kicks.push(old);
         }
         if self.players.is_empty() && self.round_ticks > 0 {
             // First player on an empty server: start a fresh round for them.
@@ -745,9 +828,6 @@ impl Authority {
     }
 }
 
-fn clean_name(name: &str) -> String {
-    name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect()
-}
 
 impl Authority {
     /// Connection currently playing under `name`, if any.
