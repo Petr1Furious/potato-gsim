@@ -335,14 +335,19 @@ pub enum Rank {
     Selection,
 }
 
+/// One label: one or more centred lines that belong together.
 struct Label {
-    text: String,
+    lines: Vec<String>,
     x: f32,
+    /// Baseline of the first line.
     y: f32,
     size: f32,
     color: Color,
     rank: Rank,
 }
+
+/// Distance between the baselines of consecutive lines, in units of the font size.
+const LINE_STEP: f32 = 1.0;
 
 /// Collects the frame's map labels so that, where they overlap, the less important one
 /// fades out instead of the two becoming an unreadable smear.
@@ -352,9 +357,16 @@ pub struct Labels {
 }
 
 impl Labels {
-    /// Text centred on `x` with its baseline at `y`.
+    /// Single line centred on `x` with its baseline at `y`.
     pub fn push(&mut self, text: impl Into<String>, x: f32, y: f32, size: f32, color: Color, rank: Rank) {
-        self.items.push(Label { text: text.into(), x, y, size, color, rank });
+        self.block(vec![text.into()], x, y, size, color, rank);
+    }
+
+    /// Several lines stacked downwards from `y`. They fade together, as one label.
+    pub fn block(&mut self, lines: Vec<String>, x: f32, y: f32, size: f32, color: Color, rank: Rank) {
+        if !lines.is_empty() {
+            self.items.push(Label { lines, x, y, size, color, rank });
+        }
     }
 
     pub fn draw(mut self) {
@@ -366,22 +378,24 @@ impl Labels {
             self.items
                 .iter()
                 .map(|l| {
-                    let w = measure_text(&l.text, font.as_ref(), l.size.floor().max(1.0) as u16, 1.0).width;
+                    let px = l.size.floor().max(1.0) as u16;
+                    let w = l.lines.iter().map(|t| measure_text(t, font.as_ref(), px, 1.0).width).fold(0.0, f32::max);
                     let pad = 0.25 * l.size;
-                    Rect::new(l.x - 0.5 * w - pad, l.y - l.size, w + 2.0 * pad, 1.25 * l.size)
+                    let h = l.size * (1.25 + LINE_STEP * (l.lines.len() - 1) as f32);
+                    Rect::new(l.x - 0.5 * w - pad, l.y - l.size, w + 2.0 * pad, h)
                 })
                 .collect()
         });
         for (i, label) in self.items.iter().enumerate() {
             let own = boxes[i];
             let covered = (0..i)
-                // Equal rank: the one pushed first wins.
-                .filter(|&k| self.items[k].rank >= label.rank)
                 .filter_map(|k| own.intersect(boxes[k]))
                 .map(|hit| hit.w * hit.h / (own.w * own.h).max(1.0))
                 .fold(0.0f32, f32::max);
             let visible = (1.0 - 3.0 * covered).clamp(0.06, 1.0);
-            centered(&label.text, label.x, label.y, label.size, alpha(label.color, visible));
+            for (n, line) in label.lines.iter().enumerate() {
+                centered(line, label.x, label.y + n as f32 * LINE_STEP * label.size, label.size, alpha(label.color, visible));
+            }
         }
     }
 }

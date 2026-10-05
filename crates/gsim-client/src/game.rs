@@ -626,8 +626,8 @@ impl Game {
                 style::ring(s.0, s.1, 5.0 * ui, 1.5 * ui, Color::from_rgba(90, 255, 120, 255));
                 let eta = i as f64 / world.rules.tick_hz as f64;
                 let c = Color::from_rgba(150, 255, 170, 255);
-                labels.push(format!("closest {}", fmt::distance(d)), s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
-                labels.push(format!("in {eta:.1} s"), s.0, s.1 + 30.0 * ui, LABEL * ui, c, Rank::Approach);
+                let lines = vec![format!("closest {}", fmt::distance(d)), format!("in {eta:.1} s")];
+                labels.block(lines, s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
             }
         }
 
@@ -751,9 +751,7 @@ impl Game {
                 lines.push(format!("d = {}", fmt::distance(d)));
                 lines.push(format!("rel v = {}", fmt::speed(v)));
             }
-            for (i, l) in lines.iter().enumerate() {
-                labels.push(l.as_str(), s.0, s.1 + r_px + (12.0 + 12.0 * i as f32) * ui, LABEL * ui, WHITE, Rank::Selection);
-            }
+            labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
         }
 
         labels.draw();
