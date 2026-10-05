@@ -322,3 +322,66 @@ pub fn mass_legend(ui: &mut egui::Ui) {
     label(rect.right(), egui::Align2::RIGHT_TOP, "negative");
     ui.add_space(16.0);
 }
+
+// --- map labels ------------------------------------------------------------------------------
+
+/// How much a label matters when two of them land on the same spot.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rank {
+    BodyName,
+    Pilot,
+    Approach,
+    Target,
+    Selection,
+}
+
+struct Label {
+    text: String,
+    x: f32,
+    y: f32,
+    size: f32,
+    color: Color,
+    rank: Rank,
+}
+
+/// Collects the frame's map labels so that, where they overlap, the less important one
+/// fades out instead of the two becoming an unreadable smear.
+#[derive(Default)]
+pub struct Labels {
+    items: Vec<Label>,
+}
+
+impl Labels {
+    /// Text centred on `x` with its baseline at `y`.
+    pub fn push(&mut self, text: impl Into<String>, x: f32, y: f32, size: f32, color: Color, rank: Rank) {
+        self.items.push(Label { text: text.into(), x, y, size, color, rank });
+    }
+
+    pub fn draw(mut self) {
+        // Most important first (stable, so equal ranks keep their order); each label fades by
+        // how much of it the ones before it cover.
+        self.items.sort_by(|a, b| b.rank.cmp(&a.rank));
+        let boxes: Vec<Rect> = FONT.with(|f| {
+            let font = f.borrow();
+            self.items
+                .iter()
+                .map(|l| {
+                    let w = measure_text(&l.text, font.as_ref(), l.size.floor().max(1.0) as u16, 1.0).width;
+                    let pad = 0.25 * l.size;
+                    Rect::new(l.x - 0.5 * w - pad, l.y - l.size, w + 2.0 * pad, 1.25 * l.size)
+                })
+                .collect()
+        });
+        for (i, label) in self.items.iter().enumerate() {
+            let own = boxes[i];
+            let covered = (0..i)
+                // Equal rank: the one pushed first wins.
+                .filter(|&k| self.items[k].rank >= label.rank)
+                .filter_map(|k| own.intersect(boxes[k]))
+                .map(|hit| hit.w * hit.h / (own.w * own.h).max(1.0))
+                .fold(0.0f32, f32::max);
+            let visible = (1.0 - 3.0 * covered).clamp(0.06, 1.0);
+            centered(&label.text, label.x, label.y, label.size, alpha(label.color, visible));
+        }
+    }
+}

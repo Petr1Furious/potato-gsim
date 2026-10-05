@@ -2,7 +2,7 @@
 //! `gsim-client-core`; this file only looks at the replica and draws it.
 
 use crate::fmt;
-use crate::style;
+use crate::style::{self, Rank};
 use crate::predictor::{Job, Predictor};
 use crate::settings::Settings;
 use egui_macroquad::egui;
@@ -118,6 +118,11 @@ pub struct Game {
     /// Camera offset from whatever it follows.
     offset: (f64, f64),
     follow_selection: bool,
+    /// Set when our ship dies while the camera is on a body: the camera stays with the ship
+    /// until the player picks a body or toggles follow again.
+    follow_paused: bool,
+    /// Show body names: on the map, and as the first line of the selected body's label.
+    show_names: bool,
     last_target: Target,
     last_target_pos: (f64, f64),
     selected: Option<u32>,
@@ -170,7 +175,9 @@ impl Game {
             had_ship: false,
             zoom_pending: 0.0,
             offset: (0.0, 0.0),
-            follow_selection: false,
+            follow_selection: true,
+            follow_paused: false,
+            show_names: false,
             last_target: Target::Free,
             last_target_pos: (0.0, 0.0),
             selected: None,
@@ -233,11 +240,15 @@ impl Game {
             if is_key_pressed(KeyCode::P) {
                 self.show_prediction = !self.show_prediction;
             }
+            if is_key_pressed(KeyCode::N) {
+                self.show_names = !self.show_names;
+            }
             if is_key_pressed(KeyCode::O) {
                 self.show_shell_prediction = !self.show_shell_prediction;
             }
             if is_key_pressed(KeyCode::F) {
                 self.follow_selection = !self.follow_selection;
+                self.follow_paused = false;
                 self.say(if self.follow_selection { "Following selection" } else { "Following own ship" });
             }
             if is_key_pressed(KeyCode::R) {
@@ -349,10 +360,10 @@ impl Game {
         if self.had_ship && own.is_none() {
             // We just died: let go of whatever body the camera was following, so it stays at
             // the scene and then jumps to the new ship when it spawns.
-            self.follow_selection = false;
+            self.follow_paused = true;
         }
         self.had_ship = own.is_some();
-        let target = match (self.follow_selection, own, self.selected) {
+        let target = match (self.follow_selection && !self.follow_paused, own, self.selected) {
             (true, _, Some(s)) => Target::Body(s),
             (_, Some(_), _) => Target::Ship,
             _ => Target::Free,
@@ -455,10 +466,13 @@ impl Game {
                     }
                 }
                 self.selected = best.map(|b| b.0);
+                self.follow_paused = false;
             }
         } else if !dragging {
             self.drag_from = None;
         }
+
+        let mut labels = style::Labels::default();
 
         // --- trails ----------------------------------------------------------------------------
         let sample_tick = world.head / TRAIL_EVERY_TICKS * TRAIL_EVERY_TICKS;
@@ -507,10 +521,10 @@ impl Game {
                 1.0
             };
             style::body(s, r_px, mass, j, fade, ui);
-            if let Some(name) = world.names.get(&j).filter(|_| self.selected != Some(j)) {
+            if let Some(name) = world.names.get(&j).filter(|_| self.show_names && self.selected != Some(j)) {
                 let size = LABEL * ui;
                 let below = s.1 + r_px.max(1.1 * ui).min(4000.0) + size;
-                style::centered(name, s.0, below, size, style::alpha(style::DIM, fade));
+                labels.push(name.as_str(), s.0, below, size, style::alpha(style::DIM, fade), Rank::BodyName);
             }
         }
 
@@ -604,7 +618,7 @@ impl Game {
             let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
             draw_line(s.0 - 6.0 * ui, s.1 - 6.0 * ui, s.0 + 6.0 * ui, s.1 + 6.0 * ui, 2.0 * ui, RED);
             draw_line(s.0 - 6.0 * ui, s.1 + 6.0 * ui, s.0 + 6.0 * ui, s.1 - 6.0 * ui, 2.0 * ui, RED);
-            style::centered("impact", s.0, s.1 + 20.0 * ui, LABEL * ui, RED);
+            labels.push("impact", s.0, s.1 + 20.0 * ui, LABEL * ui, RED, Rank::Approach);
         } else if let Some((i, d)) = paths.closest {
             if i > 0 && i + 1 < paths.coast.len() {
                 let q = paths.coast[i];
@@ -612,8 +626,8 @@ impl Game {
                 style::ring(s.0, s.1, 5.0 * ui, 1.5 * ui, Color::from_rgba(90, 255, 120, 255));
                 let eta = i as f64 / world.rules.tick_hz as f64;
                 let c = Color::from_rgba(150, 255, 170, 255);
-                style::centered(&format!("closest {}", fmt::distance(d)), s.0, s.1 + 18.0 * ui, LABEL * ui, c);
-                style::centered(&format!("in {eta:.1} s"), s.0, s.1 + 30.0 * ui, LABEL * ui, c);
+                labels.push(format!("closest {}", fmt::distance(d)), s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
+                labels.push(format!("in {eta:.1} s"), s.0, s.1 + 30.0 * ui, LABEL * ui, c, Rank::Approach);
             }
         }
 
@@ -670,7 +684,7 @@ impl Game {
             let color = if mine { style::OWN_SHIP } else { style::OTHER_SHIP };
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
             if !mine {
-                style::centered(&p.name, s.0, s.1 + 20.0 * ui, LABEL * ui, color);
+                labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Pilot);
             }
         }
 
@@ -699,7 +713,7 @@ impl Game {
                     style::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, style::alpha(gold, a));
                 }
                 style::ring(s.0, s.1, ring, 2.0 * ui, gold);
-                style::centered("TARGET", s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold);
+                labels.push("TARGET", s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold, Rank::Target);
             } else {
                 // Off screen: an arrow on the edge pointing at it.
                 let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
@@ -711,7 +725,7 @@ impl Game {
                 draw_triangle(tip(10.0 * ui, 0.0), tip(-6.0 * ui, 7.0 * ui), tip(-6.0 * ui, -7.0 * ui), gold);
                 if let Some(ship) = own {
                     let d = ((b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)).sqrt();
-                    style::centered(&fmt::distance(d), ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui, LABEL * ui, gold);
+                    labels.push(fmt::distance(d), ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui, LABEL * ui, gold, Rank::Target);
                 }
             }
             if let Some(ship) = own {
@@ -724,11 +738,13 @@ impl Game {
             let s = view.to_screen(b.x, b.y);
             let r_px = ((row.props.radius[slot as usize] / view.mpp) as f32).min(4000.0) + 6.0 * ui;
             draw_rectangle_lines(s.0 - r_px, s.1 - r_px, 2.0 * r_px, 2.0 * r_px, 1.5 * ui, WHITE);
-            let mut lines = vec![
-                world.body_name(slot),
-                format!("m = {}", fmt::mass(row.props.mass[slot as usize])),
-                format!("r = {}", fmt::distance(row.props.radius[slot as usize])),
-            ];
+            // The name line on top of the label is optional (N).
+            let mut lines = Vec::new();
+            if self.show_names {
+                lines.push(world.body_name(slot));
+            }
+            lines.push(format!("m = {}", fmt::mass(row.props.mass[slot as usize])));
+            lines.push(format!("r = {}", fmt::distance(row.props.radius[slot as usize])));
             if let Some(ship) = own {
                 let d = ((b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)).sqrt();
                 let v = ((b.vx - ship.vx).powi(2) + (b.vy - ship.vy).powi(2)).sqrt();
@@ -736,9 +752,11 @@ impl Game {
                 lines.push(format!("rel v = {}", fmt::speed(v)));
             }
             for (i, l) in lines.iter().enumerate() {
-                style::centered(l, s.0, s.1 + r_px + (12.0 + 12.0 * i as f32) * ui, LABEL * ui, WHITE);
+                labels.push(l.as_str(), s.0, s.1 + r_px + (12.0 + 12.0 * i as f32) * ui, LABEL * ui, WHITE, Rank::Selection);
             }
         }
+
+        labels.draw();
 
         // --- HUD -------------------------------------------------------------------------------
         let me = world.me();
@@ -796,12 +814,13 @@ impl Game {
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
         let mut outcome = Outcome::Continue;
-        let (mut trails, mut trails_rel, mut pred, mut shell_pred, mut follow_sel, mut net_dbg, mut menu) = (
+        let (mut trails, mut trails_rel, mut pred, mut shell_pred, mut follow_sel, mut names, mut net_dbg, mut menu) = (
             self.show_trails,
             self.trails_relative,
             self.show_prediction,
             self.show_shell_prediction,
             self.follow_selection,
+            self.show_names,
             self.show_net,
             self.menu_open,
         );
@@ -932,7 +951,7 @@ impl Game {
                                 check(ui, hi <= limits.2, "HIGH", format!("{hi:.1} r"), format!("max {:.0} r", limits.2));
                             }
                             Some(_) => {
-                                ui.label(RichText::new("not in orbit: get close and match its speed").small().color(dim));
+                                ui.label(RichText::new("not in orbit").small().color(dim));
                             }
                             None => {}
                         }
@@ -945,18 +964,18 @@ impl Game {
                 });
             }
             if menu {
-                egui::Window::new("PAUSED").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
+                egui::Window::new("MENU").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
                     ctx,
                     |ui| {
                         ui.set_width(330.0);
-                        ui.label(egui::RichText::new("the game keeps running").small().color(dim));
                         style::section(ui, "VIEW");
                         style::toggle(ui, &mut pred, "Ship trajectory", "P");
                         style::toggle(ui, &mut shell_pred, "Shell trajectory preview", "O");
-                        style::toggle(ui, &mut trails, "Trails of everything", "L");
+                        style::toggle(ui, &mut trails, "Trails", "L");
                         style::toggle(ui, &mut trails_rel, "Trails relative to selection", "T");
                         style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
                         style::toggle(ui, &mut net_dbg, "Network details", "F3");
+                        style::toggle(ui, &mut names, "Body names", "N");
                         style::section(ui, "INTERFACE");
                         ui.add(egui::Slider::new(&mut ui_scale, 0.6..=2.5).text("size"));
                         ui.add(egui::Slider::new(&mut zoom_speed, 0.002..=3.0).logarithmic(true).text("zoom speed"));
@@ -967,7 +986,7 @@ impl Game {
                         style::key_row(ui, "Aim with mouse or A / D", "M");
                         style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
                         style::key_row(ui, "Recentre, fullscreen", "R, F11");
-                        style::section(ui, "BODY COLOUR = MASS");
+                        style::section(ui, "MASS");
                         style::mass_legend(ui);
                         ui.separator();
                         ui.horizontal(|ui| {
@@ -1001,6 +1020,7 @@ impl Game {
         self.show_prediction = pred;
         self.show_shell_prediction = shell_pred;
         self.follow_selection = follow_sel;
+        self.show_names = names;
         self.show_net = net_dbg;
         self.menu_open = menu;
         self.ui_has_pointer = has_ptr;

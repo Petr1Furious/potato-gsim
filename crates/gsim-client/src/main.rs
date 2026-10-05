@@ -173,8 +173,6 @@ async fn run(args: Args, mut settings: Settings) {
                         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                         .show(ctx, |ui| {
                             ui.set_width(320.0);
-                            ui.label("Newtonian gravity, shared with everyone on the server.");
-                            ui.add_space(6.0);
                             egui::Grid::new("form").num_columns(2).show(ui, |ui| {
                                 ui.label("Name");
                                 ui.text_edit_singleline(&mut settings.name);

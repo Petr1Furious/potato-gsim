@@ -92,8 +92,8 @@ is what address bans and the whitelist are for.
 | Space | Fire a shell towards the cursor (further cursor = faster shell) |
 | Wheel, drag | Zoom about the cursor, pan |
 | Click | Select a body: prediction and trails are then drawn relative to it |
-| F | Camera follows ship / selection |
-| P, O | Ship trajectory prediction, shell trajectory preview |
+| F | Camera follows the selected body (on by default) or stays with the ship |
+| P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, T | Trails, trails relative to selection / world |
 | R, F3, F11, Esc | Recentre, network details, fullscreen, menu |
 
