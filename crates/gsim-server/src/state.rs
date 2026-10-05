@@ -106,8 +106,9 @@ impl ServerState {
                 let record = PlayerRecord {
                     name: r.first()?.clone(),
                     key: from_hex(r.get(1)?)?,
-                    first_seen: r.get(2).and_then(|s| s.parse().ok()).unwrap_or(0),
-                    last_ip: r.get(3).and_then(|s| s.parse().ok()),
+                    first_seen: r.get(2)?.parse().ok()?,
+                    // "-" when the address is unknown.
+                    last_ip: r.get(3)?.parse().ok(),
                 };
                 Some((name_key(&record.name), record))
             })

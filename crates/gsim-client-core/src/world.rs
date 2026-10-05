@@ -4,9 +4,8 @@
 use crate::eph::Eph;
 use crate::session::Stats;
 use gsim_core::particle::step_particle;
-use gsim_core::predict::{predict_particle, predict_ship, Path};
 use gsim_core::ship::step_ship;
-use gsim_core::{math, EphRow, GameRules, InputTimeline, Particle, Scratch, ShipInput, ShipState, Tick};
+use gsim_core::{math, EphRow, GameRules, InputTimeline, Particle, Scratch, ShipState, Tick};
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -431,18 +430,6 @@ impl World {
         }
     }
 
-    /// Exact future path of our ship from the newest simulated state.
-    /// `coast` ignores scheduled thrust (what happens if the engine is cut now).
-    pub fn predict_own(&self, max_ticks: u32, coast: bool) -> Option<Path> {
-        let me = self.me()?;
-        let ship = me.ship.as_ref()?;
-        if ship.crashed.is_some() {
-            return None;
-        }
-        let input_at = |t: Tick| if coast { ShipInput::default() } else { me.timeline.at(t) };
-        Some(predict_ship(*ship.last(), ship.end(), max_ticks, input_at, |t| self.eph.get(t), &self.rules))
-    }
-
     /// Muzzle state of a shell fired now from our ship.
     pub fn shell_muzzle(&self, angle: u16, speed: f64) -> Option<Particle> {
         let s = self.my_ship()?.last().p;
@@ -450,13 +437,6 @@ impl World {
         let speed = speed.clamp(self.rules.shell_speed_min, self.rules.shell_speed_max);
         let muzzle = self.rules.ship_radius + 2.0 * self.rules.shell_radius;
         Some(Particle { x: s.x + dx * muzzle, y: s.y + dy * muzzle, vx: s.vx + dx * speed, vy: s.vy + dy * speed })
-    }
-
-    /// Path a shell would take if fired now.
-    pub fn predict_shell(&self, angle: u16, speed: f64, max_ticks: u32) -> Option<Path> {
-        let p = self.shell_muzzle(angle, speed)?;
-        let start = self.my_ship()?.end();
-        Some(predict_particle(p, self.rules.shell_radius, start, max_ticks, |t| self.eph.get(t), &self.rules))
     }
 }
 

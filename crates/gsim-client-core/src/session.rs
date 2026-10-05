@@ -140,7 +140,7 @@ impl Session {
                     c.on_pong(client_time, server_tick, now);
                 }
             }
-            ServerMsg::CmdAck { seq, tick, .. } => self.on_ack(seq, tick),
+            ServerMsg::CmdAck { seq, tick } => self.on_ack(seq, tick),
             ServerMsg::Event(Event::Hash { tick, hash }) => {
                 self.unchecked_hashes.push_back((tick, hash));
                 self.check_hashes();

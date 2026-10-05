@@ -379,7 +379,7 @@ impl Authority {
                 }
                 CmdKind::Fire { angle, speed } => p.fires.push_back((tick, angle, speed)),
             }
-            replies.push((Target::One(conn), ServerMsg::CmdAck { seq: cmd.seq, tick, accepted: true }));
+            replies.push((Target::One(conn), ServerMsg::CmdAck { seq: cmd.seq, tick }));
         }
         for (target, msg) in replies {
             self.send(target, msg);

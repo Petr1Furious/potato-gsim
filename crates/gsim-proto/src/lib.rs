@@ -5,7 +5,7 @@ use gsim_core::{GameRules, MassiveSnapshot, Particle, ShipInput, ShipState, Tick
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -121,7 +121,7 @@ pub enum ServerMsg {
     /// `server_tick` is fractional: tick about to be simulated plus progress towards it.
     Pong { client_time: f64, server_tick: f64 },
     /// Reliable, to the sender only: the tick the command really took effect at.
-    CmdAck { seq: u32, tick: Tick, accepted: bool },
+    CmdAck { seq: u32, tick: Tick },
     Event(Event),
     /// Unreliable, a few times a second: ticks each player has held the objective orbit.
     Progress { holds: Vec<(PlayerId, u32)> },
