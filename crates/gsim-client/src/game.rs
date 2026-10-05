@@ -539,6 +539,17 @@ impl Game {
             let fade = (1.0 - age / 1.5) as f32;
             match e.kind {
                 EffectKind::ShellBlast => style::disc(s.0, s.1, blast_px.max(6.0), Color::new(1.0, 0.6, 0.3, 0.5 * fade)),
+                EffectKind::Captured => {
+                    // Two gold rings bursting outwards.
+                    for delay in [0.0f32, 0.18] {
+                        let t = (age as f32 - delay) / 1.2;
+                        if (0.0..1.0).contains(&t) {
+                            let r = (14.0 + 110.0 * t) * ui;
+                            style::ring(s.0, s.1, r, (4.0 - 3.0 * t) * ui, style::alpha(style::GOLD, (1.0 - t) * (1.0 - t)));
+                        }
+                    }
+                    style::disc(s.0, s.1, 26.0 * ui, style::alpha(style::GOLD, 0.35 * (1.0 - (age as f32 / 0.4).min(1.0))));
+                }
                 EffectKind::ShipDestroyed => {
                     let r = (10.0 + 60.0 * age as f32) * ui;
                     style::ring(s.0, s.1, r, 3.0 * ui, Color::new(1.0, 0.9, 0.5, fade));
@@ -605,8 +616,45 @@ impl Game {
             }
         }
 
-        // --- ships -----------------------------------------------------------------------------
+        // --- ship wakes ------------------------------------------------------------------------
+        // A short fading tail behind every ship, in the same frame as the prediction line
+        // (relative to the selected body, if any). The full trails replace it when switched on.
         let t0 = tick_f.floor() as Tick;
+        if !self.show_trails {
+            let span = (2.5 * world.rules.tick_hz as f64) as Tick;
+            for (id, p) in &world.players {
+                let Some(track) = p.ship.as_ref() else { continue };
+                let color = if *id == world.my_id { style::OWN_SHIP } else { style::OTHER_SHIP };
+                let newest = t0.min(track.end());
+                let oldest = newest.saturating_sub(span).max(track.base);
+                let mut prev: Option<(f32, f32)> = None;
+                for t in (oldest..=newest).step_by(2) {
+                    let Some(state) = track.at(t) else { continue };
+                    let shift = match (ref_slot, ref_now) {
+                        (Some(r), Some(now)) => world
+                            .eph
+                            .get(t)
+                            .filter(|row| row.props.alive[r as usize])
+                            .map(|row| (now.x - row.x[r as usize], now.y - row.y[r as usize])),
+                        _ => Some((0.0, 0.0)),
+                    };
+                    let Some(shift) = shift else {
+                        prev = None;
+                        continue;
+                    };
+                    let s = view.to_screen(state.p.x + shift.0, state.p.y + shift.1);
+                    if let Some(q) = prev {
+                        let k = (t - oldest) as f32 / span.max(1) as f32;
+                        if view.on_screen(q, 100.0) || view.on_screen(s, 100.0) {
+                            draw_line(q.0, q.1, s.0, s.1, 1.5 * ui, style::alpha(color, 0.5 * k * k));
+                        }
+                    }
+                    prev = Some(s);
+                }
+            }
+        }
+
+        // --- ships -----------------------------------------------------------------------------
         for (id, p) in &world.players {
             let Some(ship) = world.ship_at(*id, tick_f) else { continue };
             let s = view.to_screen(ship.x, ship.y);
@@ -643,6 +691,12 @@ impl Game {
                     style::ring(s.0, s.1, inner.min(1.0e5), ui, Color::new(1.0, 0.78, 0.24, 0.35));
                 }
                 let ring = r_px.min(4000.0) + 9.0 * ui;
+                // Soft halo that breathes slowly.
+                let pulse = 0.75 + 0.25 * (get_time() as f32 * 2.2).sin();
+                for k in 1..=4 {
+                    let a = 0.16 * pulse / k as f32;
+                    style::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, style::alpha(gold, a));
+                }
                 style::ring(s.0, s.1, ring, 2.0 * ui, gold);
                 style::centered("TARGET", s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold);
             } else {
@@ -890,20 +944,30 @@ impl Game {
                 });
             }
             if menu {
-                egui::Window::new("Menu").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
+                egui::Window::new("PAUSED").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
                     ctx,
                     |ui| {
-                        ui.checkbox(&mut pred, "Ship trajectory prediction (P)");
-                        ui.checkbox(&mut shell_pred, "Shell trajectory preview (O)");
-                        ui.checkbox(&mut trails, "Trails (L)");
-                        ui.checkbox(&mut trails_rel, "Trails relative to selected body (T)");
-                        ui.checkbox(&mut follow_sel, "Camera follows selection (F)");
-                        ui.checkbox(&mut net_dbg, "Network details (F3)");
-                        ui.add(egui::Slider::new(&mut ui_scale, 0.6..=2.5).text("UI size"));
-                        ui.add(egui::Slider::new(&mut zoom_speed, 0.002..=3.0).logarithmic(true).text("Zoom speed"));
-                        ui.separator();
-                        ui.small("W/Up thrust, Shift/Ctrl throttle, X/Z 0/100 %, Space fire");
-                        ui.small("Wheel zoom, drag pan, click select, R recentre, F11 fullscreen");
+                        ui.set_width(330.0);
+                        ui.label(egui::RichText::new("the game keeps running").small().color(dim));
+                        style::section(ui, "VIEW");
+                        style::toggle(ui, &mut pred, "Ship trajectory", "P");
+                        style::toggle(ui, &mut shell_pred, "Shell trajectory preview", "O");
+                        style::toggle(ui, &mut trails, "Trails of everything", "L");
+                        style::toggle(ui, &mut trails_rel, "Trails relative to selection", "T");
+                        style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
+                        style::toggle(ui, &mut net_dbg, "Network details", "F3");
+                        style::section(ui, "INTERFACE");
+                        ui.add(egui::Slider::new(&mut ui_scale, 0.6..=2.5).text("size"));
+                        ui.add(egui::Slider::new(&mut zoom_speed, 0.002..=3.0).logarithmic(true).text("zoom speed"));
+                        style::section(ui, "CONTROLS");
+                        style::key_row(ui, "Thrust", "W / UP");
+                        style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
+                        style::key_row(ui, "Fire towards cursor", "SPACE");
+                        style::key_row(ui, "Aim with mouse or A / D", "M");
+                        style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
+                        style::key_row(ui, "Recentre, fullscreen", "R, F11");
+                        style::section(ui, "BODY COLOUR = MASS");
+                        style::mass_legend(ui);
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("Resume").clicked() {

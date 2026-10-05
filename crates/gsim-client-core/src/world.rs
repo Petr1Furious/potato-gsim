@@ -146,6 +146,8 @@ pub struct ShellRep {
 pub enum EffectKind {
     ShipDestroyed,
     ShellBlast,
+    /// Somebody completed the orbit objective around the body at this spot.
+    Captured,
 }
 
 /// Something to draw for a moment (drifts with the velocity it had).
@@ -339,6 +341,14 @@ impl World {
             }
             Event::Captured { tick, player, target } => {
                 self.say(tick, format!("{} captured {}", self.player_name(player), self.body_name(target)));
+                // Mark the spot (the event can be a few ticks old; the nearest row will do).
+                if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))) {
+                    let j = target as usize;
+                    if j < row.x.len() {
+                        let at = Particle { x: row.x[j], y: row.y[j], vx: row.vx[j], vy: row.vy[j] };
+                        self.effects.push_back(Effect { tick, at, kind: EffectKind::Captured });
+                    }
+                }
                 if let Some(p) = self.players.get_mut(&player) {
                     p.captures += 1;
                 }

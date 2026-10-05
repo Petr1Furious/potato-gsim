@@ -258,3 +258,67 @@ pub fn gauge(ui: &mut egui::Ui, label: &str, value: &str, frac: f32, color: Colo
     }
     ui.add_space(3.0);
 }
+
+/// Section header inside a window.
+pub fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    caption(ui, title);
+    ui.add_space(1.0);
+}
+
+fn key_hint(ui: &mut egui::Ui, key: &str) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(egui::RichText::new(key).monospace().color(c32(DIM)));
+    });
+}
+
+/// A switch with its keyboard shortcut right-aligned.
+pub fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str, key: &str) {
+    ui.horizontal(|ui| {
+        ui.checkbox(value, label);
+        key_hint(ui, key);
+    });
+}
+
+/// A line of the controls reference: what it does on the left, the keys on the right.
+pub fn key_row(ui: &mut egui::Ui, what: &str, key: &str) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(what).color(c32(DIM)));
+        key_hint(ui, key);
+    });
+}
+
+/// The colour-to-mass key: a strip of the ramp with a few labelled masses under it.
+pub fn mass_legend(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
+    let painter = ui.painter();
+    // Positive ramp over most of the strip, then a star swatch and the negative ramp.
+    let steps = 48;
+    let ramp_w = rect.width() * 0.62;
+    for i in 0..steps {
+        let t = i as f64 / (steps - 1) as f64;
+        let x = rect.left() + ramp_w * i as f32 / steps as f32;
+        let cell = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + ramp_w / steps as f32 + 0.5, rect.bottom()));
+        painter.rect_filled(cell, 0.0, c32(mass_color(10f64.powf(21.0 + 6.0 * t))));
+    }
+    let star = egui::Rect::from_min_max(egui::pos2(rect.left() + rect.width() * 0.66, rect.top()), egui::pos2(rect.left() + rect.width() * 0.74, rect.bottom()));
+    painter.rect_filled(star, 0.0, c32(mass_color(2.0e30)));
+    let neg_left = rect.left() + rect.width() * 0.78;
+    let neg_w = rect.right() - neg_left;
+    for i in 0..16 {
+        let t = i as f64 / 15.0;
+        let x = neg_left + neg_w * i as f32 / 16.0;
+        let cell = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + neg_w / 16.0 + 0.5, rect.bottom()));
+        painter.rect_filled(cell, 0.0, c32(mass_color(-(10f64.powf(21.0 + 6.0 * t)))));
+    }
+    let font = egui::FontId::new(11.0, egui::FontFamily::Proportional);
+    let label = |x: f32, align: egui::Align2, text: &str| {
+        painter.text(egui::pos2(x, rect.bottom() + 3.0), align, text, font.clone(), c32(DIM));
+    };
+    label(rect.left(), egui::Align2::LEFT_TOP, "1e21 kg");
+    label(rect.left() + ramp_w * 0.5, egui::Align2::CENTER_TOP, "1e24");
+    label(rect.left() + ramp_w, egui::Align2::RIGHT_TOP, "1e27");
+    label(star.center().x, egui::Align2::CENTER_TOP, "star");
+    label(rect.right(), egui::Align2::RIGHT_TOP, "negative");
+    ui.add_space(16.0);
+}
