@@ -17,7 +17,10 @@ use gsim_server::scenario::PRESETS;
 use macroquad::prelude::*;
 use settings::Settings;
 
-/// potato-gsim client.
+/// What players see: window title, menu heading, app bundle.
+const APP_NAME: &str = "Potato Gravity Simulator";
+
+/// Potato Gravity Simulator client.
 #[derive(Parser, Debug, Clone)]
 #[command(version)]
 struct Args {
@@ -74,7 +77,12 @@ fn main() {
     }
     settings.fullscreen |= args.fullscreen;
     let conf = Conf {
-        window_title: "potato-gsim".into(),
+        window_title: APP_NAME.into(),
+        icon: Some(miniquad::conf::Icon {
+            small: *include_bytes!("../assets/icon-16.rgba"),
+            medium: *include_bytes!("../assets/icon-32.rgba"),
+            big: *include_bytes!("../assets/icon-64.rgba"),
+        }),
         window_width: 1400,
         window_height: 900,
         high_dpi: true,
@@ -168,7 +176,7 @@ async fn run(args: Args, mut settings: Settings) {
                 let factor = settings.ui_factor();
                 egui_macroquad::ui(|ctx| {
                     ctx.set_zoom_factor(factor);
-                    egui::Window::new("potato-gsim")
+                    egui::Window::new(APP_NAME)
                         .collapsible(false)
                         .resizable(false)
                         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

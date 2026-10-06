@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Potato Gravity Simulator. Rocket: Lucide "rocket" (ISC licence), https://lucide.dev -->
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#070b14"/>
+  <!-- orbit, behind the potato -->
+  <ellipse cx="480" cy="610" rx="390" ry="150" transform="rotate(-28 480 610)" fill="none" stroke="#5fd4ff" stroke-opacity="0.55" stroke-width="16"/>
+  <!-- the potato -->
+  <path d="M262 652 C236 528 338 432 478 440 C612 448 702 520 694 628 C686 736 572 800 436 790 C330 782 276 742 262 652 Z" fill="#c9a268"/>
+  <path d="M300 640 C286 548 362 476 470 480 C560 484 630 524 640 590 C560 540 400 548 300 640 Z" fill="#dab77e"/>
+  <ellipse cx="392" cy="662" rx="20" ry="13" transform="rotate(-18 392 662)" fill="#9c7848"/>
+  <ellipse cx="536" cy="706" rx="16" ry="11" transform="rotate(12 536 706)" fill="#9c7848"/>
+  <ellipse cx="590" cy="610" rx="14" ry="10" transform="rotate(-30 590 610)" fill="#9c7848"/>
+  <!-- the part of the orbit that passes in front -->
+  <path d="M134 792 A390 150 -28 0 0 826 428" fill="none" stroke="#5fd4ff" stroke-opacity="0.9" stroke-width="16" stroke-linecap="round"/>
+  <!-- rocket -->
+  <g transform="translate(640 120) scale(12.5)" fill="none" stroke="#f4f6fb" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09" stroke="#ffc83c"/>
+    <path d="M9 12a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.4 22.4 0 0 1-4 2z" fill="#070b14"/>
+    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 .05 5 .05"/>
+  </g>
+</svg>

@@ -91,10 +91,10 @@ jobs:
             ${{ env.ROLLING == 'true' && format('Built from {0}. This release is replaced on every push to master.', github.sha) || '' }}
 
             **Download**
-            - Windows: `potato-gsim-windows-x86_64.zip`, run `gsim-client.exe`.
+            - Windows: `potato-gsim-windows-x86_64.zip`, run `Potato Gravity Simulator.exe`.
             - macOS (Apple Silicon and Intel): `potato-gsim-macos-universal.dmg`. The app is not
               notarised: the first time, right-click it and choose **Open**, or run
-              `xattr -dr com.apple.quarantine /Applications/potato-gsim.app`.
+              `xattr -dr com.apple.quarantine "/Applications/Potato Gravity Simulator.app"`.
             - Linux: `potato-gsim-linux-x86_64.tar.gz` (also contains the dedicated server).
 
             The `gsim-client-*` files and `version.txt` are for the built-in updater.

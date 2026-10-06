@@ -1,4 +1,4 @@
-# potato-gsim
+# Potato Gravity Simulator
 
 A multiplayer ship game in a real Newtonian N-body world: SI units, real `G`, and a clock
 running 86 400x faster than real time.
@@ -182,3 +182,9 @@ cargo test --workspace
 - `gsim-testkit`: server plus clients over simulated links (clean, lossy and jittery, 500 ms
   round trip, late join, forced divergence and resync, shell kills, arming, crashes, orbit
   capture, round rollover into a new world).
+
+## Credits
+
+The app icon combines a hand-drawn potato with the "rocket" glyph from
+[Lucide](https://lucide.dev) (ISC licence). Fonts: Rajdhani and Share Tech Mono (SIL Open Font
+Licence; texts in `crates/gsim-client/assets`).
