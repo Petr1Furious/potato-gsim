@@ -152,6 +152,7 @@ pub struct Game {
     frames: VecDeque<TrailFrame>,
     last_frame_tick: Tick,
     predictor: Predictor,
+    meter: fmt::Meter,
     lookahead_ticks: u32,
     status: Option<(String, f64)>,
     started: f64,
@@ -209,6 +210,7 @@ impl Game {
             frames: VecDeque::new(),
             last_frame_tick: 0,
             predictor: Predictor::new(),
+            meter: fmt::Meter::default(),
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
             status: None,
             started: get_time(),
@@ -220,6 +222,7 @@ impl Game {
     }
 
     pub fn frame(&mut self, settings: &mut Settings) -> Outcome {
+        self.meter.frame(0.0);
         let dt = get_frame_time().min(0.1);
         // HUD panels scale with the window; things drawn in the world (ship, dots, labels) only mildly.
         let hud = settings.ui_factor();
@@ -851,7 +854,7 @@ impl Game {
         let horizon = (paths.coast.len().max(1) - 1) as f64 / world.rules.tick_hz as f64;
         let predict_ms = paths.compute_ms;
         let net_lines: Vec<String> = vec![
-            format!("{} bodies   time x{:.0}   {} fps", alive_bodies, world.rules.time_scale(), get_fps()),
+            format!("{} bodies   time x{:.0}   {:.0} fps", alive_bodies, world.rules.time_scale(), self.meter.fps),
             format!("tick {:.1}  head {}  ephemeris +{} ticks", tick_f, world.head, world.eph.end_tick().unwrap_or(0).saturating_sub(world.head)),
             format!("rtt {:.0} ms   input lead {} ticks ({:.0} ms)", rtt.unwrap_or(0.0) * 1e3, lead, lead as f64 * 1e3 / world.rules.tick_hz as f64),
             format!("world hash: {} checks, {} mismatches, {} resyncs", stats.hash_checks, stats.hash_mismatches, stats.resyncs),
@@ -947,6 +950,7 @@ impl Game {
             if net_dbg {
                 Area::new(Id::new("net")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         for l in &net_lines {
                             ui.label(RichText::new(l).monospace().color(dim));
                         }

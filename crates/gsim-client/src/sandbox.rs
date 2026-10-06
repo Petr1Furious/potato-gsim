@@ -109,6 +109,7 @@ pub struct Sandbox {
     chat: ChatBox,
     log: VecDeque<ChatEntry>,
     density: Density,
+    meter: fmt::Meter,
     flashes: Vec<(Merge, u64)>,
     /// Where ships were lost: position, velocity of the wreck, tick.
     wrecks: Vec<(f64, f64, f64, f64, u64)>,
@@ -169,6 +170,7 @@ impl Sandbox {
             chat: ChatBox::default(),
             log,
             density: Density::new(),
+            meter: fmt::Meter::default(),
             flashes: Vec::new(),
             wrecks: Vec::new(),
             predictor: Predictor::new(),
@@ -733,6 +735,7 @@ impl Sandbox {
 
     #[allow(clippy::too_many_arguments)]
     fn hud(&mut self, settings: &mut Settings, seen: &Seen, bodies: usize, present: f64, picked: Option<Picked>, wheel: f32, hud: f32) -> Outcome {
+        self.meter.frame(self.density.last_ms);
         let stats = &seen.stats;
         let title = format!("{}   ·   {} BODIES", self.scenario.to_uppercase(), group_digits(bodies));
         // What one real second is worth, as achieved; and as asked for when that is more.
@@ -743,7 +746,7 @@ impl Sandbox {
         };
         let days = seen.time / 86_400.0;
         let stat_lines = [
-            format!("{} bodies   {} fps   draw {:.1} ms", group_digits(bodies), get_fps(), self.density.last_ms),
+            format!("{} bodies   {:.0} fps   draw {:.1} ms", group_digits(bodies), self.meter.fps, self.meter.ms),
             format!("step {:.1} ms  (sort {:.1}  gravity {:.1}  merge {:.1})", stats.step_ms, stats.sort_ms, stats.force_ms, stats.finish_ms),
             format!("{:.0} of {:.0} ticks per second   day {days:.0}", stats.rate, stats.wanted_rate),
             format!("{:.0} pulls per body   angle {:.2}   {}", stats.interactions, seen.theta, stats.level),
@@ -794,6 +797,7 @@ impl Sandbox {
             if stats_on {
                 Area::new(Id::new("stats")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         for l in &stat_lines {
                             ui.label(RichText::new(l).monospace().color(dim));
                         }
@@ -820,8 +824,8 @@ impl Sandbox {
                 });
             });
 
-            // Bottom centre: time.
-            Area::new(Id::new("time")).anchor(Align2::CENTER_BOTTOM, [0.0, -46.0]).show(ctx, |ui| {
+            // Under the title: time buttons, then whatever was just announced.
+            Area::new(Id::new("time")).anchor(Align2::CENTER_TOP, [0.0, 62.0]).show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     for (value, label) in PACES {
                         let on = (value - speed).abs() <= 0.02 * value;
@@ -832,6 +836,11 @@ impl Sandbox {
                     }
                 });
             });
+            if let Some(s) = &status {
+                Area::new(Id::new("status")).anchor(Align2::CENTER_TOP, [0.0, 90.0]).show(ctx, |ui| {
+                    ui.label(RichText::new(s).color(gold));
+                });
+            }
 
             Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
