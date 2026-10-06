@@ -92,7 +92,7 @@ impl Authority {
         match self.run(conn, id, spec.name, &words[1..]) {
             Ok(Some(reply)) => self.tell(conn, ChatKind::System, reply),
             Ok(None) => {}
-            Err(problem) if problem.is_empty() => self.tell(conn, ChatKind::Error, format!("usage: {}", spec.usage)),
+            Err(problem) if problem.is_empty() => self.tell(conn, ChatKind::Error, format!("usage: {}", spec.usage())),
             Err(problem) => self.tell(conn, ChatKind::Error, problem),
         }
     }
@@ -199,7 +199,7 @@ impl Authority {
             "help" => {
                 let op = self.is_op(me);
                 for c in command::COMMANDS.iter().filter(|c| op || !c.op) {
-                    self.tell(conn, ChatKind::System, format!("{}  -  {}", c.usage, c.help));
+                    self.tell(conn, ChatKind::System, format!("{}  -  {}", c.usage(), c.help));
                 }
                 Ok(None)
             }

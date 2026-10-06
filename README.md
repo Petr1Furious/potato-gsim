@@ -85,8 +85,12 @@ is what address bans and the whitelist are for.
 
 ## Chat and commands
 
-`T` or `Enter` opens chat, `/` opens it for a command, `Tab` completes command names,
-players, bodies and presets (press again to cycle), `Up`/`Down` recall earlier lines. Joins,
+`T` or `Enter` opens chat and `/` opens it for a command. The input works like Minecraft's:
+suggestions for the word being typed appear in a list above it (arrows to move, `Tab` to
+accept and to cycle, `Shift+Tab` back, click or wheel with the mouse, `Esc` to hide); when
+there is nothing to suggest, a grey hint shows the arguments still expected, or a red
+message shows where the command went wrong. In plain messages `Tab` completes names of
+players and bodies. `Up`/`Down` recall earlier lines, the wheel and `PgUp`/`PgDn` scroll. Joins,
 kills, captures and new targets appear in chat too. Names of players and bodies in a message
 are clickable: a body gets selected, a player gets followed by the camera. `G` drops a
 marker under the cursor that everyone sees for a few seconds.
@@ -117,7 +121,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Click | Select a body: prediction and trails are then drawn relative to it |
 | F | Camera follows the selected body (on by default) or stays with the ship |
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
-| L, T | Trails, trails relative to selection / world |
+| L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
 | R, F3, F11, Esc | Recentre, network details, fullscreen, menu |
 

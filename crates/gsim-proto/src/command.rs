@@ -15,39 +15,101 @@ pub enum Arg {
     Text,
 }
 
+/// One argument of a command.
+pub struct Param {
+    /// Shown in usage, e.g. `player` becomes `<player>` or `[<player>]`.
+    pub name: &'static str,
+    pub arg: Arg,
+    pub optional: bool,
+}
+
+const fn req(name: &'static str, arg: Arg) -> Param {
+    Param { name, arg, optional: false }
+}
+
+const fn opt(name: &'static str, arg: Arg) -> Param {
+    Param { name, arg, optional: true }
+}
+
 pub struct Command {
     pub name: &'static str,
-    pub usage: &'static str,
     pub help: &'static str,
     /// Operators only.
     pub op: bool,
-    pub args: &'static [Arg],
+    pub params: &'static [Param],
+}
+
+impl Param {
+    /// `<name>`, or `[<name>]` when optional, as Minecraft writes it.
+    pub fn usage(&self) -> String {
+        if self.optional {
+            format!("[<{}>]", self.name)
+        } else {
+            format!("<{}>", self.name)
+        }
+    }
+}
+
+impl Command {
+    /// Usage of the parameters from `from` on, e.g. `<kills> <orbits>`.
+    pub fn usage_from(&self, from: usize) -> String {
+        self.params.iter().skip(from).map(Param::usage).collect::<Vec<_>>().join(" ")
+    }
+
+    pub fn usage(&self) -> String {
+        format!("/{} {}", self.name, self.usage_from(0)).trim_end().to_string()
+    }
 }
 
 pub const COMMANDS: &[Command] = &[
-    Command { name: "help", usage: "/help", help: "list the commands you can use", op: false, args: &[] },
-    Command { name: "list", usage: "/list", help: "who is online", op: false, args: &[] },
-    Command { name: "msg", usage: "/msg PLAYER TEXT", help: "private message", op: false, args: &[Arg::Player, Arg::Text] },
-    Command { name: "r", usage: "/r TEXT", help: "reply to the last private message", op: false, args: &[Arg::Text] },
-    Command { name: "respawn", usage: "/respawn [PLAYER]", help: "destroy your ship and start over", op: false, args: &[Arg::Player] },
-    Command { name: "round", usage: "/round new | time SECONDS | length SECONDS", help: "restart the round, or set the time left / the round length", op: true, args: &[Arg::Word(&["new", "time", "length"]), Arg::Number] },
-    Command { name: "tp", usage: "/tp [PLAYER] PLAYER|BODY|~DX ~DY|X Y", help: "teleport (metres; ~ is relative to the ship)", op: true, args: &[Arg::Place, Arg::Place, Arg::Place] },
-    Command { name: "orbit", usage: "/orbit [PLAYER] BODY", help: "put a ship on a circular orbit around a body", op: true, args: &[Arg::Place, Arg::Body] },
-    Command { name: "preset", usage: "/preset NAME [SEED]", help: "start a new round in another world", op: true, args: &[Arg::Preset, Arg::Number] },
-    Command { name: "timescale", usage: "/timescale X", help: "simulated seconds per second; starts a new round", op: true, args: &[Arg::Number] },
-    Command { name: "target", usage: "/target BODY", help: "move the objective", op: true, args: &[Arg::Body] },
-    Command { name: "fuel", usage: "/fuel [PLAYER]", help: "refill delta-v", op: true, args: &[Arg::Player] },
-    Command { name: "god", usage: "/god [PLAYER]", help: "toggle immunity to shells", op: true, args: &[Arg::Player] },
-    Command { name: "kill", usage: "/kill PLAYER", help: "destroy a ship", op: true, args: &[Arg::Player] },
-    Command { name: "score", usage: "/score PLAYER KILLS ORBITS", help: "set a player's score", op: true, args: &[Arg::Player, Arg::Number, Arg::Number] },
-    Command { name: "kick", usage: "/kick PLAYER [REASON]", help: "disconnect a player", op: true, args: &[Arg::Player, Arg::Text] },
-    Command { name: "ban", usage: "/ban PLAYER [REASON]", help: "ban a player by name", op: true, args: &[Arg::Player, Arg::Text] },
-    Command { name: "unban", usage: "/unban NAME", help: "lift a ban", op: true, args: &[Arg::Text] },
-    Command { name: "ban-ip", usage: "/ban-ip PLAYER|ADDRESS [REASON]", help: "ban an address", op: true, args: &[Arg::Player, Arg::Text] },
-    Command { name: "unban-ip", usage: "/unban-ip ADDRESS", help: "lift an address ban", op: true, args: &[Arg::Text] },
-    Command { name: "op", usage: "/op PLAYER", help: "make a player an operator", op: true, args: &[Arg::Player] },
-    Command { name: "deop", usage: "/deop PLAYER", help: "remove operator rights", op: true, args: &[Arg::Player] },
-    Command { name: "whitelist", usage: "/whitelist on | off | add NAME | remove NAME | list", help: "manage the whitelist", op: true, args: &[Arg::Word(&["on", "off", "add", "remove", "list"]), Arg::Player] },
+    Command { name: "help", help: "list the commands you can use", op: false, params: &[] },
+    Command { name: "list", help: "who is online", op: false, params: &[] },
+    Command { name: "msg", help: "private message", op: false, params: &[req("player", Arg::Player), req("message", Arg::Text)] },
+    Command { name: "r", help: "reply to the last private message", op: false, params: &[req("message", Arg::Text)] },
+    Command { name: "respawn", help: "destroy your ship and start over", op: false, params: &[opt("player", Arg::Player)] },
+    Command {
+        name: "round",
+        help: "restart the round, or set the time left / the round length",
+        op: true,
+        params: &[req("new|time|length", Arg::Word(&["new", "time", "length"])), opt("seconds", Arg::Number)],
+    },
+    Command {
+        name: "tp",
+        help: "teleport to a player, a body, or coordinates in metres (~ is relative to the ship); name a player first to move them instead",
+        op: true,
+        params: &[req("player|body|x", Arg::Place), opt("player|body|x|y", Arg::Place), opt("y", Arg::Place)],
+    },
+    Command {
+        name: "orbit",
+        help: "put a ship on a circular orbit around a body",
+        op: true,
+        params: &[req("player|body", Arg::Place), opt("body", Arg::Body)],
+    },
+    Command { name: "preset", help: "start a new round in another world", op: true, params: &[req("preset", Arg::Preset), opt("seed", Arg::Number)] },
+    Command { name: "timescale", help: "simulated seconds per second; starts a new round", op: true, params: &[req("factor", Arg::Number)] },
+    Command { name: "target", help: "move the objective", op: true, params: &[req("body", Arg::Body)] },
+    Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
+    Command { name: "god", help: "toggle immunity to shells", op: true, params: &[opt("player", Arg::Player)] },
+    Command { name: "kill", help: "destroy a ship", op: true, params: &[req("player", Arg::Player)] },
+    Command {
+        name: "score",
+        help: "set a player's score",
+        op: true,
+        params: &[req("player", Arg::Player), req("kills", Arg::Number), req("orbits", Arg::Number)],
+    },
+    Command { name: "kick", help: "disconnect a player", op: true, params: &[req("player", Arg::Player), opt("reason", Arg::Text)] },
+    Command { name: "ban", help: "ban a player by name", op: true, params: &[req("player", Arg::Player), opt("reason", Arg::Text)] },
+    Command { name: "unban", help: "lift a ban", op: true, params: &[req("name", Arg::Text)] },
+    Command { name: "ban-ip", help: "ban an address", op: true, params: &[req("player|address", Arg::Player), opt("reason", Arg::Text)] },
+    Command { name: "unban-ip", help: "lift an address ban", op: true, params: &[req("address", Arg::Text)] },
+    Command { name: "op", help: "make a player an operator", op: true, params: &[req("player", Arg::Player)] },
+    Command { name: "deop", help: "remove operator rights", op: true, params: &[req("player", Arg::Player)] },
+    Command {
+        name: "whitelist",
+        help: "manage the whitelist",
+        op: true,
+        params: &[req("on|off|add|remove|list", Arg::Word(&["on", "off", "add", "remove", "list"])), opt("player", Arg::Player)],
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Command> {

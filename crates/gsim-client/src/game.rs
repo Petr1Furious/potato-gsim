@@ -229,9 +229,9 @@ impl Game {
 
         // --- toggles -------------------------------------------------------------------------
         if is_key_pressed(KeyCode::Escape) {
-            // Escape closes the chat line first, the menu otherwise.
+            // Escape hides the suggestion list, then closes the chat line; otherwise the menu.
             if self.chat.open {
-                self.chat.close();
+                self.chat.escape();
             } else {
                 self.menu_open = !self.menu_open;
             }
@@ -249,7 +249,7 @@ impl Game {
                 self.show_trails = !self.show_trails;
                 self.say(if self.show_trails { "Trails on" } else { "Trails off" });
             }
-            if is_key_pressed(KeyCode::T) {
+            if is_key_pressed(KeyCode::K) {
                 self.trails_relative = !self.trails_relative;
                 self.say(if self.trails_relative { "Trails relative to reference" } else { "Trails in world frame" });
             }
@@ -443,7 +443,8 @@ impl Game {
 
         let pointer = !self.ui_has_pointer && !self.menu_open;
         let wheel = mouse_wheel().1;
-        if pointer && wheel != 0.0 {
+        // While the chat is open the wheel belongs to it.
+        if pointer && !self.chat.open && wheel != 0.0 {
             // Wheel units differ wildly between platforms (notches vs. pixel deltas), hence the
             // per-platform default speed and the cap on what one frame can contribute.
             self.zoom_pending += (wheel * settings.zoom_speed).clamp(-1.5, 1.5);
@@ -1010,7 +1011,7 @@ impl Game {
                         style::toggle(ui, &mut pred, "Ship trajectory", "P");
                         style::toggle(ui, &mut shell_pred, "Shell trajectory preview", "O");
                         style::toggle(ui, &mut trails, "Trails", "L");
-                        style::toggle(ui, &mut trails_rel, "Trails relative to selection", "T");
+                        style::toggle(ui, &mut trails_rel, "Trails relative to selection", "K");
                         style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
                         style::toggle(ui, &mut net_dbg, "Network details", "F3");
                         style::toggle(ui, &mut names, "Body names", "N");

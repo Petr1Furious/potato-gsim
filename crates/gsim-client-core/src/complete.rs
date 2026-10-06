@@ -1,7 +1,9 @@
-//! Tab completion for the chat box: command names and their arguments, and names of
-//! players and bodies anywhere else.
+//! What the chat input should show while typing, modelled on Minecraft's command
+//! suggestions: a list of completions for the word under the cursor, or (when there is
+//! nothing to suggest) a grey hint of the arguments still expected, or a red error when
+//! the input cannot be right. Also says how to colour the typed command.
 
-use gsim_proto::command::{self, quote, Arg};
+use gsim_proto::command::{self, parse_metres, quote, Arg, Command};
 
 pub struct Context<'a> {
     pub players: &'a [String],
@@ -11,74 +13,229 @@ pub struct Context<'a> {
     pub op: bool,
 }
 
-/// Byte offset where the word being typed starts (a `"` opens a word that may contain spaces).
-fn word_start(input: &str) -> usize {
-    let (mut start, mut quoted) = (0, false);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpanKind {
+    /// The command name.
+    Literal,
+    /// The n-th argument (colours cycle).
+    Arg(usize),
+    Error,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Analysis {
+    /// Completions for the word under the cursor, sorted.
+    pub suggestions: Vec<String>,
+    /// Byte offset in the input where that word starts (a suggestion replaces from here).
+    pub start: usize,
+    /// Arguments still expected from the cursor on, e.g. `<kills> <orbits>`.
+    pub usage: Option<String>,
+    /// Why the input cannot be a valid command.
+    pub error: Option<String>,
+    /// How to colour the input: (start, end, kind) byte ranges.
+    pub spans: Vec<(usize, usize, SpanKind)>,
+}
+
+/// A word of the input with its position (quotes keep spaces together).
+struct Word {
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+fn words(input: &str) -> Vec<Word> {
+    let mut out = Vec::new();
+    let (mut start, mut quoted, mut cur) = (None, false, String::new());
     for (i, c) in input.char_indices() {
         if c == '"' {
             quoted = !quoted;
-            if quoted {
-                start = i;
-            }
+            start.get_or_insert(i);
         } else if c.is_whitespace() && !quoted {
-            start = i + c.len_utf8();
+            if let Some(s) = start.take() {
+                out.push(Word { start: s, end: i, text: std::mem::take(&mut cur) });
+            }
+        } else {
+            start.get_or_insert(i);
+            cur.push(c);
         }
     }
-    start
+    if let Some(s) = start {
+        out.push(Word { start: s, end: input.len(), text: cur });
+    }
+    out
 }
 
-/// Everything the word under the cursor (the end of `input`) could be completed to.
-pub fn candidates(input: &str, ctx: &Context) -> Vec<String> {
-    let start = word_start(input);
-    let partial = input[start..].trim_start_matches('"').to_lowercase();
+/// Minecraft's error format: the message, where, and the last few characters before it.
+fn error_at(message: &str, input: &str, pos: usize) -> String {
+    let upto = &input[..pos.min(input.len())];
+    let tail_start = upto.char_indices().rev().nth(9).map_or(0, |(i, _)| i);
+    let dots = if tail_start > 0 { "..." } else { "" };
+    format!("{message} at position {}: {dots}{}<--[HERE]", upto.chars().count(), &upto[tail_start..])
+}
+
+fn is_coordinate(word: &str) -> bool {
+    let w = word.strip_prefix('~').unwrap_or(word);
+    (word.starts_with('~') && w.is_empty()) || parse_metres(w).is_some()
+}
+
+fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
     let names = |lists: &[&[String]]| -> Vec<String> { lists.iter().flat_map(|l| l.iter().cloned()).collect() };
-    let pool: Vec<String> = match input.strip_prefix('/') {
-        // The command itself.
-        Some(_) if start == 0 => {
-            let mut names: Vec<String> = command::COMMANDS
-                .iter()
-                .filter(|c| (ctx.op || !c.op) && c.name.starts_with(partial.trim_start_matches('/')))
-                .map(|c| format!("/{}", c.name))
-                .collect();
-            names.sort();
-            return names;
-        }
-        Some(line) => {
-            let before = command::split(&input[1..start]);
-            let Some(spec) = before.first().and_then(|n| command::find(n)) else { return Vec::new() };
-            let _ = line;
-            let with_target = |mut v: Vec<String>| {
-                v.push("@target".to_string());
-                v
-            };
-            match spec.args.get(before.len() - 1).or(spec.args.last().filter(|a| **a == Arg::Text)) {
-                Some(Arg::Player) => names(&[ctx.players]),
-                Some(Arg::Body) => with_target(names(&[ctx.bodies])),
-                Some(Arg::Place) => with_target(names(&[ctx.players, ctx.bodies])),
-                Some(Arg::Preset) => ctx.presets.iter().map(|p| p.to_string()).collect(),
-                Some(Arg::Word(words)) => words.iter().map(|w| w.to_string()).collect(),
-                Some(Arg::Text) => names(&[ctx.players, ctx.bodies]),
-                Some(Arg::Number) | None => Vec::new(),
-            }
-        }
-        // Plain chat: mention a player or a body.
-        None if partial.is_empty() => Vec::new(),
-        None => names(&[ctx.players, ctx.bodies]),
+    let with_target = |mut v: Vec<String>| {
+        v.push("@target".to_string());
+        v
     };
-    let in_command = input.starts_with('/');
-    let mut out: Vec<String> = pool
-        .into_iter()
-        .filter(|c| c.to_lowercase().starts_with(&partial))
-        .map(|c| if in_command { quote(&c) } else { c })
-        .collect();
+    match arg {
+        Arg::Player => names(&[ctx.players]),
+        Arg::Body => with_target(names(&[ctx.bodies])),
+        Arg::Place => with_target(names(&[ctx.players, ctx.bodies])),
+        Arg::Preset => ctx.presets.iter().map(|p| p.to_string()).collect(),
+        Arg::Word(words) => words.iter().map(|w| w.to_string()).collect(),
+        Arg::Text => names(&[ctx.players, ctx.bodies]),
+        Arg::Number => Vec::new(),
+    }
+}
+
+fn matching(pool: Vec<String>, partial: &str, quoted: bool) -> Vec<String> {
+    let p = partial.trim_start_matches('"').to_lowercase();
+    let mut out: Vec<String> = pool.into_iter().filter(|c| c.to_lowercase().starts_with(&p)).map(|c| if quoted { quote(&c) } else { c }).collect();
     out.sort_by_key(|c| c.to_lowercase());
     out.dedup();
     out
 }
 
-/// `input` with the word under the cursor replaced by `candidate`, ready for the next word.
-pub fn apply(input: &str, candidate: &str) -> String {
-    format!("{}{candidate} ", &input[..word_start(input)])
+/// Analyse a command line (`input` starts with `/`) with the cursor at its end.
+fn command_line(input: &str, ctx: &Context) -> Analysis {
+    let mut a = Analysis::default();
+    let ws = words(input);
+    let trailing_space = input.ends_with(char::is_whitespace);
+    let Some(first) = ws.first() else { return a };
+
+    // Still typing the command name.
+    if ws.len() == 1 && !trailing_space {
+        let typed = first.text.trim_start_matches('/').to_lowercase();
+        let mut names: Vec<String> =
+            command::COMMANDS.iter().filter(|c| (ctx.op || !c.op) && c.name.starts_with(&typed)).map(|c| format!("/{}", c.name)).collect();
+        names.sort();
+        if names.is_empty() {
+            a.error = Some(error_at("Unknown or incomplete command", input, input.len()));
+            a.spans.push((0, input.len(), SpanKind::Error));
+        } else {
+            a.spans.push((0, input.len(), SpanKind::Literal));
+        }
+        a.suggestions = names;
+        return a;
+    }
+
+    let name = first.text.trim_start_matches('/');
+    let Some(spec) = command::find(name).filter(|c| ctx.op || !c.op) else {
+        a.error = Some(error_at("Unknown or incomplete command", input, first.end));
+        a.spans.push((0, input.len(), SpanKind::Error));
+        return a;
+    };
+    a.spans.push((first.start, first.end, SpanKind::Literal));
+
+    // Which argument the cursor is on, and what was typed of it so far.
+    let args = &ws[1..];
+    let index = if trailing_space { args.len() } else { args.len() - 1 };
+    let (partial, start) = if trailing_space { ("", input.len()) } else { (args[index].text.as_str(), args[index].start) };
+    a.start = start;
+    let raw_partial = &input[start..];
+
+    // Free text swallows the rest of the line.
+    let text_from = spec.params.iter().position(|p| p.arg == Arg::Text);
+    let param_at = |i: usize| match text_from {
+        Some(t) if i >= t => spec.params.get(t).map(|p| (t, p)),
+        _ => spec.params.get(i).map(|p| (i, p)),
+    };
+
+    // Colour the arguments typed so far; flag the first one that cannot be right.
+    for (i, w) in args.iter().enumerate() {
+        let complete = trailing_space || i < index;
+        let bad = match param_at(i) {
+            None => true,
+            Some((_, p)) if complete => !valid(spec, i, &p.arg, &w.text, args, ctx),
+            Some(_) => false,
+        };
+        if bad {
+            a.spans.push((w.start, input.len(), SpanKind::Error));
+            a.error = Some(error_at("Incorrect argument for command", input, w.start));
+            return a;
+        }
+        a.spans.push((w.start, w.end, SpanKind::Arg(param_at(i).map_or(i, |p| p.0))));
+    }
+
+    let Some((slot, param)) = param_at(index) else {
+        if !trailing_space || !args.is_empty() && index > spec.params.len() {
+            a.error = Some(error_at("Incorrect argument for command", input, start));
+        }
+        return a;
+    };
+    // After a coordinate comes the other coordinate, not a name.
+    let after_coordinate = param.arg == Arg::Place && index > 0 && is_coordinate(&args[index - 1].text);
+    let arg = if after_coordinate { Arg::Number } else { param.arg };
+    a.suggestions = matching(pool(arg, ctx), partial, true);
+    if raw_partial.starts_with('"') {
+        // Keep offering quoted names while the quote is open.
+        a.suggestions.retain(|s| s.starts_with('"'));
+    }
+    if a.suggestions.is_empty() {
+        let hopeless = match arg {
+            Arg::Word(_) | Arg::Preset => !partial.is_empty(),
+            Arg::Number => !partial.is_empty() && !is_coordinate(partial) && partial.parse::<f64>().is_err() && !"-+.~".contains(partial),
+            _ => false,
+        };
+        if hopeless {
+            let message = if arg == Arg::Number { "Expected a number" } else { "Incorrect argument for command" };
+            a.error = Some(error_at(message, input, start));
+            a.spans.retain(|s| s.0 < start);
+            a.spans.push((start, input.len(), SpanKind::Error));
+        } else {
+            a.usage = Some(spec.usage_from(slot));
+        }
+    }
+    a
+}
+
+/// Can `word` be the `i`-th argument once it is finished?
+fn valid(_spec: &Command, i: usize, arg: &Arg, word: &str, args: &[Word], ctx: &Context) -> bool {
+    let after_coordinate = *arg == Arg::Place && i > 0 && is_coordinate(&args[i - 1].text);
+    match arg {
+        _ if after_coordinate => is_coordinate(word),
+        Arg::Word(words) => words.contains(&word),
+        Arg::Preset => ctx.presets.contains(&word),
+        Arg::Number => word.parse::<f64>().is_ok(),
+        // Names are checked by the server: a player may have just joined.
+        _ => true,
+    }
+}
+
+/// Analyse the chat input with the cursor at its end. Plain messages only get name
+/// suggestions when asked for (`forced`, i.e. Tab), as in Minecraft.
+pub fn analyze(input: &str, ctx: &Context, forced: bool) -> Analysis {
+    if input.starts_with('/') {
+        return command_line(input, ctx);
+    }
+    let mut a = Analysis::default();
+    let ws = words(input);
+    match ws.last() {
+        Some(last) if forced && !input.ends_with(char::is_whitespace) && !last.text.is_empty() => {
+            a.start = last.start;
+            a.suggestions = matching(pool(Arg::Text, ctx), &last.text, false);
+        }
+        _ => {}
+    }
+    a
+}
+
+/// `input` with the word under the cursor replaced by `suggestion` (no trailing space).
+pub fn apply(input: &str, start: usize, suggestion: &str) -> String {
+    format!("{}{suggestion}", &input[..start.min(input.len())])
+}
+
+/// What `suggestion` would add after what is already typed, for the grey inline preview.
+pub fn suffix<'a>(input: &str, start: usize, suggestion: &'a str) -> Option<&'a str> {
+    let typed = &input[start.min(input.len())..];
+    suggestion.get(..typed.len()).filter(|head| head.eq_ignore_ascii_case(typed)).map(|_| &suggestion[typed.len()..])
 }
 
 #[cfg(test)]
@@ -90,36 +247,63 @@ mod tests {
     }
 
     #[test]
-    fn completes_commands_arguments_and_mentions() {
+    fn behaves_like_minecraft() {
         let players = vec!["Ann Droid".to_string(), "bob".to_string()];
         let bodies = vec!["Sun".to_string(), "Saturn".to_string(), "B459".to_string()];
         let op = ctx(&players, &bodies, true);
         let guest = ctx(&players, &bodies, false);
+        let an = |s: &str| analyze(s, &op, false);
 
-        assert_eq!(candidates("/t", &op), ["/target", "/timescale", "/tp"]);
-        assert!(candidates("/t", &guest).is_empty(), "operator commands are hidden from others");
-        assert_eq!(candidates("/m", &guest), ["/msg"]);
-        assert_eq!(apply("/t", "/tp"), "/tp ");
+        // Command names: listed as soon as the slash is typed, narrowed while typing.
+        assert_eq!(an("/").suggestions.len(), command::COMMANDS.len());
+        assert_eq!(an("/t").suggestions, ["/target", "/timescale", "/tp"]);
+        assert_eq!(analyze("/", &guest, false).suggestions, ["/help", "/list", "/msg", "/r", "/respawn"]);
+        assert_eq!(an("/t").start, 0);
+        // Accepting inserts the word and nothing else.
+        assert_eq!(apply("/t", 0, "/tp"), "/tp");
+        assert_eq!(suffix("/t", 0, "/tp"), Some("p"));
+        assert_eq!(suffix("/tp sa", 4, "Saturn"), Some("turn"));
+        assert_eq!(suffix("/tp x", 4, "Saturn"), None);
 
-        // Players and bodies for a place; names with spaces come quoted.
-        assert_eq!(candidates("/tp ", &op), ["\"Ann Droid\"", "@target", "B459", "bob", "Saturn", "Sun"]);
-        assert_eq!(candidates("/tp s", &op), ["Saturn", "Sun"]);
-        assert_eq!(candidates("/tp \"ann", &op), ["\"Ann Droid\""]);
-        assert_eq!(apply("/tp \"ann", "\"Ann Droid\""), "/tp \"Ann Droid\" ");
-        assert_eq!(candidates("/tp \"Ann Droid\" sa", &op), ["Saturn"]);
+        // A finished command name without a space still lists itself; after the space,
+        // the argument's options.
+        assert_eq!(an("/tp").suggestions, ["/tp"]);
+        let a = an("/tp ");
+        assert_eq!(a.suggestions, ["\"Ann Droid\"", "@target", "B459", "bob", "Saturn", "Sun"]);
+        assert_eq!((a.start, a.usage, a.error), (4, None, None));
+        assert_eq!(an("/tp s").suggestions, ["Saturn", "Sun"]);
+        assert_eq!(an("/tp \"an").suggestions, ["\"Ann Droid\""]);
+        assert_eq!(apply("/tp \"an", 4, "\"Ann Droid\""), "/tp \"Ann Droid\"");
+        assert_eq!(an("/tp \"Ann Droid\" sa").suggestions, ["Saturn"]);
 
-        assert_eq!(candidates("/preset s", &op), ["solar"]);
-        assert_eq!(candidates("/round ", &op), ["length", "new", "time"]);
-        assert_eq!(candidates("/kick b", &op), ["bob"]);
-        assert_eq!(candidates("/target @", &op), ["@target"]);
-        assert!(candidates("/score bob ", &op).is_empty(), "numbers are not completed");
-        // Free text keeps completing names after the fixed arguments.
-        assert_eq!(candidates("/msg bob look at sat", &guest), ["Saturn"]);
+        // Nothing to suggest: the grey hint lists what is still expected from here.
+        let a = an("/score bob ");
+        assert!(a.suggestions.is_empty());
+        assert_eq!(a.usage.as_deref(), Some("<kills> <orbits>"));
+        assert_eq!(an("/score bob 3 ").usage.as_deref(), Some("<orbits>"));
+        assert_eq!(an("/score bob 3").usage.as_deref(), Some("<kills> <orbits>"));
+        assert_eq!(an("/round time ").usage.as_deref(), Some("[<seconds>]"));
+        assert_eq!(an("/tp ~1e9 ").usage.as_deref(), Some("[<player|body|x|y>] [<y>]"));
+        assert_eq!(an("/msg bob ").usage.as_deref(), None, "free text offers names");
+        assert_eq!(an("/msg bob hi the").usage.as_deref(), Some("<message>"));
 
-        // Plain chat mentions, unquoted.
-        assert_eq!(candidates("meet at sa", &guest), ["Saturn"]);
-        assert_eq!(candidates("hi an", &guest), ["Ann Droid"]);
-        assert_eq!(apply("hi an", "Ann Droid"), "hi Ann Droid ");
-        assert!(candidates("hello ", &guest).is_empty());
+        // Errors, in Minecraft's format.
+        assert_eq!(an("/xyz").error.as_deref(), Some("Unknown or incomplete command at position 4: /xyz<--[HERE]"));
+        assert_eq!(an("/round later").error.as_deref(), Some("Incorrect argument for command at position 7: /round <--[HERE]"));
+        assert_eq!(an("/score bob abc").error.as_deref(), Some("Expected a number at position 11: ...score bob <--[HERE]"));
+        assert_eq!(an("/list extra").error.as_deref(), Some("Incorrect argument for command at position 6: /list <--[HERE]"));
+        assert!(analyze("/tp ", &guest, false).error.is_some(), "operator commands do not exist for others");
+        assert!(an("/round new").error.is_none() && an("/timescale 3600").error.is_none());
+
+        // Colouring: command, then one colour per argument; errors run to the end.
+        assert_eq!(an("/score bob 3").spans, [(0, 6, SpanKind::Literal), (7, 10, SpanKind::Arg(0)), (11, 12, SpanKind::Arg(1))]);
+        assert_eq!(an("/round later now").spans, [(0, 6, SpanKind::Literal), (7, 16, SpanKind::Error)]);
+
+        // Plain chat: names only when Tab asks for them.
+        assert!(analyze("meet at sa", &guest, false).suggestions.is_empty());
+        let a = analyze("meet at sa", &guest, true);
+        assert_eq!((a.suggestions, a.start), (vec!["Saturn".to_string()], 8));
+        assert_eq!(apply("hi an", 3, "Ann Droid"), "hi Ann Droid");
+        assert!(analyze("hello ", &guest, true).suggestions.is_empty());
     }
 }
