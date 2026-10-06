@@ -9,6 +9,10 @@ const CHAT_WINDOW_SECONDS: u64 = 4;
 
 type Reply = Result<Option<String>, String>;
 
+/// How high `/orbit` parks a ship, in radii of the body: well inside the scoring band, with
+/// room to spare above the surface.
+const ORBIT_RADII: f64 = 20.0;
+
 fn done(text: impl Into<String>) -> Reply {
     Ok(Some(text.into()))
 }
@@ -84,7 +88,7 @@ impl Authority {
         let words = command::split(line);
         let Some(name) = words.first() else { return };
         let Some(spec) = command::find(name).filter(|c| c.available(false)) else {
-            return self.tell(conn, ChatKind::Error, format!("unknown command /{name} (try /help)"));
+            return self.tell(conn, ChatKind::Error, format!("Unknown command: /{name}"));
         };
         if spec.op && !self.is_op(id) {
             return self.tell(conn, ChatKind::Error, format!("/{} is for operators", spec.name));
@@ -201,17 +205,9 @@ impl Authority {
                 }
             }
             [place] => {
-                if let Ok(others) = self.select(place, me) {
-                    let [other] = others[..] else { return Err("the destination must be a single player".into()) };
-                    // Just outside each other's blast radius, flying in formation.
-                    let o = self.ship_of(other)?.p;
-                    return Ok((Particle { x: o.x + 3.0 * self.rules.shell_blast_radius, ..o }, self.name_of(other)));
-                }
-                let slot = self.find_body(place).map_err(|_| format!("{place:?} is neither a player nor a body"))?;
-                let (j, m) = (slot as usize, &self.massive);
-                // Outside the scoring band, moving with the body.
-                let d = 2.0 * self.rules.orbit_max_apo_radii * m.radius[j];
-                Ok((Particle { x: m.x[j] + d, y: m.y[j], vx: m.vx[j], vy: m.vy[j] }, self.body_name(slot)))
+                let [other] = self.select(place, me)?[..] else { return Err("the destination must be a single player".into()) };
+                // Exactly where they are, moving as they move.
+                Ok((self.ship_of(other)?.p, self.name_of(other)))
             }
             _ => Err(String::new()),
         }
@@ -341,7 +337,7 @@ impl Authority {
                 for id in who {
                     let Ok(old) = self.ship_of(id) else { continue };
                     let m = &self.massive;
-                    let r = 10.0 * m.radius[j];
+                    let r = ORBIT_RADII * m.radius[j];
                     let v = (self.rules.g * m.mass[j] / r).sqrt();
                     let p = Particle { x: m.x[j] + r, y: m.y[j], vx: m.vx[j], vy: m.vy[j] + v };
                     self.place_ship(id, ShipState { p, ..old });
@@ -468,14 +464,39 @@ impl Authority {
             }
             "op" | "deop" => {
                 let word = args.first().ok_or("")?;
-                let target = self.find_player(word).map(|id| self.name_of(id)).unwrap_or_else(|_| word.clone());
-                if name == "op" {
-                    self.state.op(&target);
-                } else if !self.state.deop(&target) {
-                    return Err(format!("{target} is not an operator"));
+                let giving = name == "op";
+                // Selectors and online players first; any other plain name is taken as written,
+                // so that somebody can be made an operator before they join.
+                let names: Vec<String> = match self.select(word, me) {
+                    Ok(ids) => ids.iter().map(|id| self.name_of(*id)).collect(),
+                    Err(problem) if word.starts_with('@') => return Err(problem),
+                    Err(_) => vec![word.clone()],
+                };
+                let mut changed: Vec<String> = names.into_iter().filter(|n| self.state.is_op(n) != giving).collect();
+                changed.sort();
+                if changed.is_empty() {
+                    return Err(format!("Nothing changed. The player {} an operator", if giving { "already is" } else { "is not" }));
+                }
+                let sender = self.name_of(me);
+                for target in &changed {
+                    if giving {
+                        self.state.op(target);
+                    } else {
+                        self.state.deop(target);
+                    }
                 }
                 self.refresh_ops();
-                done(format!("{target} is {} an operator", if name == "op" { "now" } else { "no longer" }))
+                // As in Minecraft: the sender is told plainly, every other operator (which now
+                // includes anyone just made one) sees it attributed in brackets.
+                let operators: Vec<ConnId> = self.by_conn.iter().filter(|(c, id)| **c != conn && self.is_op(**id)).map(|(c, _)| *c).collect();
+                for target in &changed {
+                    let what = if giving { format!("Made {target} a server operator") } else { format!("Made {target} no longer a server operator") };
+                    for other in &operators {
+                        self.tell(*other, ChatKind::System, format!("[{sender}: {what}]"));
+                    }
+                    self.tell(conn, ChatKind::System, what);
+                }
+                Ok(None)
             }
             "whitelist" => match (args.first().map(String::as_str), args.get(1)) {
                 (Some("on"), _) | (Some("off"), _) => {

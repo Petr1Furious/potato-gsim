@@ -119,14 +119,10 @@ pub struct Game {
     settings_dirty: bool,
     view_ready: bool,
     zoomed_for_ship: bool,
-    had_ship: bool,
     zoom_pending: f32,
     /// Camera offset from whatever it follows.
     offset: (f64, f64),
     follow_selection: bool,
-    /// Set when our ship dies while the camera is on a body: the camera stays with the ship
-    /// until the player picks a body or toggles follow again.
-    follow_paused: bool,
     /// Show body names: on the map, and as the first line of the selected body's label.
     show_names: bool,
     chat: ChatBox,
@@ -137,7 +133,6 @@ pub struct Game {
     selected: Option<u32>,
     heading: f64,
     thrust_pct: f32,
-    mouse_aim: bool,
     show_trails: bool,
     trails_relative: bool,
     show_prediction: bool,
@@ -154,6 +149,10 @@ pub struct Game {
     predictor: Predictor,
     meter: fmt::Meter,
     lookahead_ticks: u32,
+    /// The round the selection, trails and camera belong to.
+    round: Option<u32>,
+    /// Automatic zooming waits until this time after the player zoomed by hand.
+    zoom_hold: f64,
     status: Option<(String, f64)>,
     started: f64,
 }
@@ -182,11 +181,9 @@ impl Game {
             settings_dirty: false,
             view_ready: false,
             zoomed_for_ship: false,
-            had_ship: false,
             zoom_pending: 0.0,
             offset: (0.0, 0.0),
             follow_selection: true,
-            follow_paused: false,
             show_names: false,
             chat: ChatBox::default(),
             watch: None,
@@ -195,7 +192,6 @@ impl Game {
             selected: None,
             heading: 0.0,
             thrust_pct: 100.0,
-            mouse_aim: settings.mouse_aim,
             show_trails: false,
             trails_relative: true,
             show_prediction: true,
@@ -212,6 +208,8 @@ impl Game {
             predictor: Predictor::new(),
             meter: fmt::Meter::default(),
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
+            round: None,
+            zoom_hold: 0.0,
             status: None,
             started: get_time(),
         })
@@ -278,17 +276,12 @@ impl Game {
             if is_key_pressed(KeyCode::F) {
                 self.follow_selection = !self.follow_selection;
                 self.watch = None;
-                self.follow_paused = false;
                 self.say(if self.follow_selection { "Following selection" } else { "Following own ship" });
             }
-            if is_key_pressed(KeyCode::R) {
-                self.offset = (0.0, 0.0);
-            }
             if is_key_pressed(KeyCode::M) {
-                self.mouse_aim = !self.mouse_aim;
-                settings.mouse_aim = self.mouse_aim;
+                settings.mouse_aim = !settings.mouse_aim;
                 settings.save();
-                self.say(if self.mouse_aim { "Aim: mouse" } else { "Aim: A/D keys" });
+                self.say(if settings.mouse_aim { "Aim: mouse" } else { "Aim: A/D keys" });
             }
             if is_key_pressed(KeyCode::X) {
                 self.thrust_pct = 0.0;
@@ -318,7 +311,7 @@ impl Game {
         let (mwx, mwy) = self.view.to_world(mouse.0, mouse.1);
         if let Some(ship) = own {
             let bearing = (mwy - ship.y).atan2(mwx - ship.x);
-            if self.mouse_aim {
+            if settings.mouse_aim {
                 self.heading = bearing;
             } else if keys {
                 if is_key_down(KeyCode::A) {
@@ -364,6 +357,17 @@ impl Game {
         let lead = self.net.session.input_lead_ticks();
         let bytes = self.net.bytes_per_sec();
         let world = self.net.session.world.as_ref().unwrap();
+        if self.round != Some(world.round) {
+            // A new world: nothing chosen or drawn in the old one means anything in it.
+            self.round = Some(world.round);
+            self.selected = None;
+            self.watch = None;
+            self.frames.clear();
+            self.last_frame_tick = 0;
+            self.predictor.clear();
+            self.offset = (0.0, 0.0);
+            self.zoomed_for_ship = false;
+        }
         // Draw the newest instant for which every entity has a state on both sides.
         let tick_f = present.min(world.head as f64).max(0.0);
         let Some((row, tau)) = world.row_at(tick_f).or_else(|| world.row_at(world.head.saturating_sub(1) as f64)) else {
@@ -387,17 +391,11 @@ impl Game {
         let me_ship = world.my_ship();
 
         // --- camera ----------------------------------------------------------------------------
-        if self.had_ship && own.is_none() {
-            // We just died: let go of whatever body the camera was following, so it stays at
-            // the scene and then jumps to the new ship when it spawns.
-            self.follow_paused = true;
-        }
-        self.had_ship = own.is_some();
         let watched = self.watch.and_then(|id| world.ship_at(id, tick_f).map(|p| (id, p)));
         if watched.is_none() {
             self.watch = None;
         }
-        let target = match (self.follow_selection && !self.follow_paused, own, self.selected) {
+        let target = match (self.follow_selection, own, self.selected) {
             _ if watched.is_some() => Target::Player(watched.unwrap().0),
             (true, _, Some(s)) => Target::Body(s),
             (_, Some(_), _) => Target::Ship,
@@ -451,6 +449,7 @@ impl Game {
             // Wheel units differ wildly between platforms (notches vs. pixel deltas), hence the
             // per-platform default speed and the cap on what one frame can contribute.
             self.zoom_pending += (wheel * settings.zoom_speed).clamp(-1.5, 1.5);
+            self.zoom_hold = get_time() + ZOOM_HOLD;
         }
         if self.zoom_pending.abs() > 1e-3 {
             let step = self.zoom_pending * (12.0 * dt).min(1.0);
@@ -483,6 +482,9 @@ impl Game {
         self.last_mouse = mouse;
         self.view.cx = target_pos.0 + self.offset.0;
         self.view.cy = target_pos.1 + self.offset.1;
+        if let (true, Target::Body(slot), Some(ship)) = (settings.auto_zoom && get_time() >= self.zoom_hold, target, own) {
+            auto_zoom(&mut self.view, &mut self.offset, target_pos, row.props.radius[slot as usize], (ship.x, ship.y), dt);
+        }
         let view = self.view;
 
         // A click (press and release without dragging) selects the body under the cursor.
@@ -504,7 +506,6 @@ impl Game {
                 }
                 self.selected = best.map(|b| b.0);
                 self.watch = None;
-                self.follow_paused = false;
             }
         } else if !dragging {
             self.drag_from = None;
@@ -868,7 +869,6 @@ impl Game {
         let fuel_max = world.rules.fuel_max_mmps;
         let cooldown = world.rules.shell_cooldown_ticks as f64 / world.rules.tick_hz as f64;
         let thrust_pct = self.thrust_pct;
-        let mouse_aim = self.mouse_aim;
         // The ruler replaces a "metres per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
@@ -887,14 +887,16 @@ impl Game {
         let mut chat_out = chat::Outcome::default();
         // Wheel movement in notches: raw units differ per platform, as for zooming.
         let chat_wheel = wheel * settings.zoom_speed;
-        let (mut ui_scale, mut zoom_speed) = (settings.ui_scale, settings.zoom_speed);
+        let mut options = settings.clone();
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
             let (gold, dim, good, bad) = (style::c32(style::GOLD), style::c32(style::DIM), style::c32(style::GOOD), style::c32(style::EMBER));
 
             // Top centre: where we are and how long is left.
-            Area::new(Id::new("round")).anchor(Align2::CENTER_TOP, [0.0, 10.0]).show(ctx, |ui| {
+            Area::new(Id::new("round")).anchor(Align2::CENTER_TOP, [0.0, 10.0]).interactable(false).show(ctx, |ui| {
+                // One line each, however long: wrapped, the title looks broken.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(&title).small().color(dim).extra_letter_spacing(2.0));
                     match (intermission, round_left) {
@@ -912,14 +914,36 @@ impl Game {
                         }
                         _ => {}
                     }
-                    // The objective, compact: where to orbit, which conditions hold, progress.
-                    if let Some(name) = &target_name {
-                        ui.add_space(4.0);
+                    if let Some(s) = &status {
+                        ui.label(RichText::new(s).color(gold));
+                    }
+                });
+            });
+
+            // Top left: diagnostics, only on request; the objective sits under them.
+            let mut below = 10.0;
+            if net_dbg {
+                let shown = Area::new(Id::new("net")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).interactable(false).show(ctx, |ui| {
+                    style::panel().show(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        for l in &net_lines {
+                            ui.label(RichText::new(l).monospace().color(dim));
+                        }
+                    });
+                });
+                below = shown.response.rect.bottom() + 8.0;
+            }
+            // Where to orbit, which conditions hold, progress.
+            if let Some(name) = &target_name {
+                Area::new(Id::new("objective")).fixed_pos([10.0, below]).interactable(false).show(ctx, |ui| {
+                    style::panel().show(ui, |ui| {
+                        ui.set_width(230.0);
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.horizontal(|ui| {
-                            // Centre the row by hand: egui lays horizontal rows out from the left.
-                            ui.add_space((ui.available_width() - 250.0).max(0.0) * 0.5);
                             style::caption(ui, "ORBIT");
                             ui.label(RichText::new(format!("{name}  +{capture_points}")).color(gold).strong());
+                        });
+                        ui.horizontal(|ui| {
                             let mark = |ui: &mut egui::Ui, what: &str, ok: Option<bool>| {
                                 let colour = match ok {
                                     Some(true) => good,
@@ -933,33 +957,16 @@ impl Game {
                             mark(ui, "LOW", state.map(|(o, r)| o.peri / r >= limits.1));
                             mark(ui, "HIGH", state.map(|(o, r)| o.apo / r <= limits.2));
                         });
-                        ui.allocate_ui(egui::vec2(220.0, 0.0), |ui| {
-                            style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
-                            for (rival, frac) in &rivals {
-                                style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
-                            }
-                        });
-                    }
-                    if let Some(s) = &status {
-                        ui.label(RichText::new(s).color(gold));
-                    }
-                });
-            });
-
-            // Top left: diagnostics, only on request.
-            if net_dbg {
-                Area::new(Id::new("net")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).show(ctx, |ui| {
-                    style::panel().show(ui, |ui| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        for l in &net_lines {
-                            ui.label(RichText::new(l).monospace().color(dim));
+                        style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
+                        for (rival, frac) in &rivals {
+                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
                         }
                     });
                 });
             }
 
             // Top right: standings and what just happened.
-            Area::new(Id::new("score")).anchor(Align2::RIGHT_TOP, [-10.0, 10.0]).show(ctx, |ui| {
+            Area::new(Id::new("score")).anchor(Align2::RIGHT_TOP, [-10.0, 10.0]).interactable(false).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
                     egui::Grid::new("scores").num_columns(5).spacing([14.0, 3.0]).show(ui, |ui| {
                         for head in ["PILOT", "PTS", "ORB", "K", "D"] {
@@ -980,7 +987,7 @@ impl Game {
             });
 
             // Bottom right: the ship.
-            Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
+            Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).interactable(false).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
                     ui.set_width(220.0);
                     match fuel {
@@ -992,7 +999,6 @@ impl Game {
                             let loaded = (1.0 - reload / cooldown.max(1e-6)).clamp(0.0, 1.0) as f32;
                             let shell = if reload > 0.0 { format!("{reload:.1} s") } else { "ready".to_string() };
                             style::gauge(ui, "SHELL", &shell, loaded, if reload > 0.0 { style::DIM } else { style::EMBER });
-                            style::caption(ui, if mouse_aim { "AIM  MOUSE  (M)" } else { "AIM  A / D  (M)" });
                         }
                         None => {
                             style::caption(ui, "SHIP LOST");
@@ -1021,18 +1027,15 @@ impl Game {
                         style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
                         style::toggle(ui, &mut net_dbg, "Network details", "F3");
                         style::toggle(ui, &mut names, "Body names", "N");
-                        style::section(ui, "INTERFACE");
-                        ui.add(egui::Slider::new(&mut ui_scale, 0.6..=2.5).text("size"));
-                        ui.add(egui::Slider::new(&mut zoom_speed, 0.002..=3.0).logarithmic(true).text("zoom speed"));
+                        crate::options::show(ui, &mut options);
                         style::section(ui, "CONTROLS");
                         style::key_row(ui, "Thrust", "W / UP");
                         style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
                         style::key_row(ui, "Fire towards cursor", "SPACE");
-                        style::key_row(ui, "Aim with mouse or A / D", "M");
                         style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
                         style::key_row(ui, "Chat, command", "T, /");
                         style::key_row(ui, "Point at the map", "G");
-                        style::key_row(ui, "Recentre, fullscreen", "R, F11");
+                        style::key_row(ui, "Fullscreen", "F11");
                         style::section(ui, "MASS");
                         style::mass_legend(ui);
                         ui.separator();
@@ -1060,15 +1063,13 @@ impl Game {
         match chat_out.clicked {
             Some(Mention::Body(slot)) => {
                 self.selected = Some(slot);
-                self.follow_paused = false;
                 self.watch = None;
             }
             Some(Mention::Player(id)) => self.watch = Some(id).filter(|id| *id != my_id),
             None => {}
         }
-        if ui_scale != settings.ui_scale || zoom_speed != settings.zoom_speed {
-            settings.ui_scale = ui_scale;
-            settings.zoom_speed = zoom_speed;
+        if options != *settings {
+            *settings = options;
             self.settings_dirty = true;
         } else if self.settings_dirty && !is_mouse_button_down(MouseButton::Left) {
             self.settings_dirty = false;
@@ -1100,6 +1101,50 @@ impl Game {
     }
 }
 
+
+/// Seconds automatic zooming keeps out of the way after the player used the wheel.
+pub(crate) const ZOOM_HOLD: f64 = 2.5;
+
+/// With a body selected and in the picture, keep the ship in it too: zoom out as the ship
+/// nears the edge (or was put somewhere far away), back in when it is close to the body.
+/// The body stays where the player has it on screen; `offset` is the camera's offset from
+/// the body. A body dragged out of view switches this off.
+pub(crate) fn auto_zoom(view: &mut View, offset: &mut (f64, f64), body: (f64, f64), radius: f64, ship: (f64, f64), dt: f32) {
+    if !view.on_screen(view.to_screen(body.0, body.1), 0.0) {
+        return;
+    }
+    let (half_w, half_h) = (0.5 * screen_width() as f64, 0.5 * screen_height() as f64);
+    // Where the body sits, in pixels from the middle of the screen, and the ship from it.
+    let (bx, by) = (-offset.0 / view.mpp, -offset.1 / view.mpp);
+    let (dx, dy) = (ship.0 - body.0, ship.1 - body.1);
+    // Metres per pixel at which the ship is exactly 80 % of the way to the edge it is
+    // heading for. None if the body itself is nearer that edge than that.
+    let room = |d: f64, at: f64, half: f64| {
+        let pixels = 0.8 * half - at * d.signum();
+        if d == 0.0 { Some(0.0) } else { (pixels > 1.0).then(|| d.abs() / pixels) }
+    };
+    let (Some(rx), Some(ry)) = (room(dx, bx, half_w), room(dy, by, half_h)) else { return };
+    let fits = rx.max(ry);
+    let apart = (dx * dx + dy * dy).sqrt();
+    let small = half_w.min(half_h);
+    let wanted = if fits > view.mpp {
+        fits
+    } else if apart < 0.15 * small * view.mpp {
+        // Close to the body: come in until they are a comfortable distance apart, but not
+        // so far that the ship leaves or the body fills the screen.
+        (apart / (0.3 * small)).max(fits).max(radius / (0.2 * small))
+    } else {
+        return;
+    };
+    if wanted > view.mpp || wanted < 0.98 * view.mpp {
+        let step = (2.0 * dt as f64).min(1.0);
+        let mpp = (view.mpp * (wanted / view.mpp).powf(step)).clamp(0.05, 1.0e12);
+        // Zoom about the body, not the middle of the screen.
+        *offset = (offset.0 * mpp / view.mpp, offset.1 * mpp / view.mpp);
+        view.mpp = mpp;
+        (view.cx, view.cy) = (body.0 + offset.0, body.1 + offset.1);
+    }
+}
 
 pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {
     let mut prev: Option<(f32, f32)> = None;

@@ -41,7 +41,7 @@ const fn p(key: &'static str, label: &'static str, help: &'static str, unit: &'s
     Param { key, label, help, unit, kind, default, min, max }
 }
 
-const COUNT: Param = p("count", "Bodies", "How many bodies the world starts with", "", Kind::Log, 200_000.0, 1_000.0, 4_000_000.0);
+const COUNT: Param = p("count", "Bodies", "How many bodies the world starts with", "", Kind::Log, 50_000.0, 1_000.0, 4_000_000.0);
 const SIZE: Param = p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.1, 0.02, 50.0);
 const ACCURACY: Param =
     p("accuracy", "Opening angle", "How readily distant groups are treated as one lump: smaller is more accurate and slower", "", Kind::Linear, 0.7, 0.3, 1.2);

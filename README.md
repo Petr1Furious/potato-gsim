@@ -112,8 +112,8 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Command | Effect |
 |---|---|
 | `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left; set the round length |
-| `/tp [PLAYER] PLAYER\|BODY\|~DX ~DY\|X Y` | Teleport next to a player, near a body, or to coordinates in metres (`~` is relative, units like `5Gm` work) |
-| `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body |
+| `/tp [PLAYER] PLAYER\|~DX ~DY\|X Y` | Teleport onto a player or to coordinates in metres (`~` is relative, units like `5Gm` work) |
+| `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body, 20 radii up |
 | `/preset NAME [KEY=VALUE ...]`, `/timescale X` | New round in another world (e.g. `/preset random count=300 seed=7`; what is not set returns to its default) or at another time scale |
 | `/target BODY` | Move the objective |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
@@ -133,7 +133,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
-| R, F3, F11, Esc | Recentre, network details, fullscreen, menu |
+| F3, F11, Esc | Network details, fullscreen, menu |
 
 Colour shows mass: dim slate for the lightest bodies, through ice blue and pale sand to amber
 and ember for the heaviest; stars glow white-gold, negative masses are violet to pink.

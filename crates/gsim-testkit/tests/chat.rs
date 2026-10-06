@@ -83,7 +83,7 @@ fn only_operators_may_change_the_game() {
     assert_eq!(errors(&sim.clients[b].session), ["/round is for operators"]);
     assert_eq!(sim.server.round(), round);
     say(&mut sim, b, "/nonsense");
-    assert_eq!(errors(&sim.clients[b].session).last().unwrap(), "unknown command /nonsense (try /help)");
+    assert_eq!(errors(&sim.clients[b].session).last().unwrap(), "Unknown command: /nonsense");
 
     say(&mut sim, a, "/round new");
     assert_eq!(sim.server.round(), round + 1);
@@ -111,7 +111,8 @@ fn teleports_and_orbits() {
     let dist = |p: Particle, q: Particle| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt();
 
     say(&mut sim, a, "/tp bob");
-    assert!(dist(ship(&sim, pa), ship(&sim, pb)) < 1.0e9, "next to bob");
+    // Onto bob, not beside him: all that separates them is what each flew since.
+    assert!(dist(ship(&sim, pa), ship(&sim, pb)) < 1.0e7, "on top of bob");
 
     let before = ship(&sim, pa);
     // Checked right away: at 30 km/s the ship covers 4e7 m every tick.
@@ -124,18 +125,20 @@ fn teleports_and_orbits() {
     say(&mut sim, a, "/tp bob ann");
     assert!(dist(ship(&sim, pa), ship(&sim, pb)) < 1.0e9, "bob was brought to ann");
 
+    // Whatever is typed there is a player's name.
     say(&mut sim, a, "/tp cat Star");
-    let pc = sim.player_id(2).unwrap();
+    assert_eq!(errors(&sim.clients[a].session).last().unwrap(), "no player called \"Star\" is online");
     let star = Particle::default();
-    assert!(dist(ship(&sim, pc), star) < 200.0 * 7.0e8);
 
     say(&mut sim, a, "/orbit Star");
     let rules = sim.server.rules.clone();
     let o = orbit_status(&ship(&sim, pa), &star, 2.0e30, 7.0e8, &rules);
     assert!(o.ok && o.ecc < 0.05, "{o:?}");
+    let height = dist(ship(&sim, pa), star) / 7.0e8;
+    assert!((19.0..21.0).contains(&height), "parked {height} radii up");
 
     say(&mut sim, a, "/tp nobody");
-    assert_eq!(errors(&sim.clients[a].session).last().unwrap(), "\"nobody\" is neither a player nor a body");
+    assert_eq!(errors(&sim.clients[a].session).last().unwrap(), "no player called \"nobody\" is online");
     say(&mut sim, a, "/tp");
     assert!(errors(&sim.clients[a].session).last().unwrap().starts_with("usage: /tp"));
     sim.run_with(1.0, idle);
@@ -189,6 +192,11 @@ fn moderation_from_chat() {
 
     say(&mut sim, a, "/op cat");
     assert!(sim.clients[c].session.op);
+    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Made cat a server operator");
+    // The new operator hears about it the way operators hear about each other.
+    assert_eq!(system(&sim.clients[c].session).last().unwrap(), "[ann: Made cat a server operator]");
+    say(&mut sim, a, "/op cat");
+    assert_eq!(errors(&sim.clients[a].session).last().unwrap(), "Nothing changed. The player already is an operator");
     say(&mut sim, c, "/ban ann swapping sides");
     assert_eq!(sim.clients[a].session.rejected.as_deref(), Some("you are banned from this server: swapping sides"));
     say(&mut sim, c, "/unban ann");
@@ -286,4 +294,22 @@ fn map_markers_reach_other_players() {
     let marks = &sim.clients[b].session.marks;
     assert_eq!(marks.len(), 1);
     assert_eq!((marks[0].name.as_str(), marks[0].x, marks[0].y), ("ann", 1.0e11, -2.0e10));
+}
+
+#[test]
+fn op_takes_selectors() {
+    let (mut sim, a, b, c) = trio(9);
+    say(&mut sim, a, "/op @a");
+    assert!(sim.clients[b].session.op && sim.clients[c].session.op);
+    // Ann already was one, so only the other two are reported.
+    let told: Vec<String> = system(&sim.clients[a].session).into_iter().filter(|l| l.starts_with("Made ")).collect();
+    assert_eq!(told, ["Made bob a server operator", "Made cat a server operator"]);
+    assert!(system(&sim.clients[b].session).contains(&"[ann: Made bob a server operator]".to_string()));
+    say(&mut sim, a, "/op @a");
+    assert_eq!(errors(&sim.clients[a].session).last().unwrap(), "Nothing changed. The player already is an operator");
+    say(&mut sim, a, "/deop bob");
+    assert!(!sim.clients[b].session.op);
+    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Made bob no longer a server operator");
+    say(&mut sim, a, "/op @x");
+    assert!(!errors(&sim.clients[a].session).last().unwrap().is_empty());
 }

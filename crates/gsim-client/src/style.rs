@@ -55,6 +55,8 @@ pub fn init() {
         ]
         .into();
         style.spacing.item_spacing = egui::vec2(8.0, 4.0);
+        // Text on screen is something to read, not to drag across.
+        style.interaction.selectable_labels = false;
         let v = &mut style.visuals;
         *v = egui::Visuals::dark();
         v.override_text_color = Some(c32(TEXT));
@@ -273,11 +275,13 @@ fn key_hint(ui: &mut egui::Ui, key: &str) {
 }
 
 /// A switch with its keyboard shortcut right-aligned.
-pub fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str, key: &str) {
+pub fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str, key: &str) -> egui::Response {
     ui.horizontal(|ui| {
-        ui.checkbox(value, label);
+        let checkbox = ui.checkbox(value, label);
         key_hint(ui, key);
-    });
+        checkbox
+    })
+    .inner
 }
 
 /// A line of the controls reference: what it does on the left, the keys on the right.

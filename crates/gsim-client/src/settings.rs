@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub name: String,
     pub server: String,
@@ -16,6 +16,8 @@ pub struct Settings {
     pub zoom_speed: f32,
     /// Draw large-scale worlds on the graphics card instead of on rasteriser threads.
     pub gpu: bool,
+    /// With a body selected, zoom by itself so the ship stays in the picture.
+    pub auto_zoom: bool,
     /// Per single-player world: the parameters changed from their defaults.
     pub params: BTreeMap<String, BTreeMap<String, f64>>,
     /// Per large-scale world: how many bodies this machine was measured to hold.
@@ -24,7 +26,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: false, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: false, auto_zoom: true, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -57,6 +59,7 @@ impl Settings {
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
                 "gpu" => s.gpu = v == "1",
+                "auto_zoom" => s.auto_zoom = v != "0",
                 key => {
                     // `param.<world>.<key>` and `measured.<world>`
                     let mut parts = key.split('.');
@@ -85,8 +88,8 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut text = format!(
-            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu={}\n",
-            self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.gpu as u8
+            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu={}\nauto_zoom={}\n",
+            self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.gpu as u8, self.auto_zoom as u8
         );
         for (world, params) in &self.params {
             for (key, value) in params {

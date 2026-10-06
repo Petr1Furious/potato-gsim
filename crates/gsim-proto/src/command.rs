@@ -5,8 +5,9 @@
 pub enum Arg {
     Player,
     Body,
-    /// A player, a body, or `~dx ~dy` / `x y` coordinates in metres.
+    /// A player, or `~dx ~dy` / `x y` coordinates in metres.
     Place,
+    PlayerOrBody,
     Preset,
     Number,
     /// A length of time such as `6h` or `2d` (see [`parse_span`]).
@@ -79,17 +80,17 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "tp",
-        help: "teleport to a player, a body, or coordinates in metres (~ is relative to the ship); name a player first to move them instead",
+        help: "teleport to a player or to coordinates in metres (~ is relative to the ship); name a player first to move them instead",
         op: true,
-        params: &[req("player|body|x", Arg::Place), opt("player|body|x|y", Arg::Place), opt("y", Arg::Place)],
+        params: &[req("player|x", Arg::Place), opt("player|x|y", Arg::Place), opt("y", Arg::Place)],
     },
     Command {
         name: "orbit",
         help: "put a ship on a circular orbit around a body",
         op: true,
-        params: &[req("player|body", Arg::Place), opt("body", Arg::Body)],
+        params: &[req("player|body", Arg::PlayerOrBody), opt("body", Arg::Body)],
     },
-    Command { name: "preset", help: "start a new round in another world; settings not given (seed=, and the preset's own) return to their defaults", op: true, params: &[req("preset", Arg::Preset), opt("key=value ...", Arg::Settings)] },
+    Command { name: "preset", help: "start a new round in another world", op: true, params: &[req("preset", Arg::Preset), opt("key=value ...", Arg::Settings)] },
     Command { name: "timescale", help: "simulated seconds per second; starts a new round", op: true, params: &[req("factor", Arg::Number)] },
     Command { name: "target", help: "move the objective", op: true, params: &[req("body", Arg::Body)] },
     Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
@@ -106,10 +107,10 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "unban", help: "lift a ban", op: true, params: &[req("name", Arg::Text)] },
     Command { name: "ban-ip", help: "ban an address", op: true, params: &[req("player|address", Arg::Player), opt("reason", Arg::Text)] },
     Command { name: "unban-ip", help: "lift an address ban", op: true, params: &[req("address", Arg::Text)] },
-    Command { name: "op", help: "make a player an operator", op: true, params: &[req("player", Arg::Player)] },
-    Command { name: "deop", help: "remove operator rights", op: true, params: &[req("player", Arg::Player)] },
-    Command { name: "speed", help: "how much time passes per second, like 6h or 2d; 0 pauses", op: true, params: &[req("time", Arg::Span)] },
-    Command { name: "accuracy", help: "opening angle of the gravity approximation: smaller is more exact and slower", op: true, params: &[req("angle", Arg::Number)] },
+    Command { name: "op", help: "make players operators", op: true, params: &[req("players", Arg::Player)] },
+    Command { name: "deop", help: "take operator rights away", op: true, params: &[req("players", Arg::Player)] },
+    Command { name: "speed", help: "simulation time per real world second", op: true, params: &[req("time", Arg::Span)] },
+    Command { name: "accuracy", help: "opening angle of the gravity approximation", op: true, params: &[req("angle", Arg::Number)] },
     Command {
         name: "whitelist",
         help: "manage the whitelist",

@@ -91,7 +91,8 @@ fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
     match arg {
         Arg::Player => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
         Arg::Body => with(names(&[ctx.bodies]), &["@t"]),
-        Arg::Place => with(names(&[ctx.players, ctx.bodies]), &["@a", "@r", "@s", "@t"]),
+        Arg::Place => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
+        Arg::PlayerOrBody => with(names(&[ctx.players, ctx.bodies]), &["@a", "@r", "@s", "@t"]),
         Arg::Preset => ctx.presets.iter().map(|p| p.0.to_string()).collect(),
         Arg::Word(words) => words.iter().map(|w| w.to_string()).collect(),
         Arg::Text => names(&[ctx.players, ctx.bodies]),
@@ -349,13 +350,15 @@ mod tests {
         // A finished command name without a space still lists itself; after the space,
         // the argument's options.
         assert_eq!(an("/tp").suggestions, ["/tp"]);
-        let a = an("/tp ");
+        // Teleporting is to players (or coordinates); orbiting takes bodies as well.
+        assert_eq!(an("/tp ").suggestions, ["\"Ann Droid\"", "@a", "@r", "@s", "bob"]);
+        let a = an("/orbit ");
         assert_eq!(a.suggestions, ["\"Ann Droid\"", "@a", "@r", "@s", "@t", "B459", "bob", "Saturn", "Sun"]);
-        assert_eq!((a.start, a.usage, a.error), (4, None, None));
-        assert_eq!(an("/tp s").suggestions, ["Saturn", "Sun"]);
+        assert_eq!((a.start, a.usage, a.error), (7, None, None));
+        assert_eq!(an("/orbit s").suggestions, ["Saturn", "Sun"]);
         assert_eq!(an("/tp \"an").suggestions, ["\"Ann Droid\""]);
         assert_eq!(apply("/tp \"an", 4, "\"Ann Droid\""), "/tp \"Ann Droid\"");
-        assert_eq!(an("/tp \"Ann Droid\" sa").suggestions, ["Saturn"]);
+        assert_eq!(an("/orbit \"Ann Droid\" sa").suggestions, ["Saturn"]);
 
         // Nothing to suggest: the grey hint lists what is still expected from here.
         let a = an("/score bob ");
@@ -364,7 +367,7 @@ mod tests {
         assert_eq!(an("/score bob 3 ").usage.as_deref(), Some("<orbits>"));
         assert_eq!(an("/score bob 3").usage.as_deref(), Some("<kills> <orbits>"));
         assert_eq!(an("/round time ").usage.as_deref(), Some("[<seconds>]"));
-        assert_eq!(an("/tp ~1e9 ").usage.as_deref(), Some("[<player|body|x|y>] [<y>]"));
+        assert_eq!(an("/tp ~1e9 ").usage.as_deref(), Some("[<player|x|y>] [<y>]"));
         assert_eq!(an("/msg bob ").usage.as_deref(), None, "free text offers names");
         assert_eq!(an("/msg bob hi the").usage.as_deref(), Some("<message>"));
 

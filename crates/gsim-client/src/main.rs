@@ -7,6 +7,7 @@ mod fmt;
 mod game;
 mod gpu;
 mod menu;
+mod options;
 mod sandbox;
 mod predictor;
 mod settings;
@@ -123,6 +124,7 @@ fn main() {
 enum Screen {
     Menu,
     Single,
+    Settings,
     Game(Box<Game>),
     Sandbox(Box<Sandbox>),
 }
@@ -215,6 +217,25 @@ async fn run(args: Args, mut settings: Settings) {
         }
         match &mut screen {
             Screen::Game(_) | Screen::Sandbox(_) => {}
+            Screen::Settings => {
+                clear_background(style::BACKGROUND);
+                let factor = settings.ui_factor();
+                let mut back = false;
+                egui_macroquad::ui(|ctx| {
+                    ctx.set_zoom_factor(factor);
+                    egui::Window::new("SETTINGS").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                        ui.set_width(330.0);
+                        options::show(ui, &mut settings);
+                        ui.separator();
+                        back = ui.button("Back").clicked();
+                    });
+                });
+                egui_macroquad::draw();
+                if back || is_key_pressed(KeyCode::Escape) {
+                    settings.save();
+                    next = Some(Screen::Menu);
+                }
+            }
             Screen::Single => {
                 clear_background(style::BACKGROUND);
                 let factor = settings.ui_factor();
@@ -275,9 +296,6 @@ async fn run(args: Args, mut settings: Settings) {
                                 ui.label("Server");
                                 ui.text_edit_singleline(&mut settings.server);
                                 ui.end_row();
-                                ui.label("UI size");
-                                ui.add(egui::Slider::new(&mut settings.ui_scale, 0.6..=2.5));
-                                ui.end_row();
                             });
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
@@ -287,6 +305,10 @@ async fn run(args: Args, mut settings: Settings) {
                                 if ui.button("Single player").clicked() {
                                     message.clear();
                                     next = Some(Screen::Single);
+                                }
+                                if ui.button("Settings").clicked() {
+                                    message.clear();
+                                    next = Some(Screen::Settings);
                                 }
                                 if ui.button("Quit").clicked() {
                                     quit = true;
@@ -305,7 +327,12 @@ async fn run(args: Args, mut settings: Settings) {
                                 updater::Status::Failed(e) => e.clone(),
                             };
                             ui.add_space(4.0);
-                            ui.small(note);
+                            ui.horizontal(|ui| {
+                                ui.small(note);
+                                if updater.can_check() && ui.small_button("check for updates").clicked() {
+                                    updater.check();
+                                }
+                            });
                         });
                 });
                 egui_macroquad::draw();

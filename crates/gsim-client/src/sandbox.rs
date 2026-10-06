@@ -4,7 +4,7 @@
 use crate::chat::{self, ChatBox, Mention};
 use crate::density::{Big, ColorMode, Density, Flash};
 use crate::fmt;
-use crate::game::{draw_path, draw_ship, Outcome, View, LABEL, PICK_RADIUS_PX, TURN_RATE};
+use crate::game::{auto_zoom, draw_path, draw_ship, Outcome, View, LABEL, PICK_RADIUS_PX, TURN_RATE, ZOOM_HOLD};
 use crate::predictor::{Job, Predictor};
 use crate::settings::Settings;
 use crate::style::{self, Rank};
@@ -83,11 +83,11 @@ pub struct Sandbox {
     view: View,
     view_ready: bool,
     zoomed_for_ship: bool,
-    had_ship: bool,
     zoom_pending: f32,
+    /// Automatic zooming waits until this time after the player zoomed by hand.
+    zoom_hold: f64,
     offset: (f64, f64),
     follow_selection: bool,
-    follow_paused: bool,
     last_target: Target,
     last_target_pos: (f64, f64),
     selected: Option<u32>,
@@ -95,7 +95,6 @@ pub struct Sandbox {
     watch_told: u64,
     heading: f64,
     thrust_pct: f32,
-    mouse_aim: bool,
     show_prediction: bool,
     show_stats: bool,
     color: ColorMode,
@@ -135,10 +134,9 @@ impl Sandbox {
         let sim = Sim::new(setup, seed);
         let rules = sim.rules.clone();
         let pace = rules.time_scale();
-        let mut log = VecDeque::new();
+        let log = VecDeque::new();
         let mut density = Density::new();
         density.set_gpu(settings.gpu);
-        log.push_back(ChatEntry { at: 0.0, kind: ChatKind::System, from: None, text: "Sandbox: Space pauses, hold < or > to change how fast time passes, / for commands".into() });
         Self {
             runner: Runner::start(sim, crate::density::simulation_threads(settings.gpu)),
             rules,
@@ -147,20 +145,18 @@ impl Sandbox {
             view: View { cx: 0.0, cy: 0.0, mpp: 1.0e9 },
             view_ready: false,
             zoomed_for_ship: false,
-            had_ship: false,
             zoom_pending: 0.0,
+            zoom_hold: 0.0,
             offset: (0.0, 0.0),
             follow_selection: true,
-            follow_paused: false,
             last_target: Target::Free,
             last_target_pos: (0.0, 0.0),
             selected: None,
             watch_told: 0,
             heading: 0.0,
             thrust_pct: 100.0,
-            mouse_aim: settings.mouse_aim,
             show_prediction: true,
-            show_stats: true,
+            show_stats: false,
             color: ColorMode::Mass,
             menu_open: false,
             ui_has_pointer: false,
@@ -220,7 +216,6 @@ impl Sandbox {
 
     fn select(&mut self, id: Option<u32>, tick: u64) {
         self.selected = id;
-        self.follow_paused = false;
         self.watch_told = tick;
         self.runner.send(Command::Watch(id.into_iter().collect()));
     }
@@ -250,11 +245,12 @@ impl Sandbox {
         let words = command::split(rest);
         let Some(name) = words.first() else { return };
         let Some(spec) = command::find(name).filter(|c| c.available(true)) else {
-            return self.print(ChatKind::Error, format!("Unknown command: /{name} (try /help)"));
+            return self.print(ChatKind::Error, format!("Unknown command: /{name}"));
         };
         // Naming yourself is allowed wherever a player may be named.
         let me = |w: &String| w == "@s" || w == "@a" || w == "@r" || w.eq_ignore_ascii_case(&self.player);
         let args: Vec<&String> = words[1..].iter().skip_while(|w| me(w)).collect();
+        // An empty error stands for "show the usage line", as on a server.
         let result: Result<String, String> = match spec.name {
             "help" => {
                 for c in command::COMMANDS.iter().filter(|c| c.available(true)) {
@@ -273,70 +269,53 @@ impl Sandbox {
             "god" => {
                 let on = !self.runner.published.lock().unwrap().god;
                 self.runner.send(Command::God(on));
-                Ok(if on { "Your ship is now indestructible, with endless fuel" } else { "Your ship can be destroyed again" }.into())
+                Ok(if on { "God mode on" } else { "God mode off" }.into())
             }
-            "speed" => match args.first().and_then(|a| command::parse_span(a)) {
-                Some(pace) => {
-                    self.set_pace(pace);
-                    Ok(if pace > 0.0 { format!("One second is now {}", fmt::span(pace)) } else { "Time stands still".into() })
-                }
-                None => Err("Say how much time passes per second, like 6h, 2d or 90m; 0 pauses".into()),
-            },
-            "accuracy" => match args.first().and_then(|a| a.parse::<f32>().ok()).filter(|v| (0.2..=1.5).contains(v)) {
-                Some(v) => {
-                    self.runner.send(Command::Theta(v));
-                    Ok(format!("Opening angle set to {v}"))
-                }
-                None => Err("The opening angle is a number from 0.2 to 1.5".into()),
-            },
-            "orbit" => match args.first().map(|a| self.body(a)).or(selected.map(|_| Ok(self.selected.unwrap()))) {
-                Some(Ok(id)) => {
-                    self.runner.send(Command::Orbit(id));
-                    Ok(format!("Put your ship on an orbit around B{id}"))
-                }
-                Some(Err(e)) => Err(e),
-                None => Err("Name a body, or select one first".into()),
-            },
-            "tp" => self.teleport(&args),
-            _ => Err("That command needs a server".into()),
+            "speed" => args.first().and_then(|a| command::parse_span(a)).ok_or_else(String::new).map(|pace| {
+                self.set_pace(pace);
+                if pace > 0.0 { format!("One second is now {}", fmt::span(pace)) } else { "Time stands still".into() }
+            }),
+            "accuracy" => args.first().and_then(|a| a.parse::<f32>().ok()).filter(|v| (0.2..=1.5).contains(v)).ok_or_else(String::new).map(|v| {
+                self.runner.send(Command::Theta(v));
+                format!("Opening angle set to {v}")
+            }),
+            // Without a name, the selected body.
+            "orbit" => match args.first() {
+                Some(word) => self.body(word),
+                None => selected.and(self.selected).ok_or_else(String::new),
+            }
+            .map(|id| {
+                self.runner.send(Command::Orbit(id));
+                format!("Put your ship on an orbit around B{id}")
+            }),
+            "tp" => self.teleport(&args).ok_or_else(String::new),
+            _ => Err(String::new()),
         };
         match result {
             Ok(text) => self.print(ChatKind::System, text),
+            Err(text) if text.is_empty() => self.print(ChatKind::Error, format!("usage: {}", spec.usage())),
             Err(text) => self.print(ChatKind::Error, text),
         }
     }
 
-    /// `B123` to a body id that still exists.
+    /// `B123` to the id of a body that still exists.
     fn body(&self, word: &str) -> Result<u32, String> {
-        let id = word.strip_prefix(['B', 'b']).and_then(|n| n.parse::<u32>().ok()).ok_or_else(|| format!("'{word}' is not a body (bodies are called B and a number)"))?;
-        self.runner.bodies.read().unwrap().locate(id).map(|_| id).ok_or_else(|| format!("B{id} no longer exists"))
+        let id = word.strip_prefix(['B', 'b']).and_then(|n| n.parse::<u32>().ok()).filter(|id| self.runner.bodies.read().unwrap().locate(*id).is_some());
+        id.ok_or_else(|| format!("no body called {word:?}"))
     }
 
-    fn teleport(&mut self, args: &[&String]) -> Result<String, String> {
+    /// `/tp <x> <y>`, each in metres and optionally relative to the ship (`~`).
+    fn teleport(&mut self, args: &[&String]) -> Option<String> {
         let ship = self.last_ship.unwrap_or_default();
-        match args {
-            [word] => {
-                let id = self.body(word)?;
-                let b = self.runner.bodies.read().unwrap();
-                let i = b.locate(id).ok_or("it just vanished")?;
-                // Beside it, moving along with it.
-                let p = Particle { x: b.x[i] + 12.0 * b.r[i] as f64, y: b.y[i], vx: b.vx[i], vy: b.vy[i] };
-                drop(b);
-                self.runner.send(Command::Place(p));
-                Ok(format!("Teleported you to B{id}"))
-            }
-            [x, y] => {
-                let coordinate = |word: &str, base: f64| match word.strip_prefix('~') {
-                    Some("") => Some(base),
-                    Some(offset) => command::parse_metres(offset).map(|d| base + d),
-                    None => command::parse_metres(word),
-                };
-                let (x, y) = coordinate(x, ship.x).zip(coordinate(y, ship.y)).ok_or("Coordinates are metres, like 2.5e10 or ~-300Mm")?;
-                self.runner.send(Command::Place(Particle { x, y, ..ship }));
-                Ok(format!("Teleported you to {}, {}", fmt::distance(x), fmt::distance(y)))
-            }
-            _ => Err("Usage: /tp <body> or /tp <x> <y>".into()),
-        }
+        let [x, y] = args else { return None };
+        let coordinate = |word: &str, base: f64| match word.strip_prefix('~') {
+            Some("") => Some(base),
+            Some(offset) => command::parse_metres(offset).map(|d| base + d),
+            None => command::parse_metres(word),
+        };
+        let (x, y) = coordinate(x, ship.x).zip(coordinate(y, ship.y))?;
+        self.runner.send(Command::Place(Particle { x, y, ..ship }));
+        Some(format!("Teleported you to {}, {}", fmt::distance(x), fmt::distance(y)))
     }
 
     pub fn frame(&mut self, settings: &mut Settings) -> Outcome {
@@ -414,17 +393,12 @@ impl Sandbox {
             }
             if is_key_pressed(KeyCode::F) {
                 self.follow_selection = !self.follow_selection;
-                self.follow_paused = false;
                 self.say(if self.follow_selection { "Following selection" } else { "Following own ship" });
             }
-            if is_key_pressed(KeyCode::R) {
-                self.offset = (0.0, 0.0);
-            }
             if is_key_pressed(KeyCode::M) {
-                self.mouse_aim = !self.mouse_aim;
-                settings.mouse_aim = self.mouse_aim;
+                settings.mouse_aim = !settings.mouse_aim;
                 settings.save();
-                self.say(if self.mouse_aim { "Aim: mouse" } else { "Aim: A/D keys" });
+                self.say(if settings.mouse_aim { "Aim: mouse" } else { "Aim: A/D keys" });
             }
             if is_key_pressed(KeyCode::X) {
                 self.thrust_pct = 0.0;
@@ -443,7 +417,7 @@ impl Sandbox {
         let (mwx, mwy) = self.view.to_world(mouse.0, mouse.1);
         let mut input = ShipInput::default();
         if let Some(ship) = self.last_ship {
-            if self.mouse_aim {
+            if settings.mouse_aim {
                 self.heading = (mwy - ship.y).atan2(mwx - ship.x);
             } else if keys {
                 self.heading += TURN_RATE * dt as f64 * (is_key_down(KeyCode::D) as i32 - is_key_down(KeyCode::A) as i32) as f64;
@@ -493,11 +467,7 @@ impl Sandbox {
             });
 
             // --- camera ------------------------------------------------------------------------
-            if self.had_ship && ship.is_none() {
-                self.follow_paused = true;
-            }
-            self.had_ship = ship.is_some();
-            let target = match (self.follow_selection && !self.follow_paused, ship, self.selected) {
+            let target = match (self.follow_selection, ship, self.selected) {
                 (true, _, Some(s)) => Target::Body(s),
                 (_, Some(_), _) => Target::Ship,
                 _ => Target::Free,
@@ -527,6 +497,7 @@ impl Sandbox {
             self.last_target_pos = target_pos;
             if pointer && !self.chat.open && wheel != 0.0 {
                 self.zoom_pending += (wheel * settings.zoom_speed).clamp(-1.5, 1.5);
+                self.zoom_hold = get_time() + ZOOM_HOLD;
             }
             if self.zoom_pending.abs() > 1e-3 {
                 let step = self.zoom_pending * (12.0 * dt).min(1.0);
@@ -558,6 +529,9 @@ impl Sandbox {
             self.last_mouse = mouse;
             self.view.cx = target_pos.0 + self.offset.0;
             self.view.cy = target_pos.1 + self.offset.1;
+            if let (true, Target::Body(_), Some(i), Some(ship)) = (settings.auto_zoom && get_time() >= self.zoom_hold, target, chosen, ship) {
+                auto_zoom(&mut self.view, &mut self.offset, target_pos, b.r[i] as f64, (ship.x, ship.y), dt);
+            }
             let view = self.view;
 
             if clicked {
@@ -779,7 +753,7 @@ impl Sandbox {
         let fuel = seen.ship.map(|s| s.fuel);
         let respawn_in = seen.respawn_tick.map(|t| (t as f64 - present).max(0.0) / 60.0);
         let fuel_max = self.rules.fuel_max_mmps;
-        let (thrust_pct, mouse_aim, god, speed, theta) = (self.thrust_pct, self.mouse_aim, seen.god, seen.pace, seen.theta);
+        let (thrust_pct, god, speed, theta) = (self.thrust_pct, seen.god, seen.pace, seen.theta);
         let player = vec![self.player.clone()];
         let mut mentions: Vec<(String, Mention)> = seen.heaviest.iter().map(|h| (format!("B{}", h.id), Mention::Body(h.id))).collect();
         if let Some(id) = self.selected.filter(|id| !seen.heaviest.iter().any(|h| h.id == *id)) {
@@ -793,15 +767,16 @@ impl Sandbox {
         let (mut pred, mut stats_on, mut follow_sel, mut menu, mut color) = (self.show_prediction, self.show_stats, self.follow_selection, self.menu_open, self.color);
         let (mut has_ptr, mut has_kb) = (false, false);
         let mut chat_out = chat::Outcome::default();
-        let (mut ui_scale, mut zoom_speed) = (settings.ui_scale, settings.zoom_speed);
+        let mut options = settings.clone();
         let (mut new_speed, mut new_theta, mut new_god, mut new_pick) = (None, theta, god, None);
-        let mut gpu = settings.gpu;
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
             let (gold, dim, bad) = (style::c32(style::GOLD), style::c32(style::DIM), style::c32(style::EMBER));
 
-            Area::new(Id::new("title")).anchor(Align2::CENTER_TOP, [0.0, 10.0]).show(ctx, |ui| {
+            Area::new(Id::new("title")).anchor(Align2::CENTER_TOP, [0.0, 10.0]).interactable(false).show(ctx, |ui| {
+                // One line each, however long: wrapped, the title looks broken.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(&title).small().color(dim).extra_letter_spacing(2.0));
                     if !pace.is_empty() {
@@ -814,7 +789,7 @@ impl Sandbox {
             });
 
             if stats_on {
-                Area::new(Id::new("stats")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).show(ctx, |ui| {
+                Area::new(Id::new("stats")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).interactable(false).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         for l in &stat_lines {
@@ -856,12 +831,12 @@ impl Sandbox {
                 });
             });
             if let Some(s) = &status {
-                Area::new(Id::new("status")).anchor(Align2::CENTER_TOP, [0.0, 90.0]).show(ctx, |ui| {
+                Area::new(Id::new("status")).anchor(Align2::CENTER_TOP, [0.0, 90.0]).interactable(false).show(ctx, |ui| {
                     ui.label(RichText::new(s).color(gold));
                 });
             }
 
-            Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
+            Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).interactable(false).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
                     ui.set_width(220.0);
                     match fuel {
@@ -870,7 +845,6 @@ impl Sandbox {
                             let value = if god { "endless".to_string() } else { fmt::speed(f as f64 / 1000.0) };
                             style::gauge(ui, "DELTA-V", &value, frac, if frac < 0.2 { style::EMBER } else { style::ACCENT });
                             style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
-                            style::caption(ui, if mouse_aim { "AIM  MOUSE  (M)" } else { "AIM  A / D  (M)" });
                             if god {
                                 style::caption(ui, "INDESTRUCTIBLE");
                             }
@@ -905,18 +879,14 @@ impl Sandbox {
                     style::section(ui, "WORLD");
                     ui.add(egui::Slider::new(&mut new_theta, 0.3..=1.2).text("opening angle")).on_hover_text("Smaller is more accurate and slower");
                     ui.checkbox(&mut new_god, "Indestructible ship with endless fuel");
-                    ui.checkbox(&mut gpu, "Draw on the graphics card").on_hover_text("Frees processor cores for the simulation. Falls back by itself if the card cannot do it.");
-                    style::section(ui, "INTERFACE");
-                    ui.add(egui::Slider::new(&mut ui_scale, 0.6..=2.5).text("size"));
-                    ui.add(egui::Slider::new(&mut zoom_speed, 0.002..=3.0).logarithmic(true).text("zoom speed"));
+                    crate::options::show(ui, &mut options);
                     style::section(ui, "CONTROLS");
                     style::key_row(ui, "Thrust", "W / UP");
                     style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
                     style::key_row(ui, "Pause, slow down, speed up", "SPACE, < >");
-                    style::key_row(ui, "Aim with mouse or A / D", "M");
                     style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
                     style::key_row(ui, "Command", "/");
-                    style::key_row(ui, "Recentre, fullscreen", "R, F11");
+                    style::key_row(ui, "Fullscreen", "F11");
                     style::section(ui, "MASS");
                     style::mass_legend(ui);
                     ui.separator();
@@ -953,19 +923,19 @@ impl Sandbox {
         if new_theta != theta {
             self.runner.send(Command::Theta(new_theta));
         }
-        if gpu != settings.gpu {
-            self.use_gpu(settings, gpu);
+        if options.gpu != settings.gpu {
+            self.use_gpu(settings, options.gpu);
+            options.measured.clear();
         }
         if let Some(why) = self.density.take_notice() {
-            self.print(ChatKind::Error, format!("Drawing on the graphics card is not possible here: {why}"));
+            self.print(ChatKind::Error, format!("Unable to draw on the graphics card: {why}"));
             self.use_gpu(settings, false);
         }
         if new_god != god {
             self.runner.send(Command::God(new_god));
         }
-        if ui_scale != settings.ui_scale || zoom_speed != settings.zoom_speed {
-            settings.ui_scale = ui_scale;
-            settings.zoom_speed = zoom_speed;
+        if options != *settings {
+            *settings = options;
             self.settings_dirty = true;
         } else if self.settings_dirty && !is_mouse_button_down(MouseButton::Left) {
             self.settings_dirty = false;

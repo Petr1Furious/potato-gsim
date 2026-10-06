@@ -39,6 +39,8 @@ pub enum Status {
 pub struct Updater {
     status: Arc<Mutex<Status>>,
     payload: Arc<Mutex<Option<Vec<u8>>>>,
+    /// The version to compare against, if this build updates itself at all.
+    local: Option<&'static str>,
 }
 
 pub fn build_version() -> &'static str {
@@ -75,15 +77,30 @@ impl Updater {
     pub fn start(enabled: bool) -> Self {
         let just_updated = std::env::var_os(JUST_UPDATED_ENV).is_some();
         let version = BUILD_VERSION.filter(|v| !v.is_empty());
-        let me = Self { status: Arc::new(Mutex::new(Status::Disabled)), payload: Arc::new(Mutex::new(None)) };
-        let (Some(local), true, false) = (version, enabled, just_updated) else {
-            if just_updated {
+        let me = Self { status: Arc::new(Mutex::new(Status::Disabled)), payload: Arc::new(Mutex::new(None)), local: version.filter(|_| enabled) };
+        if just_updated {
+            if me.local.is_some() {
                 *me.status.lock().unwrap() = Status::UpToDate;
             }
             return me;
-        };
-        *me.status.lock().unwrap() = Status::Checking;
-        let (status, payload) = (me.status.clone(), me.payload.clone());
+        }
+        me.check();
+        me
+    }
+
+    /// Whether asking again makes sense: this build updates itself and is not busy doing so.
+    pub fn can_check(&self) -> bool {
+        self.local.is_some() && matches!(self.status(), Status::UpToDate | Status::Failed(_))
+    }
+
+    /// Look for a newer release now, and download it if there is one.
+    pub fn check(&self) {
+        let Some(local) = self.local else { return };
+        if matches!(self.status(), Status::Checking | Status::Downloading { .. } | Status::Ready) {
+            return;
+        }
+        *self.status.lock().unwrap() = Status::Checking;
+        let (status, payload) = (self.status.clone(), self.payload.clone());
         let set = move |s: Status| *status.lock().unwrap() = s;
         std::thread::Builder::new()
             .name("gsim-updater".into())
@@ -112,7 +129,6 @@ impl Updater {
                 }
             })
             .ok();
-        me
     }
 
     pub fn status(&self) -> Status {

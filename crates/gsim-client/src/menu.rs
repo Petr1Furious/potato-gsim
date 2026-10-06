@@ -187,20 +187,7 @@ impl SinglePlayer {
                     let world = worlds.iter().find(|w| w.name == settings.preset).unwrap();
                     ui.label(RichText::new(world.name.to_uppercase()).heading().color(style::c32(style::GOLD)));
                     ui.label(world.about);
-                    ui.label(
-                        RichText::new(if world.large {
-                            "Approximate gravity for a very large world. Sandbox: time control, no score, no shells."
-                        } else {
-                            "Exact gravity with the multiplayer rules: rounds, the orbit objective, shells."
-                        })
-                        .small()
-                        .color(dim),
-                    );
                     ui.add_space(6.0);
-                    if world.large && !settings.measured.contains_key(world.name) && self.measuring.is_none() && self.note.is_empty() {
-                        // Nobody knows what this machine can hold until it has been tried.
-                        self.measure(settings, world.name);
-                    }
                     let measured = settings.measured.get(world.name).copied();
                     let saved = settings.params.entry(world.name.to_string()).or_default();
                     egui::Grid::new("params").num_columns(2).spacing([12.0, 5.0]).show(ui, |ui| {

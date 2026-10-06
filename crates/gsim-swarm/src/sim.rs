@@ -168,12 +168,12 @@ impl Sim {
         self.respawn_tick = None;
     }
 
-    /// Circular orbit around a body, ten radii out. False if the body is gone.
+    /// Circular orbit around a body, twenty radii out. False if the body is gone.
     pub fn orbit(&mut self, id: u32) -> bool {
         let bodies = self.bodies.clone();
         let b = bodies.read().unwrap();
         let Some(i) = b.locate(id) else { return false };
-        let r = 10.0 * b.r[i] as f64;
+        let r = 20.0 * b.r[i] as f64;
         let v = (self.rules.g * b.m[i] as f64 / r).sqrt();
         self.place(Particle { x: b.x[i] + r, y: b.y[i], vx: b.vx[i], vy: b.vy[i] + v });
         true

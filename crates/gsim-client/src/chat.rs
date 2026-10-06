@@ -34,6 +34,8 @@ const C_ARGS: [egui::Color32; 5] = [
     egui::Color32::from_rgb(255, 85, 255),
     egui::Color32::from_rgb(255, 170, 0),
 ];
+/// Space between the edge of the suggestion list and its first and last rows.
+const LIST_PAD: f32 = 7.0;
 const C_POPUP: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 208);
 
 /// Something a word in chat can refer to.
@@ -147,7 +149,11 @@ impl ChatBox {
         if visible.is_empty() && !self.open {
             return out;
         }
-        egui::Area::new(egui::Id::new("chat")).anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0]).show(ctx, |ui| {
+        egui::Area::new(egui::Id::new("chat"))
+            .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
+            // Closed, it is only text over the world: clicks go through to what is behind.
+            .interactable(self.open)
+            .show(ctx, |ui| {
             let frame = if self.open { style::panel() } else { egui::Frame::NONE.inner_margin(10.0) };
             frame.show(ui, |ui| {
                 ui.set_width(WIDTH);
@@ -184,7 +190,8 @@ impl ChatBox {
         }
         self.hidden_for = None;
         // A bare slash waits for Tab before listing every command, as in Minecraft.
-        self.list = if self.input == "/" { None } else { self.new_list(&self.analysis) };
+        // That is for the slash key that opened the line; a slash typed into it lists at once.
+        self.list = if self.input == "/" && self.opened_with == "/" { None } else { self.new_list(&self.analysis) };
     }
 
     fn new_list(&self, analysis: &Analysis) -> Option<List> {
@@ -227,14 +234,24 @@ impl ChatBox {
         let plain = style::c32(style::TEXT);
         let spans = self.analysis.spans.clone();
         let analysed = self.analysed.clone();
+        // Text typed this frame is laid out before the analysis above has seen it; colour it
+        // from an analysis of its own, or the line flashes plain for a frame on every key.
+        let fresh = |text: &str| complete::analyze(text, complete_ctx, false).spans;
         let layout_font = font.clone();
         let mut layouter = move |ui: &egui::Ui, text: &str, _wrap: f32| {
             let mut job = egui::text::LayoutJob::default();
             let piece = |colour| egui::TextFormat { font_id: layout_font.clone(), color: colour, ..Default::default() };
             // Colours belong to the analysed text; anything typed since is drawn plain.
             let mut at = 0;
-            if text == analysed {
-                for (start, end, kind) in &spans {
+            let fresh_spans;
+            let spans = if text == analysed {
+                &spans
+            } else {
+                fresh_spans = fresh(text);
+                &fresh_spans
+            };
+            {
+                for (start, end, kind) in spans {
                     let (start, end) = ((*start).min(text.len()), (*end).min(text.len()));
                     if start < at || end <= start || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
                         continue;
@@ -311,7 +328,8 @@ impl ChatBox {
             let rows = list.items.len().min(LIST_ROWS);
             let row_h = font.size + 2.0;
             let w = list.items.iter().map(|s| width_of(s)).fold(0.0, f32::max) + 8.0;
-            let rect = egui::Rect::from_min_size(egui::pos2(x - 2.0, text_top - 6.0 - rows as f32 * row_h), egui::vec2(w, rows as f32 * row_h));
+            // A little room above and below the rows for the dotted "there is more" edges.
+            let rect = egui::Rect::from_min_size(egui::pos2(x - 2.0, text_top - 6.0 - rows as f32 * row_h - 2.0 * LIST_PAD), egui::vec2(w, rows as f32 * row_h + 2.0 * LIST_PAD));
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("chat-suggestions")));
             painter.rect_filled(rect, 0.0, C_POPUP);
             let pointer = ui.input(|i| i.pointer.hover_pos());
@@ -322,7 +340,7 @@ impl ChatBox {
             }
             for row in 0..rows {
                 let i = list.offset + row;
-                let top = rect.top() + row as f32 * row_h;
+                let top = rect.top() + LIST_PAD + row as f32 * row_h;
                 let row_rect = egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(w, row_h));
                 if pointer.is_some_and(|p| row_rect.contains(p)) {
                     // Hovering selects, clicking accepts.
@@ -343,10 +361,10 @@ impl ChatBox {
                 }
             };
             if list.offset > 0 {
-                dots(rect.top());
+                dots(rect.top() + 1.0);
             }
             if list.offset + rows < list.items.len() {
-                dots(rect.bottom() - 1.0);
+                dots(rect.bottom() - 2.0);
             }
             // Grey preview of what accepting the selected entry would add.
             if list.applied.is_none() {
