@@ -15,7 +15,7 @@ services:
     environment:
       GSIM_PRESET: random       # random | disc | solar | binary | figure8 | repulsor | runaway
       GSIM_SEED: "0"            # 0 = new world on every start
-      GSIM_RANDOM_COUNT: "1000"
+      GSIM_SET: ""              # preset parameters, e.g. "count=400, spread=80Gm" (gsim-server --list-presets)
       GSIM_TIME_SCALE: "86400"
       GSIM_ROUND_SECONDS: "600"   # 0 = endless
       GSIM_WHITELIST: "false"     # true = only names in data/whitelist.txt may join

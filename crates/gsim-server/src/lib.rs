@@ -8,4 +8,4 @@ pub mod scenario;
 pub mod state;
 
 pub use authority::{Authority, ConnId, Outgoing, Target};
-pub use scenario::{RandomOpts, Scenario};
+pub use scenario::{Params, Scenario};

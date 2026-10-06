@@ -13,6 +13,7 @@ gsim-proto = { path = "crates/gsim-proto" }
 gsim-server = { path = "crates/gsim-server" }
 gsim-client-core = { path = "crates/gsim-client-core" }
 gsim-testkit = { path = "crates/gsim-testkit" }
+gsim-swarm = { path = "crates/gsim-swarm" }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 libm = "0.2"
@@ -24,6 +25,9 @@ renet_netcode = "2"
 
 # The simulation is unusably slow unoptimised; keep debug builds and tests fast.
 [profile.dev.package.gsim-core]
+opt-level = 3
+
+[profile.dev.package.gsim-swarm]
 opt-level = 3
 
 [profile.release]

@@ -83,7 +83,7 @@ impl Authority {
     fn command(&mut self, conn: ConnId, id: PlayerId, line: &str) {
         let words = command::split(line);
         let Some(name) = words.first() else { return };
-        let Some(spec) = command::find(name) else {
+        let Some(spec) = command::find(name).filter(|c| c.available(false)) else {
             return self.tell(conn, ChatKind::Error, format!("unknown command /{name} (try /help)"));
         };
         if spec.op && !self.is_op(id) {
@@ -226,7 +226,7 @@ impl Authority {
         match name {
             "help" => {
                 let op = self.is_op(me);
-                for c in command::COMMANDS.iter().filter(|c| op || !c.op) {
+                for c in command::COMMANDS.iter().filter(|c| (op || !c.op) && c.available(false)) {
                     self.tell(conn, ChatKind::System, format!("{}  -  {}", c.usage(), c.help));
                 }
                 Ok(None)
@@ -354,12 +354,28 @@ impl Authority {
             }
             "preset" => {
                 let preset = args.first().ok_or("")?;
-                let opts = self.generator.as_ref().map(|g| g.1.clone()).unwrap_or_default();
-                scenario::build(preset, 1, &opts)?;
-                self.next_seed = args.get(1).map(|s| s.parse::<u64>().map_err(|_| String::new())).transpose()?;
-                self.generator = Some((preset.clone(), opts));
+                // What is not set here goes back to the preset's defaults.
+                let mut params = scenario::Params::new();
+                let mut seed = None;
+                for word in &args[1..] {
+                    match word.strip_prefix("seed=") {
+                        Some(n) => seed = Some(n.parse::<u64>().map_err(|_| format!("seed='{n}' is not a whole number"))?),
+                        None => {
+                            let (key, value) = scenario::parse_setting(word)?;
+                            params.insert(key, value);
+                        }
+                    }
+                }
+                scenario::validate(preset, &params)?;
+                let mut settings = scenario::describe(preset, &params);
+                if let Some(seed) = seed {
+                    settings = format!("{settings} seed={seed}").trim_start().to_string();
+                }
+                self.next_seed = seed;
+                self.generator = Some((preset.clone(), params));
                 self.start_round();
-                self.announce(format!("{} switched the world to {preset}", self.name_of(me)));
+                let with = if settings.is_empty() { String::new() } else { format!(" ({settings})") };
+                self.announce(format!("{} switched the world to {preset}{with}", self.name_of(me)));
                 Ok(None)
             }
             "timescale" => {

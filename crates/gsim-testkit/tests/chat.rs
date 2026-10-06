@@ -211,12 +211,13 @@ fn world_control() {
     assert_eq!(sim.server.target(), Some(0));
     assert_eq!(sim.clients[b].session.world.as_ref().unwrap().target, Some(0));
 
-    say(&mut sim, a, "/preset solar 7");
+    say(&mut sim, a, "/preset solar seed=7");
     sim.run_with(1.5, idle);
     assert_eq!(sim.server.massive.len(), 10);
     let w = sim.clients[b].session.world.as_ref().unwrap();
     assert_eq!(w.preset, "solar");
     assert_eq!(w.names.get(&0).map(String::as_str), Some("Sun"));
+    assert!(system(&sim.clients[b].session).iter().any(|l| l == "ann switched the world to solar (seed=7)"));
     say(&mut sim, a, "/preset nowhere");
     assert!(errors(&sim.clients[a].session).last().unwrap().starts_with("unknown preset"));
 
@@ -225,6 +226,55 @@ fn world_control() {
     assert_eq!(sim.clients[b].session.world.as_ref().unwrap().rules.time_scale(), 3600.0);
     assert_eq!(sim.clients[b].session.stats.hash_mismatches, 0);
     sim.ships_agree().unwrap();
+}
+
+#[test]
+fn presets_take_settings() {
+    let (mut sim, a, b, _) = trio(8);
+    let hz = sim.server.rules.tick_hz as u64;
+    sim.server.set_rounds(600 * hz, hz, None);
+    let last_error = |sim: &Sim| errors(&sim.clients[a].session).last().cloned().unwrap_or_default();
+
+    say(&mut sim, a, "/preset random count=50 seed=7");
+    sim.run_with(1.5, idle);
+    assert_eq!(sim.server.massive.len(), 50);
+    let w = sim.clients[b].session.world.as_ref().unwrap();
+    assert_eq!(w.preset, "random");
+    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "ann switched the world to random (count=50 seed=7)");
+    assert!(errors(&sim.clients[a].session).is_empty());
+    // The seed decides the world: asking again gives the same one.
+    let first = sim.server.massive.mass.clone();
+    sim.run_with(1.0, idle);
+    say(&mut sim, a, "/preset random seed=7 count=50");
+    assert_eq!(sim.server.massive.mass[..3], first[..3]);
+
+    // Mistakes change nothing and say what is wrong.
+    let round = sim.server.round();
+    say(&mut sim, a, "/preset random bodies=50");
+    assert_eq!(last_error(&sim), "preset random has no parameter 'bodies' (it has: count, spread, mass_min, mass_max, rotation, star_mass)");
+    say(&mut sim, a, "/preset random count=0");
+    assert_eq!(last_error(&sim), "count=0 is out of range (1 to 5000)");
+    say(&mut sim, a, "/preset random count=many");
+    assert_eq!(last_error(&sim), "count='many' is not a number");
+    say(&mut sim, a, "/preset random 7");
+    assert_eq!(last_error(&sim), "expected key=value, got '7'");
+    say(&mut sim, a, "/preset random seed=x");
+    assert_eq!(last_error(&sim), "seed='x' is not a whole number");
+    say(&mut sim, a, "/preset solar count=50");
+    assert!(last_error(&sim).starts_with("preset solar has no parameter 'count'"));
+    assert_eq!((sim.server.round(), sim.server.massive.len()), (round, 50));
+
+    // Settings last for the following rounds, until the next /preset puts the defaults back.
+    say(&mut sim, a, "/preset disc count=40 spread=80Gm");
+    say(&mut sim, a, "/round new");
+    sim.run_with(1.5, idle);
+    assert_eq!(sim.server.massive.len(), 40);
+    assert_eq!(sim.clients[b].session.world.as_ref().unwrap().preset, "disc");
+    say(&mut sim, a, "/preset binary");
+    sim.run_with(1.5, idle);
+    assert_eq!(sim.server.massive.len(), 302);
+    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "ann switched the world to binary");
+    assert_eq!(sim.clients[b].session.stats.hash_mismatches, 0);
 }
 
 #[test]

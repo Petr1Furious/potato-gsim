@@ -1,6 +1,6 @@
 use clap::Parser;
 use gsim_server::net::{run, ServerOptions};
-use gsim_server::scenario::{RandomOpts, PRESETS};
+use gsim_server::scenario::{self, format_value, Params, PRESETS};
 use clap::Subcommand;
 use gsim_server::state::ServerState;
 use std::net::{IpAddr, SocketAddr};
@@ -35,24 +35,13 @@ struct Args {
     /// Simulation ticks per real second
     #[arg(long, env = "GSIM_TICK_HZ", default_value_t = 60)]
     tick_hz: u32,
-    /// Body count for the random/disc/repulsor presets
-    #[arg(long, env = "GSIM_RANDOM_COUNT", default_value_t = 1000)]
-    random_count: usize,
-    /// Disc radius (m) for the random/repulsor presets
-    #[arg(long, env = "GSIM_RANDOM_SPREAD", default_value_t = 5.0e10)]
-    random_spread: f64,
-    #[arg(long, default_value_t = 1.0e21)]
-    random_mass_min: f64,
-    #[arg(long, default_value_t = 5.0e25)]
-    random_mass_max: f64,
-    /// Initial rotation as a fraction of circular speed (0 = static cloud)
-    #[arg(long, default_value_t = 0.7)]
-    random_rotation: f64,
+    /// Tune the preset: `--set count=300 --set spread=80Gm` (repeatable; the environment
+    /// variable takes a comma- or space-separated list). See --list-presets for the keys.
+    #[arg(long = "set", env = "GSIM_SET", value_name = "KEY=VALUE")]
+    set: Vec<String>,
+    /// Print every preset with its parameters, defaults and ranges
     #[arg(long)]
     list_presets: bool,
-    /// Central star mass for the random/repulsor presets (kg, 0 = none)
-    #[arg(long, env = "GSIM_RANDOM_STAR_MASS", default_value_t = 0.0)]
-    random_star_mass: f64,
     /// Round length in seconds (0 = endless, the world is never reset)
     #[arg(long, env = "GSIM_ROUND_SECONDS", default_value_t = 600.0)]
     round_seconds: f64,
@@ -75,11 +64,21 @@ fn main() {
         std::process::exit(admin(&args.state_dir, action));
     }
     if args.list_presets {
-        for (name, about) in PRESETS {
-            println!("{name:10} {about}");
+        for p in PRESETS {
+            println!("{:10} {}", p.name, p.about);
+            for s in p.params {
+                println!("    {:11} {:10} {}  [{}]", s.key, format_value(s.default), s.help, s.range());
+            }
         }
         return;
     }
+    let params = match settings(&args.preset, &args.set) {
+        Ok(params) => params,
+        Err(e) => {
+            eprintln!("error: {e} (see --list-presets)");
+            std::process::exit(2);
+        }
+    };
     let seed = if args.seed != 0 {
         args.seed
     } else {
@@ -93,14 +92,7 @@ fn main() {
         seed,
         time_scale: args.time_scale,
         tick_hz: args.tick_hz,
-        random: RandomOpts {
-            count: args.random_count.clamp(1, 5000),
-            spread: args.random_spread,
-            mass_min: args.random_mass_min,
-            mass_max: args.random_mass_max,
-            rotation: args.random_rotation,
-            star_mass: args.random_star_mass,
-        },
+        params,
         quiet: false,
         round_seconds: args.round_seconds,
         intermission_seconds: args.intermission_seconds,
@@ -116,6 +108,17 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+/// The `--set` words (each may hold several settings) as checked parameters of `preset`.
+fn settings(preset: &str, words: &[String]) -> Result<Params, String> {
+    let mut params = Params::new();
+    for word in words.iter().flat_map(|w| w.split([',', ' ']).filter(|s| !s.is_empty())) {
+        let (key, value) = scenario::parse_setting(word)?;
+        params.insert(key, value);
+    }
+    scenario::validate(preset, &params)?;
+    Ok(params)
 }
 
 #[derive(Subcommand, Debug)]

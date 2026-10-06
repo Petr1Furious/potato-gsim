@@ -1,5 +1,6 @@
 //! Small `key=value` settings file in the platform's config directory.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -13,11 +14,15 @@ pub struct Settings {
     pub ui_scale: f32,
     /// Zoom steps per unit of mouse-wheel delta.
     pub zoom_speed: f32,
+    /// Per single-player world: the parameters changed from their defaults.
+    pub params: BTreeMap<String, BTreeMap<String, f64>>,
+    /// Per large-scale world: how many bodies this machine was measured to hold.
+    pub measured: BTreeMap<String, usize>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -49,7 +54,23 @@ impl Settings {
                 "fullscreen" => s.fullscreen = v == "1",
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
-                _ => {}
+                key => {
+                    // `param.<world>.<key>` and `measured.<world>`
+                    let mut parts = key.split('.');
+                    match (parts.next(), parts.next(), parts.next()) {
+                        (Some("param"), Some(world), Some(name)) => {
+                            if let Ok(value) = v.parse::<f64>() {
+                                s.params.entry(world.to_string()).or_default().insert(name.to_string(), value);
+                            }
+                        }
+                        (Some("measured"), Some(world), None) => {
+                            if let Ok(count) = v.parse::<usize>() {
+                                s.measured.insert(world.to_string(), count);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         s
@@ -60,10 +81,18 @@ impl Settings {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let text = format!(
+        let mut text = format!(
             "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\n",
             self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed
         );
+        for (world, params) in &self.params {
+            for (key, value) in params {
+                text.push_str(&format!("param.{world}.{key}={value}\n"));
+            }
+        }
+        for (world, count) in &self.measured {
+            text.push_str(&format!("measured.{world}={count}\n"));
+        }
         let _ = std::fs::write(p, text);
     }
 }

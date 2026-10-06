@@ -9,7 +9,7 @@ use crate::settings::Settings;
 use egui_macroquad::egui;
 use gsim_client_core::complete::Context;
 use gsim_client_core::net::NetClient;
-use gsim_server::scenario::PRESETS;
+use gsim_server::scenario::{Params, PRESETS};
 use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
@@ -30,12 +30,12 @@ pub struct Solo {
 }
 
 impl Solo {
-    pub fn start(preset: &str, seed: u64) -> Result<(Self, SocketAddr), String> {
+    pub fn start(preset: &str, seed: u64, params: &Params) -> Result<(Self, SocketAddr), String> {
         // Let the OS pick a free port, then hand it to the server.
         let port = UdpSocket::bind("127.0.0.1:0").and_then(|s| s.local_addr()).map_err(|e| e.to_string())?.port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         // Whoever hosts a solo game may use every command.
-        let opts = ServerOptions { bind: addr, preset: preset.to_string(), seed, quiet: true, max_clients: 4, op_all: true, ..Default::default() };
+        let opts = ServerOptions { bind: addr, preset: preset.to_string(), seed, params: params.clone(), quiet: true, max_clients: 4, op_all: true, ..Default::default() };
         build_authority(&opts)?; // surface configuration errors here rather than in the thread
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -63,29 +63,29 @@ impl Drop for Solo {
 /// Camera: world metres (f64) to screen pixels, relative to a double-precision centre so
 /// nothing loses precision at astronomical distances.
 #[derive(Clone, Copy)]
-struct View {
-    cx: f64,
-    cy: f64,
+pub(crate) struct View {
+    pub cx: f64,
+    pub cy: f64,
     /// Metres per pixel.
-    mpp: f64,
+    pub mpp: f64,
 }
 
 impl View {
-    fn to_screen(&self, x: f64, y: f64) -> (f32, f32) {
+    pub fn to_screen(&self, x: f64, y: f64) -> (f32, f32) {
         (
             ((x - self.cx) / self.mpp) as f32 + screen_width() * 0.5,
             ((y - self.cy) / self.mpp) as f32 + screen_height() * 0.5,
         )
     }
 
-    fn to_world(&self, sx: f32, sy: f32) -> (f64, f64) {
+    pub fn to_world(&self, sx: f32, sy: f32) -> (f64, f64) {
         (
             self.cx + (sx - screen_width() * 0.5) as f64 * self.mpp,
             self.cy + (sy - screen_height() * 0.5) as f64 * self.mpp,
         )
     }
 
-    fn on_screen(&self, s: (f32, f32), margin: f32) -> bool {
+    pub fn on_screen(&self, s: (f32, f32), margin: f32) -> bool {
         s.0 > -margin && s.1 > -margin && s.0 < screen_width() + margin && s.1 < screen_height() + margin
     }
 }
@@ -159,10 +159,10 @@ pub struct Game {
 
 const TRAIL_EVERY_TICKS: Tick = 4;
 const TRAIL_FRAMES: usize = 150;
-const PICK_RADIUS_PX: f32 = 26.0;
-const TURN_RATE: f64 = 2.85;
+pub(crate) const PICK_RADIUS_PX: f32 = 26.0;
+pub(crate) const TURN_RATE: f64 = 2.85;
 /// Font size of labels drawn in the world, before marker scaling.
-const LABEL: f32 = 12.0;
+pub(crate) const LABEL: f32 = 12.0;
 
 impl Game {
     pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32, show_net: bool) -> Result<Self, String> {
@@ -842,8 +842,8 @@ impl Game {
             }
         }
         let body_names: Vec<String> = mentions.iter().filter(|m| matches!(m.1, Mention::Body(_))).map(|m| m.0.clone()).collect();
-        let presets: Vec<&str> = PRESETS.iter().map(|p| p.0).collect();
-        let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op };
+        let presets: Vec<(&str, Vec<&str>)> = PRESETS.iter().map(|p| (p.name, p.params.iter().map(|s| s.key).collect())).collect();
+        let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op, sandbox: false };
         let my_id = world.my_id;
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
         let clock = |s: f64| format!("{}:{:02}", s as u32 / 60, s as u32 % 60);
@@ -1097,7 +1097,7 @@ impl Game {
 }
 
 
-fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {
+pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {
     let mut prev: Option<(f32, f32)> = None;
     for q in points {
         let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
@@ -1177,7 +1177,7 @@ fn draw_trails(
 
 /// A small dart with swept wings, a canopy and an engine plume. `s` is the screen position,
 /// `facing` the heading in radians (screen space, y down).
-fn draw_ship(s: (f32, f32), facing: f32, color: Color, burning: bool, ui: f32) {
+pub(crate) fn draw_ship(s: (f32, f32), facing: f32, color: Color, burning: bool, ui: f32) {
     let size = 6.0 * ui;
     let (c, n) = (facing.cos(), facing.sin());
     // Ship-local coordinates: x forward, y to the side, in units of `size`.

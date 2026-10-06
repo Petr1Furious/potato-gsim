@@ -1,6 +1,6 @@
 use gsim_client_core::Controls;
 use gsim_core::{Particle, ShipState};
-use gsim_server::scenario::{build, RandomOpts};
+use gsim_server::scenario::{build, Params};
 use gsim_testkit::*;
 
 /// Busy pilots: thrust on and off, heading sweeping, different per client.
@@ -18,7 +18,7 @@ fn idle(_: usize, _: f64) -> Controls {
 }
 
 fn small_world() -> gsim_server::Scenario {
-    build("random", 11, &RandomOpts { count: 120, ..Default::default() }).unwrap()
+    build("random", 11, &Params::from([("count".to_string(), 120.0)])).unwrap()
 }
 
 #[test]
@@ -220,8 +220,8 @@ fn holding_an_orbit_captures_the_target() {
 fn round_ends_and_a_new_world_starts() {
     let mut sim = Sim::new(small_world(), 11);
     let hz = sim.server.rules.tick_hz as u64;
-    let opts = RandomOpts { count: 60, ..Default::default() };
-    sim.server.set_rounds(5 * hz, hz, Some(("random".into(), opts)));
+    let params = Params::from([("count".to_string(), 60.0)]);
+    sim.server.set_rounds(5 * hz, hz, Some(("random".into(), params)));
     // Escaped-body removal is part of the shared simulation: hashes must still agree.
     sim.server.rules.escape_radius = 2.0e11;
     sim.server.enable_objective();

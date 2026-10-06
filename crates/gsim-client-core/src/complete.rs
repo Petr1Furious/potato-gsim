@@ -8,9 +8,12 @@ use gsim_proto::command::{self, parse_metres, quote, Arg, Command};
 pub struct Context<'a> {
     pub players: &'a [String],
     pub bodies: &'a [String],
-    pub presets: &'a [&'a str],
+    /// Each preset with the keys of its parameters.
+    pub presets: &'a [(&'a str, Vec<&'a str>)],
     /// Offer operator commands.
     pub op: bool,
+    /// A large-scale single-player world: only the commands that exist there.
+    pub sandbox: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,11 +92,26 @@ fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
         Arg::Player => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
         Arg::Body => with(names(&[ctx.bodies]), &["@t"]),
         Arg::Place => with(names(&[ctx.players, ctx.bodies]), &["@a", "@r", "@s", "@t"]),
-        Arg::Preset => ctx.presets.iter().map(|p| p.to_string()).collect(),
+        Arg::Preset => ctx.presets.iter().map(|p| p.0.to_string()).collect(),
         Arg::Word(words) => words.iter().map(|w| w.to_string()).collect(),
         Arg::Text => names(&[ctx.players, ctx.bodies]),
-        Arg::Number => Vec::new(),
+        // Settings depend on the preset typed before them: see `setting_keys`.
+        Arg::Span => ["0", "1h", "6h", "1d", "2d", "4d"].iter().map(|w| w.to_string()).collect(),
+        Arg::Number | Arg::Settings => Vec::new(),
     }
+}
+
+/// The keys `/preset` accepts after the preset named in `args`: its parameters and the seed.
+fn setting_keys<'a>(spec: &Command, args: &[Word], ctx: &Context<'a>) -> Vec<&'a str> {
+    let named = spec.params.iter().position(|p| p.arg == Arg::Preset).and_then(|i| args.get(i));
+    let mut keys: Vec<&str> = named.and_then(|w| ctx.presets.iter().find(|p| p.0 == w.text)).map(|p| p.1.clone()).unwrap_or_default();
+    keys.push("seed");
+    keys
+}
+
+/// Is `word` a finished `key=number` with one of `keys`?
+fn is_setting(word: &str, keys: &[&str]) -> bool {
+    word.split_once('=').is_some_and(|(key, value)| keys.contains(&key) && if key == "seed" { value.parse::<u64>().is_ok() } else { parse_metres(value).is_some() })
 }
 
 fn matching(pool: Vec<String>, partial: &str, quoted: bool) -> Vec<String> {
@@ -115,7 +133,7 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     if ws.len() == 1 && !trailing_space {
         let typed = first.text.trim_start_matches('/').to_lowercase();
         let mut names: Vec<String> =
-            command::COMMANDS.iter().filter(|c| (ctx.op || !c.op) && c.name.starts_with(&typed)).map(|c| format!("/{}", c.name)).collect();
+            command::COMMANDS.iter().filter(|c| (ctx.op || !c.op) && c.available(ctx.sandbox) && c.name.starts_with(&typed)).map(|c| format!("/{}", c.name)).collect();
         names.sort();
         if names.is_empty() {
             a.error = Some(error_at("Unknown or incomplete command", input, input.len()));
@@ -128,7 +146,7 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     }
 
     let name = first.text.trim_start_matches('/');
-    let Some(spec) = command::find(name).filter(|c| ctx.op || !c.op) else {
+    let Some(spec) = command::find(name).filter(|c| (ctx.op || !c.op) && c.available(ctx.sandbox)) else {
         a.error = Some(error_at("Unknown or incomplete command", input, first.end));
         a.spans.push((0, input.len(), SpanKind::Error));
         return a;
@@ -142,8 +160,8 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     a.start = start;
     let raw_partial = &input[start..];
 
-    // Free text swallows the rest of the line.
-    let text_from = spec.params.iter().position(|p| p.arg == Arg::Text);
+    // Free text and settings swallow the rest of the line.
+    let text_from = spec.params.iter().position(|p| matches!(p.arg, Arg::Text | Arg::Settings));
     let param_at = |i: usize| match text_from {
         Some(t) if i >= t => spec.params.get(t).map(|p| (t, p)),
         _ => spec.params.get(i).map(|p| (i, p)),
@@ -174,7 +192,14 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     // After a coordinate comes the other coordinate, not a name.
     let after_coordinate = param.arg == Arg::Place && index > 0 && is_coordinate(&args[index - 1].text);
     let arg = if after_coordinate { Arg::Number } else { param.arg };
-    a.suggestions = matching(pool(arg, ctx), partial, true);
+    a.suggestions = if arg == Arg::Settings {
+        // `key=` for what is not set yet; the value after it is the player's to type.
+        let given = |key: &str| args.iter().enumerate().any(|(i, w)| i != index && w.text.split_once('=').is_some_and(|(k, _)| k == key));
+        let keys = setting_keys(spec, args, ctx).into_iter().filter(|k| !given(k)).map(|k| format!("{k}="));
+        if partial.contains('=') { Vec::new() } else { matching(keys.collect(), partial, false) }
+    } else {
+        matching(pool(arg, ctx), partial, true)
+    };
     if raw_partial.starts_with('"') {
         // Keep offering quoted names while the quote is open.
         a.suggestions.retain(|s| s.starts_with('"'));
@@ -182,6 +207,9 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     if a.suggestions.is_empty() {
         let hopeless = match arg {
             Arg::Word(_) | Arg::Preset => !partial.is_empty(),
+            Arg::Span => !partial.is_empty() && command::parse_span(partial).is_none() && partial.parse::<f64>().is_err(),
+            // Wrong unless it is a known key with a value still being typed.
+            Arg::Settings => !partial.is_empty() && !partial.split_once('=').is_some_and(|(key, _)| setting_keys(spec, args, ctx).contains(&key)),
             Arg::Number => !partial.is_empty() && !is_coordinate(partial) && partial.parse::<f64>().is_err() && !"-+.~".contains(partial),
             _ => false,
         };
@@ -198,13 +226,15 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
 }
 
 /// Can `word` be the `i`-th argument once it is finished?
-fn valid(_spec: &Command, i: usize, arg: &Arg, word: &str, args: &[Word], ctx: &Context) -> bool {
+fn valid(spec: &Command, i: usize, arg: &Arg, word: &str, args: &[Word], ctx: &Context) -> bool {
     let after_coordinate = *arg == Arg::Place && i > 0 && is_coordinate(&args[i - 1].text);
     match arg {
         _ if after_coordinate => is_coordinate(word),
         Arg::Word(words) => words.contains(&word),
-        Arg::Preset => ctx.presets.contains(&word),
+        Arg::Preset => ctx.presets.iter().any(|p| p.0 == word),
+        Arg::Settings => is_setting(word, &setting_keys(spec, args, ctx)),
         Arg::Number => word.parse::<f64>().is_ok(),
+        Arg::Span => command::parse_span(word).is_some(),
         // Names are checked by the server: a player may have just joined.
         _ => true,
     }
@@ -243,20 +273,70 @@ pub fn suffix<'a>(input: &str, start: usize, suggestion: &'a str) -> Option<&'a 
 mod tests {
     use super::*;
 
-    fn ctx<'a>(players: &'a [String], bodies: &'a [String], op: bool) -> Context<'a> {
-        Context { players, bodies, presets: &["random", "solar", "disc"], op }
+    fn presets() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![("random", vec!["count", "spread", "star_mass"]), ("solar", vec!["scale", "star_mass"]), ("disc", vec!["count"])]
+    }
+
+    fn ctx<'a>(players: &'a [String], bodies: &'a [String], presets: &'a [(&'a str, Vec<&'a str>)], op: bool) -> Context<'a> {
+        Context { players, bodies, presets, op, sandbox: false }
+    }
+
+    #[test]
+    fn preset_settings() {
+        let presets = presets();
+        let op = ctx(&[], &[], &presets, true);
+        let an = |s: &str| analyze(s, &op, false);
+
+        assert_eq!(an("/preset ").suggestions, ["disc", "random", "solar"]);
+        assert_eq!(an("/preset s").suggestions, ["solar"]);
+        // After the preset: its own keys and the seed, as `key=`.
+        let a = an("/preset random ");
+        assert_eq!(a.suggestions, ["count=", "seed=", "spread=", "star_mass="]);
+        assert_eq!((a.start, a.usage, a.error), (15, None, None));
+        assert_eq!(an("/preset solar ").suggestions, ["scale=", "seed=", "star_mass="]);
+        assert_eq!(an("/preset random s").suggestions, ["seed=", "spread=", "star_mass="]);
+        assert_eq!(apply("/preset random sp", 15, "spread="), "/preset random spread=");
+        assert_eq!(suffix("/preset random sp", 15, "spread="), Some("read="));
+        // What is already set is not offered again.
+        let a = an("/preset random count=50 seed=7 ");
+        assert_eq!((a.suggestions, a.start), (vec!["spread=".to_string(), "star_mass=".to_string()], 31));
+        assert_eq!(an("/preset random count=50 s").suggestions, ["seed=", "spread=", "star_mass="]);
+        assert_eq!(an("/preset disc seed=1 count=2 ").usage.as_deref(), Some("[<key=value ...>]"), "nothing left to set");
+
+        // The value is the player's to type: no suggestions, only the hint.
+        for typing in ["/preset random count=", "/preset random count=5", "/preset random spread=80G", "/preset random count=50 seed="] {
+            let a = an(typing);
+            assert!(a.suggestions.is_empty() && a.error.is_none(), "{typing}: {a:?}");
+            assert_eq!(a.usage.as_deref(), Some("[<key=value ...>]"), "{typing}");
+        }
+
+        // Unknown keys are wrong as soon as nothing matches; bad values once the word is finished.
+        assert_eq!(an("/preset random x").error.as_deref(), Some("Incorrect argument for command at position 15: ...et random <--[HERE]"));
+        assert!(an("/preset random bodies=").error.is_some());
+        assert!(an("/preset solar count=5").error.is_some(), "count belongs to other presets");
+        assert!(an("/preset random count=abc").error.is_none() && an("/preset random count=abc ").error.is_some());
+        assert!(an("/preset random count= ").error.is_some() && an("/preset random count ").error.is_some());
+        assert!(an("/preset random seed=1.5 ").error.is_some() && an("/preset random seed=15 ").error.is_none());
+        assert!(an("/preset random spread=80Gm count=3e2 star_mass=2e30 ").error.is_none());
+        assert!(an("/preset nowhere count=5").error.is_some());
+
+        // Every setting is coloured as the one settings argument.
+        let spans = an("/preset random count=50 seed=7").spans;
+        assert_eq!(spans, [(0, 7, SpanKind::Literal), (8, 14, SpanKind::Arg(0)), (15, 23, SpanKind::Arg(1)), (24, 30, SpanKind::Arg(1))]);
+        assert_eq!(an("/preset random count=50 nope=1 seed=7").spans.last(), Some(&(24, 37, SpanKind::Error)));
     }
 
     #[test]
     fn behaves_like_minecraft() {
         let players = vec!["Ann Droid".to_string(), "bob".to_string()];
         let bodies = vec!["Sun".to_string(), "Saturn".to_string(), "B459".to_string()];
-        let op = ctx(&players, &bodies, true);
-        let guest = ctx(&players, &bodies, false);
+        let presets = presets();
+        let op = ctx(&players, &bodies, &presets, true);
+        let guest = ctx(&players, &bodies, &presets, false);
         let an = |s: &str| analyze(s, &op, false);
 
         // Command names: listed as soon as the slash is typed, narrowed while typing.
-        assert_eq!(an("/").suggestions.len(), command::COMMANDS.len());
+        assert_eq!(an("/").suggestions.len(), command::COMMANDS.iter().filter(|c| c.available(false)).count());
         assert_eq!(an("/t").suggestions, ["/target", "/timescale", "/tp"]);
         assert_eq!(analyze("/", &guest, false).suggestions, ["/help", "/list", "/msg", "/r", "/respawn"]);
         assert_eq!(an("/t").start, 0);

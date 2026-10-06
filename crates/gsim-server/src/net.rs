@@ -1,7 +1,7 @@
 //! Real-time driver: UDP transport plus the fixed-rate tick loop.
 
 use crate::authority::Authority;
-use crate::scenario::{self, RandomOpts};
+use crate::scenario::{self, Params};
 use gsim_core::GameRules;
 use gsim_proto::*;
 use renet::{RenetServer, ServerEvent};
@@ -23,7 +23,8 @@ pub struct ServerOptions {
     pub seed: u64,
     pub time_scale: f64,
     pub tick_hz: u32,
-    pub random: RandomOpts,
+    /// Settings for the preset (see `scenario::PRESETS`); keys left out take their defaults.
+    pub params: Params,
     pub quiet: bool,
     /// 0 = endless.
     pub round_seconds: f64,
@@ -46,7 +47,7 @@ impl Default for ServerOptions {
             seed: 1,
             time_scale: 86400.0,
             tick_hz: 60,
-            random: RandomOpts::default(),
+            params: Params::new(),
             quiet: false,
             round_seconds: 600.0,
             intermission_seconds: 10.0,
@@ -66,7 +67,7 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     if !(opts.time_scale.is_finite() && opts.time_scale > 0.0) {
         return Err("time scale must be positive".into());
     }
-    let sc = scenario::build(&opts.preset, opts.seed, &opts.random)?;
+    let sc = scenario::build(&opts.preset, opts.seed, &opts.params)?;
     let mut rules = GameRules::new(opts.time_scale, opts.tick_hz.clamp(10, 240));
     rules.escape_radius = sc.escape_radius();
     let hz = rules.tick_hz as f64;
@@ -78,7 +79,7 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     authority.state.whitelist_enabled = opts.whitelist;
     authority.op_all = opts.op_all;
     let ticks = |s: f64| if s.is_finite() && s > 0.0 { (s * hz).round() as u64 } else { 0 };
-    authority.set_rounds(ticks(opts.round_seconds), ticks(opts.intermission_seconds).max(1), Some((opts.preset.clone(), opts.random.clone())));
+    authority.set_rounds(ticks(opts.round_seconds), ticks(opts.intermission_seconds).max(1), Some((opts.preset.clone(), opts.params.clone())));
     authority.enable_objective();
     Ok(authority)
 }

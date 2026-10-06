@@ -2,8 +2,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod chat;
+mod density;
 mod fmt;
 mod game;
+mod menu;
+mod sandbox;
 mod predictor;
 mod settings;
 mod style;
@@ -11,9 +14,10 @@ mod updater;
 
 use clap::Parser;
 use egui_macroquad::egui;
-use game::{Game, Outcome, Solo};
+use game::{Game, Outcome};
+use menu::{Choice, SinglePlayer, Started};
+use sandbox::Sandbox;
 use gsim_client_core::net::resolve;
-use gsim_server::scenario::PRESETS;
 use macroquad::prelude::*;
 use settings::Settings;
 
@@ -27,13 +31,19 @@ struct Args {
     /// Join this server straight away (host or host:port)
     #[arg(long)]
     connect: Option<String>,
-    /// Start a solo game straight away with this preset
+    /// Start a single-player world straight away (a preset, or galaxy, collision, cloud)
     #[arg(long)]
     solo: Option<String>,
+    /// A parameter of the `--solo` world, as key=value (repeatable)
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    set: Vec<String>,
+    /// Measure how many bodies the large-scale engine holds on this machine, then exit
+    #[arg(long)]
+    bench: bool,
     /// Player name (overrides the saved one)
     #[arg(long)]
     name: Option<String>,
-    /// World seed for solo games (0 = random)
+    /// World seed for single-player worlds (0 = random)
     #[arg(long, default_value_t = 0)]
     seed: u64,
     /// Seconds of ephemeris to keep ahead of the present (bounds the prediction line)
@@ -68,6 +78,16 @@ fn main() {
         println!("self-test: computed {got:#018x}, expected {:#018x} -> {}", gsim_core::selftest::GOLDEN, if ok { "OK" } else { "MISMATCH" });
         std::process::exit(if ok { 0 } else { 2 });
     }
+    if args.bench {
+        println!("kernels: {}", gsim_swarm::Level::detect().name());
+        for sc in gsim_swarm::scenario::SCENARIOS {
+            match gsim_swarm::bench::suggest(sc.name, &Default::default(), 1000.0 / 60.0) {
+                Ok(count) => println!("{:10} about {count} bodies at 60 steps per second", sc.name),
+                Err(e) => println!("{:10} {e}", sc.name),
+            }
+        }
+        return;
+    }
     if !ok {
         eprintln!("warning: simulation self-test failed; servers will refuse this build");
     }
@@ -95,7 +115,18 @@ fn main() {
 
 enum Screen {
     Menu,
+    Single,
     Game(Box<Game>),
+    Sandbox(Box<Sandbox>),
+}
+
+impl From<Started> for Screen {
+    fn from(started: Started) -> Self {
+        match started {
+            Started::Exact(game) => Screen::Game(game),
+            Started::Large(sandbox) => Screen::Sandbox(sandbox),
+        }
+    }
 }
 
 fn seed_or_random(seed: u64) -> u64 {
@@ -109,9 +140,16 @@ fn join(settings: &Settings, args: &Args) -> Result<Game, String> {
     Game::connect(resolve(&settings.server)?, settings, None, args.lookahead, args.net_overlay)
 }
 
-fn solo(settings: &Settings, args: &Args) -> Result<Game, String> {
-    let (server, addr) = Solo::start(&settings.preset, seed_or_random(args.seed))?;
-    Game::connect(addr, settings, Some(server), args.lookahead, args.net_overlay)
+/// `--solo <world> [--set key=value ...]`: the settings file is left alone.
+fn solo(settings: &Settings, args: &Args, world: &str) -> Result<Started, String> {
+    let mut settings = settings.clone();
+    settings.preset = world.to_string();
+    let params = settings.params.entry(world.to_string()).or_default();
+    for setting in &args.set {
+        let (key, value) = gsim_server::scenario::parse_setting(setting)?;
+        params.insert(key, value);
+    }
+    menu::launch(&settings, seed_or_random(args.seed), args.lookahead, args.net_overlay)
 }
 
 async fn run(args: Args, mut settings: Settings) {
@@ -122,19 +160,18 @@ async fn run(args: Args, mut settings: Settings) {
     // install a pending update, so take over the quit request.
     prevent_quit();
     let mut screen = Screen::Menu;
-    let auto = if let Some(server) = &args.connect {
+    let mut single = SinglePlayer::default();
+    if let Some(server) = &args.connect {
         settings.server = server.clone();
-        Some(join(&settings, &args))
-    } else if let Some(preset) = &args.solo {
-        settings.preset = preset.clone();
-        Some(solo(&settings, &args))
-    } else {
-        None
-    };
-    match auto {
-        Some(Ok(g)) => screen = Screen::Game(Box::new(g)),
-        Some(Err(e)) => message = e,
-        None => {}
+        match join(&settings, &args) {
+            Ok(g) => screen = Screen::Game(Box::new(g)),
+            Err(e) => message = e,
+        }
+    } else if let Some(world) = &args.solo {
+        match solo(&settings, &args, world) {
+            Ok(started) => screen = started.into(),
+            Err(e) => message = e,
+        }
     }
     let started = get_time();
 
@@ -155,15 +192,56 @@ async fn run(args: Args, mut settings: Settings) {
         }
         let mut next: Option<Screen> = None;
         let mut quit = false;
+        let outcome = match &mut screen {
+            Screen::Game(game) => game.frame(&mut settings),
+            Screen::Sandbox(sandbox) => sandbox.frame(&mut settings),
+            _ => Outcome::Continue,
+        };
+        match outcome {
+            Outcome::Continue => {}
+            Outcome::ToMenu(msg) => {
+                message = msg;
+                next = Some(Screen::Menu);
+            }
+            Outcome::Quit => quit = true,
+        }
         match &mut screen {
-            Screen::Game(game) => match game.frame(&mut settings) {
-                Outcome::Continue => {}
-                Outcome::ToMenu(msg) => {
-                    message = msg;
-                    next = Some(Screen::Menu);
+            Screen::Game(_) | Screen::Sandbox(_) => {}
+            Screen::Single => {
+                clear_background(style::BACKGROUND);
+                let factor = settings.ui_factor();
+                let mut choice = Choice::Stay;
+                egui_macroquad::ui(|ctx| {
+                    ctx.set_zoom_factor(factor);
+                    choice = single.show(ctx, &mut settings);
+                    if !message.is_empty() {
+                        egui::Area::new(egui::Id::new("error")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -30.0]).show(ctx, |ui| {
+                            ui.colored_label(egui::Color32::from_rgb(255, 140, 120), &message);
+                        });
+                    }
+                });
+                egui_macroquad::draw();
+                match choice {
+                    Choice::Stay => {}
+                    Choice::Back => {
+                        settings.save();
+                        message.clear();
+                        next = Some(Screen::Menu);
+                    }
+                    Choice::Start => {
+                        settings.name = settings.name.trim().to_string();
+                        settings.save();
+                        let seed = seed_or_random(if single.seed() != 0 { single.seed() } else { args.seed });
+                        match menu::launch(&settings, seed, args.lookahead, args.net_overlay) {
+                            Ok(started) => {
+                                message.clear();
+                                next = Some(started.into());
+                            }
+                            Err(e) => message = e,
+                        }
+                    }
                 }
-                Outcome::Quit => quit = true,
-            },
+            }
             Screen::Menu => {
                 // Between games is the one moment a restart costs the player nothing.
                 let update = updater.status();
@@ -192,21 +270,15 @@ async fn run(args: Args, mut settings: Settings) {
                                 ui.label("UI size");
                                 ui.add(egui::Slider::new(&mut settings.ui_scale, 0.6..=2.5));
                                 ui.end_row();
-                                ui.label("Solo world");
-                                egui::ComboBox::from_id_salt("preset").selected_text(settings.preset.clone()).show_ui(ui, |ui| {
-                                    for (name, about) in PRESETS {
-                                        ui.selectable_value(&mut settings.preset, name.to_string(), *name).on_hover_text(*about);
-                                    }
-                                });
-                                ui.end_row();
                             });
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 if ui.button("Join server").clicked() {
                                     action = Some(join(&settings, &args));
                                 }
-                                if ui.button("Play solo").clicked() {
-                                    action = Some(solo(&settings, &args));
+                                if ui.button("Single player").clicked() {
+                                    message.clear();
+                                    next = Some(Screen::Single);
                                 }
                                 if ui.button("Quit").clicked() {
                                     quit = true;

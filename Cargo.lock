@@ -841,7 +841,9 @@ dependencies = [
  "gsim-core",
  "gsim-proto",
  "gsim-server",
+ "gsim-swarm",
  "macroquad",
+ "rayon",
  "self-replace",
  "tar",
  "ureq",
@@ -890,6 +892,14 @@ dependencies = [
  "gsim-proto",
  "renet",
  "renet_netcode",
+]
+
+[[package]]
+name = "gsim-swarm"
+version = "0.1.0"
+dependencies = [
+ "gsim-core",
+ "rayon",
 ]
 
 [[package]]

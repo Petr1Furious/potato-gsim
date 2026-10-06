@@ -8,12 +8,15 @@ running 86 400x faster than real time.
 ```sh
 # Server (default: 1000-body random field, 10-minute rounds, UDP 27777)
 cargo run --release -p gsim-server -- --preset random
-cargo run --release -p gsim-server -- --list-presets
+cargo run --release -p gsim-server -- --preset disc --set count=400 --set spread=80Gm
+cargo run --release -p gsim-server -- --list-presets     # every preset with its parameters
 
 # Client (macOS / Linux / Windows; no extra system packages needed on macOS)
 cargo run --release -p gsim-client                       # menu
 cargo run --release -p gsim-client -- --connect my.host  # join directly
-cargo run --release -p gsim-client -- --solo solar       # offline, in-process server
+cargo run --release -p gsim-client -- --solo solar       # single player, in-process server
+cargo run --release -p gsim-client -- --solo galaxy --set count=300000   # large-scale sandbox
+cargo run --release -p gsim-client -- --bench            # how many bodies this machine holds
 cargo run --release -p gsim-client -- --selftest         # check this machine can stay in sync
 cargo run --release -p gsim-client -- --gallery          # how bodies of each mass are drawn
 
@@ -40,8 +43,13 @@ mkdir -p data && docker compose up -d --build   # builds the image, runs it on 2
 docker logs -f potato-gsim          # one status line every 10 s
 ```
 
-Settings are environment variables in `docker-compose.yml` (`GSIM_PRESET`, `GSIM_SEED`,
-`GSIM_RANDOM_COUNT`, `GSIM_ROUND_SECONDS`, `GSIM_TIME_SCALE`, ...) or flags (`gsim-server --help`).
+Settings are environment variables in `docker-compose.yml` (`GSIM_PRESET`, `GSIM_SET`,
+`GSIM_SEED`, `GSIM_ROUND_SECONDS`, `GSIM_TIME_SCALE`, ...) or flags (`gsim-server --help`).
+
+Every preset has named parameters (body count, sizes, masses, ...): `--list-presets` prints
+them with their defaults and ranges. Set them with `--set key=value` (repeatable) or
+`GSIM_SET="count=400, spread=80Gm"`; lengths take the units `km`, `Mm`, `Gm` and `Tm`. A key
+the preset does not have, or a value outside its range, stops the server at start-up.
 
 ## The game
 
@@ -106,7 +114,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left; set the round length |
 | `/tp [PLAYER] PLAYER\|BODY\|~DX ~DY\|X Y` | Teleport next to a player, near a body, or to coordinates in metres (`~` is relative, units like `5Gm` work) |
 | `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body |
-| `/preset NAME [SEED]`, `/timescale X` | New round in another world or at another time scale |
+| `/preset NAME [KEY=VALUE ...]`, `/timescale X` | New round in another world (e.g. `/preset random count=300 seed=7`; what is not set returns to its default) or at another time scale |
 | `/target BODY` | Move the objective |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |
@@ -157,6 +165,32 @@ everything else, fixed summation order, and integer fuel. `clippy.toml` in `gsim
 the rest. Every binary carries a golden hash of a reference scene and refuses to play if its
 own result differs.
 
+## Single player
+
+**Single player** in the menu lists every world with sliders for its parameters (the same
+ones `--set` and `/preset` take) and a seed. There are two kinds:
+
+- **Exact** worlds are the multiplayer presets, run by a server inside the client: rounds,
+  the orbit objective, shells, every command.
+- **Large scale** worlds (`galaxy`, `collision`, `cloud`) are run by a separate engine,
+  `gsim-swarm`, that trades exactness for size: hundreds of thousands of bodies at 60 steps
+  per second. It is a sandbox, with no score and no shells. Space pauses, holding `<` or `>` makes each
+  step cover less or more time (shown as what one second is worth, e.g. `1 s = 6 h`; there is
+  no limit, and very long steps are as crude as they sound), `C` switches what colour shows (mass, speed, origin), and
+  `/tp`, `/orbit`, `/god`, `/fuel`, `/kill`, `/speed` and `/accuracy` work from the chat line.
+  The first time a large world is selected the client measures the machine and suggests a
+  body count; if a step still takes too long, time slows down rather than the picture.
+
+How the large-scale engine gets its speed: bodies are kept sorted along a Z-order curve and
+grouped into a tree; each group of up to 64 neighbours gathers one list of what acts on it
+(nearby bodies one by one, distant cells as a point mass plus quadrupole) and evaluates it
+with AVX-512, AVX2 or NEON, sixteen, eight or four pairs per instruction. Positions are
+double precision; forces are single precision relative to each group. Overlapping bodies
+merge. Nothing in it is reproducible between machines, which is why it is single player only.
+The ship is the same test particle as in multiplayer, integrated against the few hundred
+bodies and lumps that matter where it is; its predicted path comes from simulating that
+small neighbourhood ahead with the exact engine.
+
 ## Layout
 
 | Crate | Purpose |
@@ -165,6 +199,7 @@ own result differs.
 | `gsim-proto` | Wire messages (postcard) and channel layout |
 | `gsim-server` | Authoritative world, presets, UDP driver, `gsim-server` binary |
 | `gsim-client-core` | Headless client: clock sync, replicas with per-ship rollback, `gsim-bot` |
+| `gsim-swarm` | Fast approximate engine for very large single-player worlds |
 | `gsim-client` | macroquad + egui game client |
 | `gsim-testkit` | Virtual-time network lab (latency, jitter, loss) and netcode tests |
 
@@ -179,6 +214,9 @@ cargo test --workspace
   bit for bit, golden self-test.
 - `gsim-server`: every preset runs; the solar system keeps all orbits (and the Moon) for two
   simulated years; the figure-eight returns to its start; the runaway pair accelerates.
+- `gsim-swarm`: forces against exact sums on every instruction set the machine has, a
+  three-year orbit, merges conserving mass and momentum, every scenario at the limits of its
+  parameters, ship spawning, crashing and indestructibility, pacing and pausing.
 - `gsim-testkit`: server plus clients over simulated links (clean, lossy and jittery, 500 ms
   round trip, late join, forced divergence and resync, shell kills, arming, crashes, orbit
   capture, round rollover into a new world).

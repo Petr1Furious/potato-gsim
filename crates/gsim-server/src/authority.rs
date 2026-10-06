@@ -2,7 +2,7 @@
 //! current tick and the sender is told which tick that was.
 
 use crate::rng::Rng;
-use crate::scenario::{self, RandomOpts, Scenario};
+use crate::scenario::{self, Params, Scenario};
 use crate::state::ServerState;
 use gsim_core::objective::orbit_status;
 use gsim_core::particle::{step_particle, swept_min_dist2};
@@ -103,7 +103,7 @@ pub struct Authority {
     kicks: Vec<ConnId>,
     /// Used to restart the same world when no generator is configured.
     initial: Scenario,
-    generator: Option<(String, RandomOpts)>,
+    generator: Option<(String, Params)>,
     round: u32,
     /// 0 = endless.
     round_ticks: Tick,
@@ -731,7 +731,7 @@ impl Authority {
 /// Rounds and the orbit objective.
 impl Authority {
     /// Enable timed rounds. `generator` builds each new world (`None`: replay the first one).
-    pub fn set_rounds(&mut self, round_ticks: Tick, intermission_ticks: Tick, generator: Option<(String, RandomOpts)>) {
+    pub fn set_rounds(&mut self, round_ticks: Tick, intermission_ticks: Tick, generator: Option<(String, Params)>) {
         self.round_ticks = round_ticks;
         self.intermission_ticks = intermission_ticks;
         self.generator = generator;
@@ -806,7 +806,7 @@ impl Authority {
         let tick = self.tick();
         let seed = self.next_seed.take().unwrap_or_else(|| self.rng.u64());
         let sc = match &self.generator {
-            Some((preset, opts)) => scenario::build(preset, seed, opts).unwrap_or_else(|_| self.initial.clone()),
+            Some((preset, params)) => scenario::build(preset, seed, params).unwrap_or_else(|_| self.initial.clone()),
             None => self.initial.clone(),
         };
         self.massive = MassiveState::from_bodies(&sc.bodies);

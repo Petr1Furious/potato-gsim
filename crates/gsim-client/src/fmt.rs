@@ -27,3 +27,27 @@ pub fn distance_round(m: f64) -> String {
         _ => s,
     }
 }
+
+/// A length of time, in the largest unit that keeps the number readable.
+pub fn span(seconds: f64) -> String {
+    let units = [(1.0, "s", 0), (60.0, "min", 1), (3600.0, "h", 1), (86_400.0, "d", 1), (31_557_600.0, "y", 1)];
+    let (scale, unit, digits) = units.iter().rev().find(|u| seconds >= u.0).unwrap_or(&units[0]);
+    let value = seconds / scale;
+    // Whole numbers read better without a trailing ".0".
+    if (value - value.round()).abs() < 0.05 { format!("{value:.0} {unit}") } else { format!("{value:.digits$} {unit}", digits = *digits as usize) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spans() {
+        assert_eq!(span(86_400.0), "1 d");
+        assert_eq!(span(172_800.0), "2 d");
+        assert_eq!(span(5400.0), "1.5 h");
+        assert_eq!(span(45.0), "45 s");
+        assert_eq!(span(3600.0), "1 h");
+        assert_eq!(span(900.0), "15 min");
+    }
+}
