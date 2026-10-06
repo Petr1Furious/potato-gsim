@@ -222,11 +222,11 @@ impl Gpu {
         ctx.delete_pipeline(self.blur);
     }
 
-    /// Draw `vertices` (positions on a `buffer` sized grid) as squares `dot` physical pixels
-    /// across, stretched over `dest` on screen. The glow comes from an image one `block`-th
+    /// Draw `vertices` (positions on a `buffer` sized grid whose cells are `dot` physical
+    /// pixels) as squares `span` cells across, stretched over `dest` on screen. The glow comes from an image one `block`-th
     /// the size of the grid; `exposure` and `glow` scale the two before tone mapping.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, background: Color) {
+    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, span: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, background: Color) {
         let ctx = context();
         let (w, h) = ((buffer.0 as u32 * dot).clamp(16, 16_384), (buffer.1 as u32 * dot).clamp(16, 16_384));
         // The small image is a whole number of blocks, so it reaches a little past the edge.
@@ -244,7 +244,7 @@ impl Gpu {
         let points = miniquad::Bindings { vertex_buffers: vec![self.vertices], index_buffer: self.indices, images: vec![] };
         // The same points twice: full size, and as single pixels of the small image, where
         // each pixel then holds the light of a whole block of the large one.
-        for (target, size, grid) in [(image, dot as f32, (buffer.0 as f32, buffer.1 as f32)), (halo, 1.0, covered)] {
+        for (target, size, grid) in [(image, (dot * span) as f32, (buffer.0 as f32, buffer.1 as f32)), (halo, 1.0, covered)] {
             ctx.begin_pass(Some(target.pass), PassAction::clear_color(0.0, 0.0, 0.0, 0.0));
             ctx.apply_pipeline(&self.points);
             ctx.apply_bindings(&points);

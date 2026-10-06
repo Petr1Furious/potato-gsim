@@ -26,7 +26,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: false, auto_zoom: true, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: true, auto_zoom: true, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -58,7 +58,7 @@ impl Settings {
                 "fullscreen" => s.fullscreen = v == "1",
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
-                "gpu" => s.gpu = v == "1",
+                "gpu_drawing" => s.gpu = v != "0",
                 "auto_zoom" => s.auto_zoom = v != "0",
                 key => {
                     // `param.<world>.<key>` and `measured.<world>`
@@ -88,7 +88,7 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut text = format!(
-            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu={}\nauto_zoom={}\n",
+            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu_drawing={}\nauto_zoom={}\n",
             self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.gpu as u8, self.auto_zoom as u8
         );
         for (world, params) in &self.params {

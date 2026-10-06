@@ -2,6 +2,7 @@
 //! `gsim-client-core`; this file only looks at the replica and draws it.
 
 use crate::chat::{self, ChatBox, Mention};
+use crate::density::{ColorMode, Density, Flash};
 use crate::fmt;
 use crate::style::{self, Rank};
 use crate::predictor::{Job, Predictor};
@@ -149,6 +150,12 @@ pub struct Game {
     predictor: Predictor,
     meter: fmt::Meter,
     lookahead_ticks: u32,
+    density: Density,
+    /// What the colour of the small bodies tells.
+    color: ColorMode,
+    /// Recent merges: position and velocity of the survivor, mass absorbed, tick.
+    flashes: Vec<(f64, f64, f64, f64, f32, Tick)>,
+    flash_tick: Tick,
     /// The round the selection, trails and camera belong to.
     round: Option<u32>,
     /// Automatic zooming waits until this time after the player zoomed by hand.
@@ -208,6 +215,14 @@ impl Game {
             predictor: Predictor::new(),
             meter: fmt::Meter::default(),
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
+            density: {
+                let mut density = Density::new();
+                density.sparse = true;
+                density
+            },
+            color: ColorMode::Mass,
+            flashes: Vec::new(),
+            flash_tick: 0,
             round: None,
             zoom_hold: 0.0,
             status: None,
@@ -256,6 +271,10 @@ impl Game {
             }
             if is_key_pressed(KeyCode::P) {
                 self.show_prediction = !self.show_prediction;
+            }
+            if is_key_pressed(KeyCode::C) {
+                self.color = if self.color == ColorMode::Mass { ColorMode::Speed } else { ColorMode::Mass };
+                self.say(&format!("Colour shows {}", self.color.name()));
             }
             if is_key_pressed(KeyCode::T) || is_key_pressed(KeyCode::Enter) {
                 self.chat.open_with("");
@@ -364,6 +383,7 @@ impl Game {
             self.watch = None;
             self.frames.clear();
             self.last_frame_tick = 0;
+            self.flashes.clear();
             self.predictor.clear();
             self.offset = (0.0, 0.0);
             self.zoomed_for_ship = false;
@@ -513,6 +533,50 @@ impl Game {
 
         let mut labels = style::Labels::default();
 
+        // --- bodies as light ---------------------------------------------------------------------
+        // Bodies too small on screen to have a shape are drawn as glowing points, the way the
+        // large-scale worlds draw theirs; the rest (and negative masses, which have their own
+        // colours) get their discs below.
+        self.density.set_gpu(settings.gpu);
+        let mut scene = gsim_swarm::Bodies::default();
+        for j in (0..row.x.len() as u32).filter(|j| alive(*j) && row.props.mass[*j as usize] > 0.0) {
+            let b = body(j);
+            scene.push(b.x, b.y, b.vx, b.vy, row.props.mass[j as usize], row.props.radius[j as usize], 0);
+            *scene.id.last_mut().unwrap() = j;
+        }
+        // Merges flash where they happened.
+        for t in self.flash_tick.max(world.head.saturating_sub(60))..world.head {
+            let Some(r) = world.eph.get(t) else { continue };
+            for e in &r.merges {
+                if let Some(s) = e.survivor.map(|s| s as usize) {
+                    let mass: f64 = e.absorbed.iter().map(|a| r.props.mass[*a as usize].abs()).sum();
+                    self.flashes.push((r.x[s], r.y[s], r.vx[s], r.vy[s], mass as f32, t));
+                }
+            }
+        }
+        self.flash_tick = world.head;
+        self.flashes.retain(|f| tick_f - (f.5 as f64) < FLASH_TICKS);
+        let flashes: Vec<Flash> = self
+            .flashes
+            .iter()
+            .filter(|f| tick_f >= f.5 as f64)
+            .map(|f| {
+                let age = tick_f - f.5 as f64;
+                let moved = age * world.rules.dt;
+                Flash { x: f.0 + f.2 * moved, y: f.1 + f.3 * moved, life: (1.0 - age / FLASH_TICKS) as f32, mass: f.4 }
+            })
+            .collect();
+        let mut shaped = vec![false; row.x.len()];
+        for big in self.density.project(&scene, &view, 0.0, self.color) {
+            shaped[big.id as usize] = true;
+        }
+        self.density.present(&flashes);
+        if let Some(why) = self.density.take_notice() {
+            self.status = Some((format!("Unable to draw on the graphics card: {why}"), get_time() + 6.0));
+            settings.gpu = false;
+            settings.save();
+        }
+
         // --- trails ----------------------------------------------------------------------------
         let sample_tick = world.head / TRAIL_EVERY_TICKS * TRAIL_EVERY_TICKS;
         if sample_tick != self.last_frame_tick {
@@ -559,7 +623,9 @@ impl Game {
             } else {
                 1.0
             };
-            style::body(s, r_px, mass, j, fade, ui);
+            if mass < 0.0 || shaped[j as usize] {
+                style::body(s, r_px, mass, j, fade, ui);
+            }
             if let Some(name) = world.names.get(&j).filter(|_| self.show_names && self.selected != Some(j)) {
                 let size = LABEL * ui;
                 let below = s.1 + r_px.max(1.1 * ui).min(4000.0) + size;
@@ -888,6 +954,7 @@ impl Game {
         // Wheel movement in notches: raw units differ per platform, as for zooming.
         let chat_wheel = wheel * settings.zoom_speed;
         let mut options = settings.clone();
+        let mut color = self.color;
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
@@ -1027,6 +1094,13 @@ impl Game {
                         style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
                         style::toggle(ui, &mut net_dbg, "Network details", "F3");
                         style::toggle(ui, &mut names, "Body names", "N");
+                        ui.horizontal(|ui| {
+                            ui.label("Colour shows");
+                            for mode in [ColorMode::Mass, ColorMode::Speed] {
+                                ui.selectable_value(&mut color, mode, mode.name());
+                            }
+                            ui.label(RichText::new("C").small().color(dim));
+                        });
                         crate::options::show(ui, &mut options);
                         style::section(ui, "CONTROLS");
                         style::key_row(ui, "Thrust", "W / UP");
@@ -1081,6 +1155,7 @@ impl Game {
         self.show_shell_prediction = shell_pred;
         self.follow_selection = follow_sel;
         self.show_names = names;
+        self.color = color;
         self.show_net = net_dbg;
         self.menu_open = menu;
         self.ui_has_pointer = has_ptr;
@@ -1104,6 +1179,8 @@ impl Game {
 
 /// Seconds automatic zooming keeps out of the way after the player used the wheel.
 pub(crate) const ZOOM_HOLD: f64 = 2.5;
+/// How long a merge flash lasts, in ticks.
+const FLASH_TICKS: f64 = 36.0;
 
 /// With a body selected and in the picture, keep the ship in it too: zoom out as the ship
 /// nears the edge (or was put somewhere far away), back in when it is close to the body.

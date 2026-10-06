@@ -81,6 +81,9 @@ pub struct Density {
     pool: rayon::ThreadPool,
     gpu: Option<Gpu>,
     gpu_wanted: bool,
+    /// A world of a few thousand bodies, where each one should be easy to see: dots are
+    /// larger and brighter and glow more than in a crowd of hundreds of thousands.
+    pub sparse: bool,
     /// Physical pixels across one body when the graphics card draws.
     dot: u32,
     notice: Option<String>,
@@ -149,6 +152,7 @@ impl Density {
             pool,
             gpu: None,
             gpu_wanted: false,
+            sparse: false,
             dot: 1,
             notice: None,
             vertices: Vec::new(),
@@ -171,6 +175,16 @@ impl Density {
             // The rasteriser's own images are made when it next draws.
             self.acc = Vec::new();
         }
+    }
+
+    /// How bright a typical lit pixel should come out, before tone mapping.
+    fn brightness(&self) -> f32 {
+        if self.sparse { 3.0 } else { 0.5 }
+    }
+
+    /// How much stronger than usual the glow is.
+    fn halo(&self) -> f32 {
+        if self.sparse { 2.5 } else { 1.0 }
     }
 
     /// Images for drawing without the graphics card, sized for the current buffer.
@@ -207,6 +221,7 @@ impl Density {
         let ppm = 1.0 / (view.mpp * scale as f64);
         let (x0, y0) = (view.cx - 0.5 * screen_width() as f64 * view.mpp, view.cy - 0.5 * screen_height() as f64 * view.mpp);
         let big_r = BIG_PX * scale;
+        let faintest = if self.sparse { 0.5 } else { 0.02 };
         let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
         let (pix, tint) = (&mut self.pix, &mut self.tint);
         let mut big: Vec<Big> = self.pool.install(|| {
@@ -245,7 +260,7 @@ impl Density {
                         };
                         // A dot's light grows with its area until it fills a pixel; heavier
                         // bodies shine a little more so they stand out when zoomed far out.
-                        let area = (r * r * std::f32::consts::PI).clamp(0.02, 1.0);
+                        let area = (r * r * std::f32::consts::PI).clamp(faintest, 1.0);
                         let weight = area.sqrt() * (0.35 + 0.65 * ((mass.log10() - 19.0) / 8.0).clamp(0.0, 1.0));
                         *t = ((shade * (PALETTE - 1) as f32 + 0.5) as u8, weight);
                     }
@@ -292,18 +307,25 @@ impl Density {
         // Each band of rows is owned by one task, which picks its bodies out of the list.
         let bands = self.pool.current_num_threads();
         let rows = h.div_ceil(bands).max(1);
+        let span: u32 = if self.sparse { 2 } else { 1 };
         let (pix, tint) = (&self.pix, &self.tint);
         self.pool.install(|| {
             self.acc.par_chunks_mut(rows * w).enumerate().for_each(|(band, acc)| {
                 acc.fill([0.0; 4]);
                 let (first, last) = ((band * rows) as u32, (band * rows + acc.len() / w) as u32);
                 for (p, (shade, weight)) in pix.iter().zip(tint) {
-                    let y = p >> 16;
-                    if *p != NOWHERE && y >= first && y < last {
-                        let at = &mut acc[(y - first) as usize * w + (p & 0xFFFF) as usize];
-                        let c = &colors[*shade as usize];
-                        for k in 0..3 {
-                            at[k] += c[k] * weight;
+                    let (x, y) = ((p & 0xFFFF) as usize, p >> 16);
+                    if *p == NOWHERE || y + span <= first || y >= last {
+                        continue;
+                    }
+                    let c = &colors[*shade as usize];
+                    // A dot may straddle two bands; each band lights its own rows of it.
+                    for row in y.max(first)..(y + span).min(last) {
+                        let start = (row - first) as usize * w + x;
+                        for at in &mut acc[start..start + (span as usize).min(w - x)] {
+                            for k in 0..3 {
+                                at[k] += c[k] * weight;
+                            }
                         }
                     }
                 }
@@ -364,7 +386,7 @@ impl Density {
         // Tone mapping. Exposure follows the typical brightness of lit pixels, smoothly.
         let exposure = self.exposure;
         let glow = &self.glow;
-        let gain = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * exposure;
+        let gain = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * exposure * self.halo();
         let bg = [style::BACKGROUND.r * 255.0, style::BACKGROUND.g * 255.0, style::BACKGROUND.b * 255.0];
         let span = [255.0 - bg[0], 255.0 - bg[1], 255.0 - bg[2]];
         let across = &self.across;
@@ -411,7 +433,7 @@ impl Density {
         });
         if lit > 0 {
             // A typical lit pixel lands a third of the way up the scale.
-            let wanted = (0.5 / (light / lit as f32 / 3.0)).clamp(0.05, 60.0);
+            let wanted = (self.brightness() / (light / lit as f32 / 3.0)).clamp(0.05, 200.0);
             self.exposure += 0.08 * (wanted - self.exposure);
         }
         match &self.texture {
@@ -438,6 +460,8 @@ impl Density {
         let n = self.pix.len();
         self.vertices.resize(n, [0.0; 5]);
         let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
+        let span: u32 = if self.sparse { 2 } else { 1 };
+        let centre = 0.5 * span as f32;
         let (pix, tint, vertices) = (&self.pix, &self.tint, &mut self.vertices);
         let grid = self.pool.install(|| {
             vertices
@@ -454,7 +478,7 @@ impl Density {
                         }
                         let (x, y) = ((p & 0xFFFF) as usize, (p >> 16) as usize);
                         let c = &colors[*shade as usize];
-                        *v = [x as f32 + 0.5, y as f32 + 0.5, c[0] * weight, c[1] * weight, c[2] * weight];
+                        *v = [x as f32 + centre, y as f32 + centre, c[0] * weight, c[1] * weight, c[2] * weight];
                         let cell = &mut grid[(y / CELL) * cw + x / CELL];
                         cell.0 += 1;
                         cell.1 += (c[0] + c[1] + c[2]) * weight;
@@ -472,11 +496,11 @@ impl Density {
         // Bodies in a block light at most as many pixels as the block has.
         let (lit, light) = grid.iter().fold((0u32, 0.0f32), |s, c| (s.0 + c.0.min((CELL * CELL) as u32), s.1 + c.1));
         if lit > 0 {
-            let wanted = (0.5 / (light / lit as f32 / 3.0)).clamp(0.05, 60.0);
+            let wanted = (self.brightness() / (light / lit as f32 / 3.0)).clamp(0.05, 200.0);
             self.exposure += 0.08 * (wanted - self.exposure);
         }
-        let glow = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * self.exposure;
-        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, style::BACKGROUND);
+        let glow = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * self.exposure * self.halo();
+        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, span, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, style::BACKGROUND);
         let (x0, y0, ppm) = self.corner;
         for f in flashes {
             let (fx, fy) = (((f.x - x0) * ppm) as f32 * scale, ((f.y - y0) * ppm) as f32 * scale);

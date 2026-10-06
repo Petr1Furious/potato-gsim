@@ -35,9 +35,9 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings) {
     );
     style::section(ui, "GRAPHICS");
     ui.checkbox(&mut settings.gpu, "GPU drawing").on_hover_text(
-        "Only affects large-scale worlds. Off: the picture of the bodies is computed on processor threads. \
-         On: the graphics card does it, which leaves those threads to the simulation (more bodies at full \
-         speed) and draws at the screen's full resolution. If the card cannot do it, the game says so and \
-         switches this back off.",
+        "On: the graphics card draws the glowing picture of the small bodies, at the screen's full \
+         resolution, and the processor threads that would have drawn it go to the simulation (which in \
+         large-scale worlds means more bodies at full speed). Off: those threads draw it. If the card \
+         cannot do it, the game says so and switches this off.",
     );
 }

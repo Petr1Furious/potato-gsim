@@ -178,9 +178,9 @@ ones `--set` and `/preset` take) and a seed. There are two kinds:
   step cover less or more time (shown as what one second is worth, e.g. `1 s = 6 h`; there is
   no limit, and very long steps are as crude as they sound), `C` switches what colour shows (mass, speed, origin), and
   `/tp`, `/orbit`, `/god`, `/fuel`, `/kill`, `/speed` and `/accuracy` work from the chat line.
-  "Draw on the graphics card" in the Esc menu (or `--gpu`) moves the picture from
-  processor threads to the GPU, leaving more cores to the simulation; it is off by default
-  and switches itself back off where the card cannot do it.
+  The glowing picture of the small bodies is drawn by the graphics card, in every kind of
+  world; "GPU drawing" in the settings (or `--no-gpu`) moves it to processor threads, and it
+  switches itself off where the card cannot do it.
   The first time a large world is selected the client measures the machine and suggests a
   body count; if a step still takes too long, time slows down rather than the picture.
 
