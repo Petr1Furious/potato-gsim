@@ -78,8 +78,11 @@ fn main() {
         println!("self-test: computed {got:#018x}, expected {:#018x} -> {}", gsim_core::selftest::GOLDEN, if ok { "OK" } else { "MISMATCH" });
         std::process::exit(if ok { 0 } else { 2 });
     }
+    // One thread per core in total, not one per core for the simulation alone: the picture
+    // needs some too, and fighting over them costs more frames than it gains steps.
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(density::simulation_threads()).thread_name(|i| format!("gsim-sim-{i}")).build_global();
     if args.bench {
-        println!("kernels: {}", gsim_swarm::Level::detect().name());
+        println!("kernels: {}, {} simulation threads", gsim_swarm::Level::detect().name(), rayon::current_num_threads());
         for sc in gsim_swarm::scenario::SCENARIOS {
             match gsim_swarm::bench::suggest(sc.name, &Default::default(), 1000.0 / 60.0) {
                 Ok(count) => println!("{:10} about {count} bodies at 60 steps per second", sc.name),

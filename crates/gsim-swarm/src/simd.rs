@@ -27,6 +27,7 @@ pub trait Simd: Copy {
     unsafe fn any_inside(self, hi: Self) -> bool;
 }
 
+#[cfg(target_arch = "x86_64")]
 /// One Newton step on an estimate `y` of `1 / sqrt(x)`: `y * (1.5 - 0.5 * x * y * y)`.
 #[inline(always)]
 unsafe fn refine<V: Simd>(x: V, y: V) -> V {
@@ -198,7 +199,7 @@ pub mod x86 {
 
 #[cfg(target_arch = "aarch64")]
 pub mod arm {
-    use super::{refine, Simd};
+    use super::Simd;
     use std::arch::aarch64::*;
 
     #[derive(Clone, Copy)]
@@ -236,9 +237,10 @@ pub mod arm {
         }
         #[inline(always)]
         unsafe fn rsqrt(self) -> Self {
-            // The estimate is only good to 8 bits: refine twice.
-            let y = refine(self, Neon(vrsqrteq_f32(self.0)));
-            refine(self, y)
+            // The estimate is good to 8 bits; one Newton step (which has its own instruction)
+            // doubles that, on a par with the other instruction sets.
+            let y = vrsqrteq_f32(self.0);
+            Neon(vmulq_f32(y, vrsqrtsq_f32(vmulq_f32(self.0, y), y)))
         }
         #[inline(always)]
         unsafe fn sum(self) -> f32 {

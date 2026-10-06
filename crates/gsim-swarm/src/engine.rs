@@ -230,6 +230,10 @@ struct Shared<T>(*mut T);
 unsafe impl<T> Sync for Shared<T> {}
 unsafe impl<T> Send for Shared<T> {}
 
+/// Smallest piece of a simple pass over the bodies worth giving to another thread: these
+/// passes move memory more than they compute, and waking a thread costs tens of microseconds.
+const GRAIN: usize = 32_768;
+
 /// Interleave the low 16 bits of `v` with zeros.
 fn spread(v: u32) -> u32 {
     let mut x = v & 0xFFFF;
@@ -243,8 +247,9 @@ fn spread(v: u32) -> u32 {
 fn radix_sort(keys: &mut Vec<u64>, tmp: &mut Vec<u64>) {
     let n = keys.len();
     tmp.resize(n, 0);
-    // More pieces than threads, so one thread that is busy elsewhere does not hold up a pass.
-    let chunk = n.div_ceil(rayon::current_num_threads().max(1) * 8).max(4096);
+    // More pieces than threads, so one thread that is busy elsewhere does not hold up a
+    // pass; but never pieces so small that handing them out costs more than doing them.
+    let chunk = n.div_ceil(rayon::current_num_threads().max(1) * 4).max(GRAIN);
     for pass in 0..3 {
         let shift = 32 + 11 * pass;
         let hists: Vec<Vec<u32>> = keys
@@ -284,7 +289,7 @@ fn permute<T: Copy + Send + Sync + Default>(v: &mut Vec<T>, scratch: &mut Vec<T>
     scratch.clear();
     scratch.resize(keys.len(), T::default());
     let src: &[T] = v;
-    scratch.par_iter_mut().zip(keys.par_iter()).for_each(|(o, k)| *o = src[(*k & 0xFFFF_FFFF) as usize]);
+    scratch.par_iter_mut().zip(keys.par_iter()).with_min_len(GRAIN).for_each(|(o, k)| *o = src[(*k & 0xFFFF_FFFF) as usize]);
     std::mem::swap(v, scratch);
 }
 
@@ -422,7 +427,7 @@ impl Engine {
         let t0 = std::time::Instant::now();
         let half = 0.5 * dt;
         let kick_drift = |v: &mut Vec<f64>, x: &mut Vec<f64>, a: &Vec<f32>| {
-            v.par_iter_mut().zip(x.par_iter_mut()).zip(a.par_iter()).for_each(|((v, x), a)| {
+            v.par_iter_mut().zip(x.par_iter_mut()).zip(a.par_iter()).with_min_len(GRAIN).for_each(|((v, x), a)| {
                 *v += *a as f64 * half;
                 *x += *v * dt;
             });
@@ -437,7 +442,7 @@ impl Engine {
     fn sort(&mut self, b: &mut Bodies) {
         let n = b.len();
         let span = |v: &Vec<f64>| {
-            v.par_iter().fold(|| (f64::MAX, f64::MIN), |a, v| (a.0.min(*v), a.1.max(*v))).reduce(|| (f64::MAX, f64::MIN), |a, b| (a.0.min(b.0), a.1.max(b.1)))
+            v.par_iter().with_min_len(GRAIN).fold(|| (f64::MAX, f64::MIN), |a, v| (a.0.min(*v), a.1.max(*v))).reduce(|| (f64::MAX, f64::MIN), |a, b| (a.0.min(b.0), a.1.max(b.1)))
         };
         let ((min_x, max_x), (min_y, max_y)) = (span(&b.x), span(&b.y));
         self.len_unit = (max_x - min_x).max(max_y - min_y).max(1.0);
@@ -445,8 +450,8 @@ impl Engine {
         let scale = 65534.0 / self.len_unit;
         self.keys.resize(n, 0);
         let (x, y, m) = (&b.x, &b.y, &b.m);
-        let dead = m.par_iter().filter(|m| **m <= 0.0).count();
-        self.keys.par_iter_mut().enumerate().for_each(|(i, k)| {
+        let dead = m.par_iter().with_min_len(GRAIN).filter(|m| **m <= 0.0).count();
+        self.keys.par_iter_mut().enumerate().with_min_len(GRAIN).for_each(|(i, k)| {
             // The dead sort past every live body and are cut off below.
             let cell = if m[i] > 0.0 {
                 let qx = ((x[i] - min_x) * scale) as u32;
@@ -749,8 +754,8 @@ impl Engine {
         std::mem::swap(&mut b.ax, &mut self.acc_x);
         std::mem::swap(&mut b.ay, &mut self.acc_y);
         let half = 0.5 * dt;
-        b.vx.par_iter_mut().zip(b.ax.par_iter()).for_each(|(v, a)| *v += *a as f64 * half);
-        b.vy.par_iter_mut().zip(b.ay.par_iter()).for_each(|(v, a)| *v += *a as f64 * half);
+        b.vx.par_iter_mut().zip(b.ax.par_iter()).with_min_len(GRAIN).for_each(|(v, a)| *v += *a as f64 * half);
+        b.vy.par_iter_mut().zip(b.ay.par_iter()).with_min_len(GRAIN).for_each(|(v, a)| *v += *a as f64 * half);
         let mut merges = Vec::new();
         for &(i, j) in &self.pairs {
             let (i, j) = (i as usize, j as usize);

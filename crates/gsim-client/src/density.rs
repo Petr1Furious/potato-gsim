@@ -62,9 +62,15 @@ pub struct Density {
     h: usize,
     /// Screen pixels per buffer pixel.
     scale: f32,
-    acc: Vec<[f32; 3]>,
-    glow: Vec<[f32; 3]>,
-    blur: Vec<[f32; 3]>,
+    acc: Vec<[f32; 4]>,
+    glow: Vec<[f32; 4]>,
+    blur: Vec<[f32; 4]>,
+    /// Per buffer column: the glow column to its left and how far towards the next it lies.
+    across: Vec<(u32, f32)>,
+    /// From the last projection: palette, and the world position of the buffer's corner with
+    /// buffer pixels per metre.
+    colors: [[f32; 3]; PALETTE],
+    corner: (f64, f64, f64),
     /// Per body: buffer pixel (`y << 16 | x`) or `NOWHERE`, and palette entry with brightness.
     pix: Vec<u32>,
     tint: Vec<(u8, f32)>,
@@ -102,12 +108,21 @@ fn palette(mode: ColorMode) -> [[f32; 3]; PALETTE] {
     out
 }
 
+/// Threads that turn bodies into pixels. They get cores of their own (see
+/// [`simulation_threads`]): sharing them with the simulation halves the frame rate.
+pub fn raster_threads() -> usize {
+    (std::thread::available_parallelism().map_or(4, |n| n.get()) / 3).clamp(2, 6)
+}
+
+/// Threads left for simulating once the rasteriser and the main thread have theirs.
+pub fn simulation_threads() -> usize {
+    let all = std::thread::available_parallelism().map_or(4, |n| n.get());
+    all.saturating_sub(raster_threads() + 1).max(2)
+}
+
 impl Density {
     pub fn new() -> Self {
-        // The simulation already keeps every core busy; a few more threads keep the picture
-        // moving without starving it.
-        let threads = (std::thread::available_parallelism().map_or(4, |n| n.get()) / 3).clamp(2, 6);
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("gsim-raster-{i}")).build().expect("raster threads");
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(raster_threads()).thread_name(|i| format!("gsim-raster-{i}")).build().expect("raster threads");
         Self {
             w: 0,
             h: 0,
@@ -115,6 +130,9 @@ impl Density {
             acc: Vec::new(),
             glow: Vec::new(),
             blur: Vec::new(),
+            across: Vec::new(),
+            colors: [[0.0; 3]; PALETTE],
+            corner: (0.0, 0.0, 1.0),
             pix: Vec::new(),
             tint: Vec::new(),
             image: Image::empty(),
@@ -131,19 +149,25 @@ impl Density {
         let (w, h) = ((sw / scale).ceil() as usize, (sh / scale).ceil() as usize);
         if (w, h) != (self.w, self.h) {
             (self.w, self.h, self.scale) = (w, h, scale);
-            self.acc = vec![[0.0; 3]; w * h];
+            self.acc = vec![[0.0; 4]; w * h];
+            self.across = (0..w)
+                .map(|x| {
+                    let gx = ((x as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
+                    (gx as u32, gx.fract())
+                })
+                .collect();
             let (gw, gh) = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
-            self.glow = vec![[0.0; 3]; gw * gh];
-            self.blur = vec![[0.0; 3]; gw * gh];
+            self.glow = vec![[0.0; 4]; gw * gh];
+            self.blur = vec![[0.0; 4]; gw * gh];
             self.image = Image::gen_image_color(w as u16, h as u16, BLACK);
             self.texture = None;
         }
     }
 
-    /// Rasterise `bodies` as seen through `view`, each moved by `tau` seconds along its
-    /// velocity, and draw the result over the whole screen. Returns the bodies that are
-    /// large enough to be drawn individually.
-    pub fn draw(&mut self, bodies: &Bodies, view: &View, tau: f64, mode: ColorMode, flashes: &[Flash]) -> Vec<Big> {
+    /// First half, and the only one that looks at the bodies (so the only one to do while
+    /// holding them): find where each lands on screen as seen through `view`, moved by `tau`
+    /// seconds along its velocity. Returns the bodies large enough to be drawn individually.
+    pub fn project(&mut self, bodies: &Bodies, view: &View, tau: f64, mode: ColorMode) -> Vec<Big> {
         let started = std::time::Instant::now();
         self.resize();
         let (w, h, scale) = (self.w, self.h, self.scale);
@@ -209,22 +233,35 @@ impl Density {
             big.truncate(MAX_BIG);
         }
 
+        self.colors = colors;
+        self.corner = (x0, y0, ppm);
+        self.last_ms = started.elapsed().as_secs_f32() * 1e3;
+        big
+    }
+
+    /// Second half, which no longer needs the bodies: turn what [`Density::project`] found
+    /// into light, add the glow, tone-map and draw the picture over the whole screen.
+    pub fn present(&mut self, flashes: &[Flash]) {
+        let started = std::time::Instant::now();
+        let (w, h, scale) = (self.w, self.h, self.scale);
+        let (x0, y0, ppm) = self.corner;
+        let colors = self.colors;
         // Each band of rows is owned by one task, which picks its bodies out of the list.
         let bands = self.pool.current_num_threads();
         let rows = h.div_ceil(bands).max(1);
         let (pix, tint) = (&self.pix, &self.tint);
         self.pool.install(|| {
             self.acc.par_chunks_mut(rows * w).enumerate().for_each(|(band, acc)| {
-                acc.fill([0.0; 3]);
+                acc.fill([0.0; 4]);
                 let (first, last) = ((band * rows) as u32, (band * rows + acc.len() / w) as u32);
                 for (p, (shade, weight)) in pix.iter().zip(tint) {
                     let y = p >> 16;
                     if *p != NOWHERE && y >= first && y < last {
                         let at = &mut acc[(y - first) as usize * w + (p & 0xFFFF) as usize];
                         let c = &colors[*shade as usize];
-                        at[0] += c[0] * weight;
-                        at[1] += c[1] * weight;
-                        at[2] += c[2] * weight;
+                        for k in 0..3 {
+                            at[k] += c[k] * weight;
+                        }
                     }
                 }
             });
@@ -253,20 +290,18 @@ impl Density {
         let (gw, gh) = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
         let acc = &self.acc;
         let (glow, blur) = (&mut self.glow, &mut self.blur);
+        let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], 0.0];
         self.pool.install(|| {
             glow.par_chunks_mut(gw).enumerate().for_each(|(gy, row)| {
-                for (gx, out) in row.iter_mut().enumerate() {
-                    let mut sum = [0.0f32; 3];
-                    for y in (gy * GLOW_DIV).min(h)..((gy + 1) * GLOW_DIV).min(h) {
-                        for p in &acc[y * w + (gx * GLOW_DIV).min(w)..y * w + ((gx + 1) * GLOW_DIV).min(w)] {
-                            sum = [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]];
-                        }
+                row.fill([0.0; 4]);
+                for y in (gy * GLOW_DIV).min(h)..((gy + 1) * GLOW_DIV).min(h) {
+                    for (out, cell) in row.iter_mut().zip(acc[y * w..(y + 1) * w].chunks(GLOW_DIV)) {
+                        *out = cell.iter().fold(*out, |s, p| add(s, *p));
                     }
-                    *out = sum;
                 }
             });
             // Two passes of a 1-2-1 kernel, across then down.
-            let mix = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| [0.25 * a[0] + 0.5 * b[0] + 0.25 * c[0], 0.25 * a[1] + 0.5 * b[1] + 0.25 * c[1], 0.25 * a[2] + 0.5 * b[2] + 0.25 * c[2]];
+            let mix = |a: [f32; 4], b: [f32; 4], c: [f32; 4]| [0.25 * (a[0] + c[0]) + 0.5 * b[0], 0.25 * (a[1] + c[1]) + 0.5 * b[1], 0.25 * (a[2] + c[2]) + 0.5 * b[2], 0.0];
             for _ in 0..2 {
                 blur.par_chunks_mut(gw).zip(glow.par_chunks(gw)).for_each(|(out, row)| {
                     for x in 0..gw {
@@ -286,40 +321,49 @@ impl Density {
         // Tone mapping. Exposure follows the typical brightness of lit pixels, smoothly.
         let exposure = self.exposure;
         let glow = &self.glow;
-        let gain = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0;
-        let bg = [style::BACKGROUND.r, style::BACKGROUND.g, style::BACKGROUND.b];
+        let gain = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * exposure;
+        let bg = [style::BACKGROUND.r * 255.0, style::BACKGROUND.g * 255.0, style::BACKGROUND.b * 255.0];
+        let span = [255.0 - bg[0], 255.0 - bg[1], 255.0 - bg[2]];
+        let across = &self.across;
         let (lit, light) = self.pool.install(|| {
             self.image
                 .bytes
                 .par_chunks_mut(w * 4)
                 .zip(acc.par_chunks(w))
                 .enumerate()
-                .map(|(y, (out, row))| {
-                    let (mut lit, mut light) = (0u32, 0.0f32);
-                    let gy = (y as f32 + 0.5) / GLOW_DIV as f32 - 0.5;
-                    let (gy0, fy) = (gy.floor().max(0.0) as usize, (gy - gy.floor()).clamp(0.0, 1.0));
-                    let gy1 = (gy0 + 1).min(gh - 1);
-                    for (x, (px, a)) in out.chunks_exact_mut(4).zip(row).enumerate() {
-                        let gx = (x as f32 + 0.5) / GLOW_DIV as f32 - 0.5;
-                        let (gx0, fx) = (gx.floor().max(0.0) as usize, (gx - gx.floor()).clamp(0.0, 1.0));
-                        let gx1 = (gx0 + 1).min(gw - 1);
-                        let (g00, g10, g01, g11) = (glow[gy0 * gw + gx0], glow[gy0 * gw + gx1], glow[gy1 * gw + gx0], glow[gy1 * gw + gx1]);
-                        let sum = a[0] + a[1] + a[2];
-                        if sum > 0.0 {
-                            lit += 1;
-                            light += sum;
+                .map_init(
+                    || vec![[0.0f32; 4]; gw],
+                    |halo, (y, (out, row))| {
+                        // The glow for this row: blend the two rows of the small image it lies
+                        // between once, then only across for each pixel.
+                        let gy = ((y as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
+                        let (gy0, fy) = (gy as usize, gy.fract());
+                        let gy1 = (gy0 + 1).min(gh - 1);
+                        for (o, (a, b)) in halo.iter_mut().zip(glow[gy0 * gw..(gy0 + 1) * gw].iter().zip(&glow[gy1 * gw..(gy1 + 1) * gw])) {
+                            for k in 0..4 {
+                                o[k] = (a[k] + (b[k] - a[k]) * fy) * gain;
+                            }
                         }
-                        for c in 0..3 {
-                            let halo = (g00[c] * (1.0 - fx) + g10[c] * fx) * (1.0 - fy) + (g01[c] * (1.0 - fx) + g11[c] * fx) * fy;
-                            let v = (a[c] + gain * halo) * exposure;
-                            // Compress highlights, lift faint light.
-                            let mapped = (v / (1.0 + v)).sqrt();
-                            px[c] = ((bg[c] + (1.0 - bg[c]) * mapped) * 255.0) as u8;
+                        let mut light = [0.0f32; 4];
+                        let mut lit = 0u32;
+                        for ((px, a), (gx, fx)) in out.chunks_exact_mut(4).zip(row).zip(across) {
+                            let (h0, h1) = (halo[*gx as usize], halo[*gx as usize + 1]);
+                            lit += (a[0] + a[1] + a[2] > 0.0) as u32;
+                            let mut v = [0.0f32; 4];
+                            for k in 0..4 {
+                                light[k] += a[k];
+                                v[k] = a[k] * exposure + h0[k] + (h1[k] - h0[k]) * fx;
+                                // Compress highlights, lift faint light.
+                                v[k] = (v[k] / (1.0 + v[k])).sqrt();
+                            }
+                            px[0] = (bg[0] + span[0] * v[0]) as u8;
+                            px[1] = (bg[1] + span[1] * v[1]) as u8;
+                            px[2] = (bg[2] + span[2] * v[2]) as u8;
+                            px[3] = 255;
                         }
-                        px[3] = 255;
-                    }
-                    (lit, light)
-                })
+                        (lit, light[0] + light[1] + light[2])
+                    },
+                )
                 .reduce(|| (0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
         });
         if lit > 0 {
@@ -337,7 +381,6 @@ impl Density {
         }
         let params = DrawTextureParams { dest_size: Some(vec2(w as f32 * scale, h as f32 * scale)), ..Default::default() };
         draw_texture_ex(self.texture.as_ref().unwrap(), 0.0, 0.0, WHITE, params);
-        self.last_ms = started.elapsed().as_secs_f32() * 1e3;
-        big
+        self.last_ms += started.elapsed().as_secs_f32() * 1e3;
     }
 }

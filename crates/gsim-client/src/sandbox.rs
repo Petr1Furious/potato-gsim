@@ -450,7 +450,7 @@ impl Sandbox {
         let wheel = mouse_wheel().1;
         let clicked = is_mouse_button_released(MouseButton::Left) && self.drag_from.is_some() && self.drag_moved <= 10.0 * ui && pointer;
         let mut pick: Option<Option<u32>> = None;
-        let (big, present, ship, picked, bodies_n);
+        let (big, present, ship, picked, bodies_n, flashes_now);
         {
             let b = self.runner.bodies.read().unwrap();
             bodies_n = b.len();
@@ -576,9 +576,12 @@ impl Sandbox {
                     Flash { x: m.x + m.vx * age * b.dt, y: m.y + m.vy * age * b.dt, life: (1.0 - age / FLASH_TICKS).clamp(0.0, 1.0) as f32, mass: m.mass }
                 })
                 .collect();
-            big = self.density.draw(&b, &view, tau, self.color, &flashes);
+            big = self.density.project(&b, &view, tau, self.color);
+            flashes_now = flashes;
             picked = chosen.map(|i| Picked { at: at(i), mass: b.m[i] as f64, radius: b.r[i] as f64 });
         }
+        // The bodies are free again: the rest of the picture does not need them.
+        self.density.present(&flashes_now);
         if let Some(id) = pick {
             self.select(id, seen.tick);
         }
