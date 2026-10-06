@@ -68,6 +68,12 @@ pub struct Session {
     unchecked_hashes: VecDeque<(Tick, u64)>,
     awaiting_resync: bool,
     pub stats: Stats,
+    /// Chat log, oldest first: messages, command output and game events.
+    pub chat: VecDeque<ChatEntry>,
+    /// Recent map markers from other players and ourselves.
+    pub marks: VecDeque<Mark>,
+    /// We may use operator commands.
+    pub op: bool,
     pub rejected: Option<String>,
 }
 
@@ -96,6 +102,9 @@ impl Session {
             unchecked_hashes: VecDeque::new(),
             awaiting_resync: false,
             stats: Stats::default(),
+            chat: VecDeque::new(),
+            marks: VecDeque::new(),
+            op: false,
             rejected: None,
         }
     }
@@ -148,6 +157,20 @@ impl Session {
             ServerMsg::Event(e) => {
                 if let Some(w) = self.world.as_mut() {
                     w.apply_event(e, &mut self.stats);
+                    // What the world has to say about it goes into the chat log.
+                    let news: Vec<String> = w.feed.drain(..).map(|f| f.1).collect();
+                    for text in news {
+                        self.log(now, ChatKind::System, None, text);
+                    }
+                }
+            }
+            ServerMsg::Chat(line) => self.log(now, line.kind, line.from, line.text),
+            ServerMsg::Operator(op) => self.op = op,
+            ServerMsg::Mark { player, x, y } => {
+                let name = self.world.as_ref().map_or("?", |w| w.player_name(player)).to_string();
+                self.marks.push_back(Mark { name, x, y, at: now });
+                while self.marks.len() > 16 {
+                    self.marks.pop_front();
                 }
             }
             ServerMsg::Progress { holds } => {
@@ -292,5 +315,46 @@ impl Session {
     pub fn fire_ready_tick(&self) -> Tick {
         let server = self.world.as_ref().and_then(|w| w.me()).map_or(0, |m| m.next_fire_tick);
         server.max(self.fire_ready_tick)
+    }
+}
+
+/// One line of the chat log.
+#[derive(Clone, Debug)]
+pub struct ChatEntry {
+    /// Session time (seconds) it arrived at.
+    pub at: f64,
+    pub kind: ChatKind,
+    pub from: Option<String>,
+    pub text: String,
+}
+
+/// A spot somebody pointed at.
+#[derive(Clone, Debug)]
+pub struct Mark {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub at: f64,
+}
+
+impl Session {
+    fn log(&mut self, at: f64, kind: ChatKind, from: Option<String>, text: String) {
+        self.chat.push_back(ChatEntry { at, kind, from, text });
+        while self.chat.len() > 200 {
+            self.chat.pop_front();
+        }
+    }
+
+    /// Say something, or run a `/command`.
+    pub fn send_chat(&mut self, text: &str) {
+        let text: String = text.trim().chars().take(MAX_CHAT_CHARS).collect();
+        if !text.is_empty() {
+            self.out.push(ClientMsg::Chat { text });
+        }
+    }
+
+    /// Point at a spot on the map for everyone.
+    pub fn send_mark(&mut self, x: f64, y: f64) {
+        self.out.push(ClientMsg::Mark { x, y });
     }
 }

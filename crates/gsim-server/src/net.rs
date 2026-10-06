@@ -32,6 +32,8 @@ pub struct ServerOptions {
     pub state_dir: Option<PathBuf>,
     /// Only let whitelisted names in.
     pub whitelist: bool,
+    /// Treat every player as an operator (solo play).
+    pub op_all: bool,
 }
 
 impl Default for ServerOptions {
@@ -50,6 +52,7 @@ impl Default for ServerOptions {
             intermission_seconds: 10.0,
             state_dir: None,
             whitelist: false,
+            op_all: false,
         }
     }
 }
@@ -73,6 +76,7 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
         None => ServerState::in_memory(),
     };
     authority.state.whitelist_enabled = opts.whitelist;
+    authority.op_all = opts.op_all;
     let ticks = |s: f64| if s.is_finite() && s > 0.0 { (s * hz).round() as u64 } else { 0 };
     authority.set_rounds(ticks(opts.round_seconds), ticks(opts.intermission_seconds).max(1), Some((opts.preset.clone(), opts.random.clone())));
     authority.enable_objective();

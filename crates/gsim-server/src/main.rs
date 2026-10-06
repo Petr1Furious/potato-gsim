@@ -106,6 +106,7 @@ fn main() {
         intermission_seconds: args.intermission_seconds,
         state_dir: Some(args.state_dir.clone()),
         whitelist: args.whitelist,
+        op_all: false,
     };
     if !gsim_core::selftest::passes() {
         eprintln!("FATAL: simulation self-test failed on this machine; refusing to host.");
@@ -145,6 +146,11 @@ enum Admin {
     Disallow { name: String },
     /// Show the whitelist
     Whitelist,
+    /// Let a player use operator commands in chat
+    Op { name: String },
+    Deop { name: String },
+    /// Show the operators
+    Ops,
     /// Release a registered name so anyone can claim it
     Forget { name: String },
 }
@@ -201,6 +207,17 @@ fn admin(dir: &Path, action: &Admin) -> i32 {
         Admin::Disallow { name } => done(state.whitelist_remove(name), format!("{name} removed from the whitelist"), format!("{name} was not on the whitelist")),
         Admin::Whitelist => {
             for name in state.whitelist() {
+                println!("{name}");
+            }
+            0
+        }
+        Admin::Op { name } => {
+            state.op(name);
+            done(true, format!("{name} is now an operator"), String::new())
+        }
+        Admin::Deop { name } => done(state.deop(name), format!("{name} is no longer an operator"), format!("{name} was not an operator")),
+        Admin::Ops => {
+            for name in state.ops() {
                 println!("{name}");
             }
             0

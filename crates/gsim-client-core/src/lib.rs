@@ -3,10 +3,11 @@
 //! in tests, in the bot and in the GUI.
 
 pub mod clock;
+pub mod complete;
 pub mod eph;
 pub mod net;
 pub mod session;
 pub mod world;
 
-pub use session::{Controls, Session, SessionConfig, Stats};
+pub use session::{ChatEntry, Controls, Mark, Session, SessionConfig, Stats};
 pub use world::{Effect, EffectKind, World};

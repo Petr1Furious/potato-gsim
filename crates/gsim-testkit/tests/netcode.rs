@@ -140,7 +140,7 @@ fn shell_destroys_target_and_victim_respawns() {
         assert_eq!(w.players[&pb].deaths, 1);
         assert!(w.players[&pb].ship.is_none());
         assert!(w.players[&pb].respawn_tick.is_some());
-        assert!(w.feed.iter().any(|f| f.1 == "ann destroyed bob"), "{:?}", w.feed);
+        assert!(c.session.chat.iter().any(|l| l.text == "ann destroyed bob"), "{:?}", c.session.chat);
     }
     sim.run_with(3.0, idle);
     assert!(sim.server.ship(pb).is_some(), "victim respawned");
@@ -177,8 +177,7 @@ fn crashing_into_a_body_is_fatal() {
     sim.server.place_ship(pa, ShipState::new(Particle { x: 6.0e9, y: 0.0, vx: -2.0e5, vy: 0.0 }, &rules));
     sim.run_with(1.0, idle);
     assert_eq!(sim.server.score(pa), Some((0, 1)));
-    let w = sim.clients[a].session.world.as_ref().unwrap();
-    assert!(w.feed.iter().any(|f| f.1 == "ann crashed into Star"), "{:?}", w.feed);
+    assert!(sim.clients[a].session.chat.iter().any(|l| l.text == "ann crashed into Star"), "{:?}", sim.clients[a].session.chat);
 }
 
 
@@ -212,7 +211,7 @@ fn holding_an_orbit_captures_the_target() {
         let w = c.session.world.as_ref().unwrap();
         assert_eq!(w.players[&pa].captures, 1);
         assert_eq!(w.players[&pa].score(&w.rules), rules.capture_points);
-        assert!(w.feed.iter().any(|f| f.1 == "ann captured Star"), "{:?}", w.feed);
+        assert!(c.session.chat.iter().any(|l| l.text == "ann captured Star"), "{:?}", c.session.chat);
     }
     sim.ships_agree().unwrap();
 }

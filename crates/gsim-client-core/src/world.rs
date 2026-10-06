@@ -331,6 +331,15 @@ impl World {
                     }
                 }
             }
+            Event::Score { player, kills, deaths, captures } => {
+                if let Some(p) = self.players.get_mut(&player) {
+                    (p.kills, p.deaths, p.captures) = (kills, deaths, captures);
+                }
+            }
+            Event::RoundClock { round_end_tick } => {
+                self.round_end_tick = round_end_tick;
+                self.next_round_tick = None;
+            }
             Event::Objective { tick, target } => {
                 self.target = target;
                 self.holds.clear();

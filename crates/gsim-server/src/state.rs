@@ -9,6 +9,7 @@
 //! | `whitelist.txt`      | name                                                 |
 //! | `banned-players.txt` | name, reason                                         |
 //! | `banned-ips.txt`     | address, reason                                      |
+//! | `ops.txt`            | name of a player who may use operator commands       |
 //!
 //! Fields are separated by tabs; lines starting with `#` are comments. A running server
 //! notices edits within a couple of seconds, so `gsim-server admin ...` (or a text editor)
@@ -24,7 +25,8 @@ const PLAYERS: &str = "players.txt";
 const WHITELIST: &str = "whitelist.txt";
 const BANNED_PLAYERS: &str = "banned-players.txt";
 const BANNED_IPS: &str = "banned-ips.txt";
-const FILES: [&str; 4] = [PLAYERS, WHITELIST, BANNED_PLAYERS, BANNED_IPS];
+const OPS: &str = "ops.txt";
+const FILES: [&str; 5] = [PLAYERS, WHITELIST, BANNED_PLAYERS, BANNED_IPS, OPS];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerRecord {
@@ -44,7 +46,8 @@ pub struct ServerState {
     whitelist: BTreeSet<String>,
     banned_players: BTreeMap<String, String>,
     banned_ips: BTreeMap<IpAddr, String>,
-    stamps: [Option<SystemTime>; 4],
+    ops: BTreeSet<String>,
+    stamps: [Option<SystemTime>; 5],
 }
 
 /// Names are compared without regard to case or surrounding space.
@@ -113,6 +116,7 @@ impl ServerState {
                 Some((name_key(&record.name), record))
             })
             .collect();
+        self.ops = read_rows(&dir.join(OPS)).into_iter().filter_map(|r| r.first().map(|n| name_key(n))).collect();
         self.whitelist = read_rows(&dir.join(WHITELIST)).into_iter().filter_map(|r| r.first().map(|n| name_key(n))).collect();
         let reason = |r: &[String]| r.get(1).cloned().unwrap_or_default();
         self.banned_players =
@@ -135,6 +139,7 @@ impl ServerState {
                 "one name per line. Only used when the server runs with the whitelist enabled.",
                 self.whitelist.iter().map(|n| vec![n.clone()]),
             ),
+            OPS => write_rows(&path, "one name per line: players who may use operator commands in chat.", self.ops.iter().map(|n| vec![n.clone()])),
             BANNED_PLAYERS => {
                 write_rows(&path, "name <tab> reason", self.banned_players.iter().map(|(n, r)| vec![n.clone(), r.clone()]))
             }
@@ -288,6 +293,28 @@ impl ServerState {
     pub fn forget(&mut self, name: &str) -> bool {
         let removed = self.players.remove(&name_key(name)).is_some();
         self.persist(PLAYERS);
+        removed
+    }
+}
+
+/// Operators.
+impl ServerState {
+    pub fn is_op(&self, name: &str) -> bool {
+        self.ops.contains(&name_key(name))
+    }
+
+    pub fn ops(&self) -> impl Iterator<Item = &String> {
+        self.ops.iter()
+    }
+
+    pub fn op(&mut self, name: &str) {
+        self.ops.insert(name_key(name));
+        self.persist(OPS);
+    }
+
+    pub fn deop(&mut self, name: &str) -> bool {
+        let removed = self.ops.remove(&name_key(name));
+        self.persist(OPS);
         removed
     }
 }

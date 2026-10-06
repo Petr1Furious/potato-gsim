@@ -1,6 +1,7 @@
 // No console window behind the game on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod chat;
 mod fmt;
 mod game;
 mod predictor;

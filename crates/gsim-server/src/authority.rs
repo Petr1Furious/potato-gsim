@@ -12,6 +12,8 @@ use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::IpAddr;
 
+mod commands;
+
 /// Transport-level connection handle.
 pub type ConnId = u64;
 
@@ -42,6 +44,13 @@ struct Player {
     last_seq: u32,
     last_cmd_tick: Tick,
     fires: VecDeque<(Tick, u16, f32)>,
+    /// Shells cannot destroy this ship.
+    god: bool,
+    /// Who `/r` answers.
+    reply_to: Option<PlayerId>,
+    /// (start tick, messages) of the current chat rate-limit window.
+    chat_window: (Tick, u32),
+    last_mark: Tick,
 }
 
 struct PendingJoin {
@@ -103,6 +112,10 @@ pub struct Authority {
     next_round_tick: Option<Tick>,
     target: Option<u32>,
     progress_sent: bool,
+    /// Seed for the next generated world, when an operator chose one.
+    next_seed: Option<u64>,
+    /// Everyone is an operator (solo play).
+    pub op_all: bool,
     objective_enabled: bool,
     /// A target should be chosen as soon as a ship is flying.
     target_pending: bool,
@@ -120,6 +133,8 @@ impl Authority {
             next_round_tick: None,
             target: None,
             progress_sent: false,
+            next_seed: None,
+            op_all: false,
             objective_enabled: false,
             target_pending: false,
             massive: MassiveState::from_bodies(&scenario.bodies),
@@ -183,9 +198,13 @@ impl Authority {
 
     /// Pick up edits to the state files and remove anyone who is no longer allowed here.
     pub fn reload_state(&mut self) {
-        if !self.state.reload_if_changed() {
-            return;
+        if self.state.reload_if_changed() {
+            self.enforce_state();
         }
+    }
+
+    /// Remove anyone the ban lists or whitelist no longer allow, and refresh operator rights.
+    fn enforce_state(&mut self) {
         let online: Vec<(ConnId, String)> =
             self.by_conn.iter().filter_map(|(c, id)| self.players.get(id).map(|p| (*c, p.name.clone()))).collect();
         for (conn, name) in online {
@@ -195,6 +214,7 @@ impl Authority {
                 self.kicks.push(conn);
             }
         }
+        self.refresh_ops();
     }
 
     pub fn disconnect(&mut self, conn: ConnId) {
@@ -214,6 +234,8 @@ impl Authority {
             }
             ClientMsg::Hello { protocol, golden, name, key } => self.hello(conn, protocol, golden, name, key),
             ClientMsg::Auth { signature } => self.auth(conn, signature),
+            ClientMsg::Chat { text } => self.chat(conn, text),
+            ClientMsg::Mark { x, y } => self.mark(conn, x, y),
             ClientMsg::Cmds(cmds) => self.commands(conn, cmds),
             ClientMsg::ResyncRequest => {
                 if let Some(&id) = self.by_conn.get(&conn) {
@@ -304,11 +326,17 @@ impl Authority {
                 last_seq: 0,
                 last_cmd_tick: 0,
                 fires: VecDeque::new(),
+                god: false,
+                reply_to: None,
+                chat_window: (0, 0),
+                last_mark: 0,
             },
         );
         self.by_conn.insert(conn, id);
         let w = self.welcome(id);
         self.send(Target::One(conn), ServerMsg::Welcome(Box::new(w)));
+        let op = self.is_op(id);
+        self.send(Target::One(conn), ServerMsg::Operator(op));
     }
 
     fn welcome(&self, your_id: PlayerId) -> Welcome {
@@ -519,6 +547,7 @@ impl Authority {
             }
         }
 
+        let gods: Vec<PlayerId> = self.players.values().filter(|p| p.god).map(|p| p.id).collect();
         let reach2 = (rules.shell_blast_radius + rules.ship_radius) * (rules.shell_blast_radius + rules.ship_radius);
         let mut gone: Vec<(ShellId, bool)> = Vec::new();
         for s in &mut self.shells {
@@ -533,7 +562,7 @@ impl Authority {
                 let after = (s.p.x, s.p.y);
                 let mut exploded = false;
                 for (victim, a0, a1) in &segs {
-                    if swept_min_dist2(before, after, *a0, *a1) <= reach2 {
+                    if !gods.contains(victim) && swept_min_dist2(before, after, *a0, *a1) <= reach2 {
                         exploded = true;
                         if !deaths.iter().any(|d| d.0 == *victim) {
                             deaths.push((*victim, Some(s.owner), None));
@@ -775,7 +804,7 @@ impl Authority {
     /// Replace the world, reset scores and hand everyone a fresh snapshot.
     fn start_round(&mut self) {
         let tick = self.tick();
-        let seed = self.rng.u64();
+        let seed = self.next_seed.take().unwrap_or_else(|| self.rng.u64());
         let sc = match &self.generator {
             Some((preset, opts)) => scenario::build(preset, seed, opts).unwrap_or_else(|_| self.initial.clone()),
             None => self.initial.clone(),
@@ -785,6 +814,7 @@ impl Authority {
         self.massive.tick = tick;
         self.rules.escape_radius = if self.rules.escape_radius > 0.0 { sc.escape_radius() } else { 0.0 };
         self.names = sc.names;
+        self.preset = sc.name;
         self.spawn_r = sc.spawn_r;
         self.shells.clear();
         self.round += 1;

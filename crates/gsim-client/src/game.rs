@@ -1,12 +1,15 @@
 //! In-game screen: input, camera, rendering and HUD. All game logic lives in
 //! `gsim-client-core`; this file only looks at the replica and draws it.
 
+use crate::chat::{self, ChatBox, Mention};
 use crate::fmt;
 use crate::style::{self, Rank};
 use crate::predictor::{Job, Predictor};
 use crate::settings::Settings;
 use egui_macroquad::egui;
+use gsim_client_core::complete::Context;
 use gsim_client_core::net::NetClient;
+use gsim_server::scenario::PRESETS;
 use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
@@ -31,7 +34,8 @@ impl Solo {
         // Let the OS pick a free port, then hand it to the server.
         let port = UdpSocket::bind("127.0.0.1:0").and_then(|s| s.local_addr()).map_err(|e| e.to_string())?.port();
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let opts = ServerOptions { bind: addr, preset: preset.to_string(), seed, quiet: true, max_clients: 4, ..Default::default() };
+        // Whoever hosts a solo game may use every command.
+        let opts = ServerOptions { bind: addr, preset: preset.to_string(), seed, quiet: true, max_clients: 4, op_all: true, ..Default::default() };
         build_authority(&opts)?; // surface configuration errors here rather than in the thread
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -89,6 +93,8 @@ impl View {
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
     Ship,
+    /// Another player'"'"'s ship (picked by clicking their name in chat).
+    Player(PlayerId),
     Body(u32),
     Free,
 }
@@ -123,6 +129,9 @@ pub struct Game {
     follow_paused: bool,
     /// Show body names: on the map, and as the first line of the selected body's label.
     show_names: bool,
+    chat: ChatBox,
+    /// Camera follows this player (set by clicking their name in chat).
+    watch: Option<PlayerId>,
     last_target: Target,
     last_target_pos: (f64, f64),
     selected: Option<u32>,
@@ -178,6 +187,8 @@ impl Game {
             follow_selection: true,
             follow_paused: false,
             show_names: false,
+            chat: ChatBox::default(),
+            watch: None,
             last_target: Target::Free,
             last_target_pos: (0.0, 0.0),
             selected: None,
@@ -213,12 +224,17 @@ impl Game {
         // HUD panels scale with the window; things drawn in the world (ship, dots, labels) only mildly.
         let hud = settings.ui_factor();
         let ui = settings.marker_factor();
-        let keys = !self.ui_has_keyboard && !self.menu_open;
+        let keys = !self.ui_has_keyboard && !self.menu_open && !self.chat.open;
         let mouse = mouse_position();
 
         // --- toggles -------------------------------------------------------------------------
         if is_key_pressed(KeyCode::Escape) {
-            self.menu_open = !self.menu_open;
+            // Escape closes the chat line first, the menu otherwise.
+            if self.chat.open {
+                self.chat.close();
+            } else {
+                self.menu_open = !self.menu_open;
+            }
         }
         if is_key_pressed(KeyCode::F3) {
             self.show_net = !self.show_net;
@@ -240,6 +256,16 @@ impl Game {
             if is_key_pressed(KeyCode::P) {
                 self.show_prediction = !self.show_prediction;
             }
+            if is_key_pressed(KeyCode::T) || is_key_pressed(KeyCode::Enter) {
+                self.chat.open_with("");
+            } else if is_key_pressed(KeyCode::Slash) {
+                self.chat.open_with("/");
+            }
+            if is_key_pressed(KeyCode::G) {
+                // Point at the spot under the cursor for everyone.
+                let (x, y) = self.view.to_world(mouse.0, mouse.1);
+                self.net.session.send_mark(x, y);
+            }
             if is_key_pressed(KeyCode::N) {
                 self.show_names = !self.show_names;
             }
@@ -248,6 +274,7 @@ impl Game {
             }
             if is_key_pressed(KeyCode::F) {
                 self.follow_selection = !self.follow_selection;
+                self.watch = None;
                 self.follow_paused = false;
                 self.say(if self.follow_selection { "Following selection" } else { "Following own ship" });
             }
@@ -363,13 +390,19 @@ impl Game {
             self.follow_paused = true;
         }
         self.had_ship = own.is_some();
+        let watched = self.watch.and_then(|id| world.ship_at(id, tick_f).map(|p| (id, p)));
+        if watched.is_none() {
+            self.watch = None;
+        }
         let target = match (self.follow_selection && !self.follow_paused, own, self.selected) {
+            _ if watched.is_some() => Target::Player(watched.unwrap().0),
             (true, _, Some(s)) => Target::Body(s),
             (_, Some(_), _) => Target::Ship,
             _ => Target::Free,
         };
         let target_pos = match target {
             Target::Ship => own.map(|p| (p.x, p.y)).unwrap(),
+            Target::Player(_) => watched.map(|(_, p)| (p.x, p.y)).unwrap(),
             Target::Body(s) => {
                 let b = body(s);
                 (b.x, b.y)
@@ -466,6 +499,7 @@ impl Game {
                     }
                 }
                 self.selected = best.map(|b| b.0);
+                self.watch = None;
                 self.follow_paused = false;
             }
         } else if !dragging {
@@ -754,6 +788,21 @@ impl Game {
             labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
         }
 
+        // --- pings -----------------------------------------------------------------------------
+        for m in &self.net.session.marks {
+            let age = (now - m.at) as f32;
+            if !(0.0..6.0).contains(&age) {
+                continue;
+            }
+            let s = view.to_screen(m.x, m.y);
+            let fade = (1.0 - age / 6.0).min(1.0);
+            // A ring that keeps rippling outwards while the marker lasts.
+            let ripple = (age * 1.2).fract();
+            style::ring(s.0, s.1, (6.0 + 22.0 * ripple) * ui, 1.5 * ui, style::alpha(style::ACCENT, fade * (1.0 - ripple)));
+            style::disc(s.0, s.1, 2.5 * ui, style::alpha(style::ACCENT, fade));
+            labels.push(m.name.as_str(), s.0, s.1 - 10.0 * ui, LABEL * ui, style::alpha(style::ACCENT, fade), Rank::Pilot);
+        }
+
         labels.draw();
 
         // --- HUD -------------------------------------------------------------------------------
@@ -781,12 +830,20 @@ impl Game {
         let target_name = target.map(|t| world.body_name(t));
         let limits = (world.rules.orbit_max_ecc, world.rules.orbit_min_peri_radii, world.rules.orbit_max_apo_radii);
         let capture_points = world.rules.capture_points;
-        let feed: Vec<String> = world
-            .feed
-            .iter()
-            .filter(|f| world.head.saturating_sub(f.0) < 8 * world.rules.tick_hz as Tick)
-            .map(|f| f.1.clone())
-            .collect();
+        // What the chat box needs: names to complete and to highlight.
+        let player_names: Vec<String> = world.players.values().map(|p| p.name.clone()).collect();
+        let mut mentions: Vec<(String, Mention)> = world.players.iter().map(|(id, p)| (p.name.clone(), Mention::Player(*id))).collect();
+        mentions.extend(world.names.iter().map(|(slot, name)| (name.clone(), Mention::Body(*slot))));
+        // Unnamed bodies are worth mentioning when they are the target or selected.
+        for slot in [target, self.selected].into_iter().flatten() {
+            if !world.names.contains_key(&slot) {
+                mentions.push((world.body_name(slot), Mention::Body(slot)));
+            }
+        }
+        let body_names: Vec<String> = mentions.iter().filter(|m| matches!(m.1, Mention::Body(_))).map(|m| m.0.clone()).collect();
+        let presets: Vec<&str> = PRESETS.iter().map(|p| p.0).collect();
+        let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op };
+        let my_id = world.my_id;
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
         let clock = |s: f64| format!("{}:{:02}", s as u32 / 60, s as u32 % 60);
         let title = format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round);
@@ -823,6 +880,7 @@ impl Game {
             self.menu_open,
         );
         let (mut has_ptr, mut has_kb) = (false, false);
+        let mut chat_out = chat::Outcome::default();
         let (mut ui_scale, mut zoom_speed) = (settings.ui_scale, settings.zoom_speed);
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
@@ -847,6 +905,34 @@ impl Game {
                             ui.label(RichText::new(clock(left)).heading().color(colour));
                         }
                         _ => {}
+                    }
+                    // The objective, compact: where to orbit, which conditions hold, progress.
+                    if let Some(name) = &target_name {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            // Centre the row by hand: egui lays horizontal rows out from the left.
+                            ui.add_space((ui.available_width() - 250.0).max(0.0) * 0.5);
+                            style::caption(ui, "ORBIT");
+                            ui.label(RichText::new(format!("{name}  +{capture_points}")).color(gold).strong());
+                            let mark = |ui: &mut egui::Ui, what: &str, ok: Option<bool>| {
+                                let colour = match ok {
+                                    Some(true) => good,
+                                    Some(false) => bad,
+                                    None => dim,
+                                };
+                                ui.label(RichText::new(what).small().color(colour).extra_letter_spacing(1.0));
+                            };
+                            let state = orbit.filter(|(o, _)| o.bound);
+                            mark(ui, "ECC", state.map(|(o, _)| o.ecc <= limits.0));
+                            mark(ui, "LOW", state.map(|(o, r)| o.peri / r >= limits.1));
+                            mark(ui, "HIGH", state.map(|(o, r)| o.apo / r <= limits.2));
+                        });
+                        ui.allocate_ui(egui::vec2(220.0, 0.0), |ui| {
+                            style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
+                            for (rival, frac) in &rivals {
+                                style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
+                            }
+                        });
                     }
                     if let Some(s) = &status {
                         ui.label(RichText::new(s).color(gold));
@@ -883,12 +969,6 @@ impl Game {
                             ui.end_row();
                         }
                     });
-                    if !feed.is_empty() {
-                        ui.add_space(4.0);
-                    }
-                    for f in &feed {
-                        ui.label(RichText::new(f).small().color(dim));
-                    }
                 });
             });
 
@@ -920,47 +1000,7 @@ impl Game {
                 });
             });
 
-            // Bottom left: the objective.
-            if let Some(name) = &target_name {
-                Area::new(Id::new("objective")).anchor(Align2::LEFT_BOTTOM, [10.0, -10.0]).show(ctx, |ui| {
-                    style::panel().show(ui, |ui| {
-                        ui.set_width(220.0);
-                        ui.horizontal(|ui| {
-                            style::caption(ui, "ORBIT");
-                            ui.label(RichText::new(name).color(gold).strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(RichText::new(format!("+{capture_points}")).color(gold));
-                            });
-                        });
-                        let check = |ui: &mut egui::Ui, ok: bool, what: &str, value: String, limit: String| {
-                            ui.horizontal(|ui| {
-                                style::caption(ui, what);
-                                ui.label(RichText::new(value).small().color(if ok { good } else { bad }));
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(limit).small().color(dim));
-                                });
-                            });
-                        };
-                        match orbit {
-                            Some((o, radius)) if o.bound => {
-                                let (lo, hi) = (o.peri / radius, o.apo / radius);
-                                check(ui, o.ecc <= limits.0, "ECC", format!("{:.2}", o.ecc), format!("max {:.1}", limits.0));
-                                check(ui, lo >= limits.1, "LOW", format!("{lo:.1} r"), format!("min {:.1} r", limits.1));
-                                check(ui, hi <= limits.2, "HIGH", format!("{hi:.1} r"), format!("max {:.0} r", limits.2));
-                            }
-                            Some(_) => {
-                                ui.label(RichText::new("not in orbit").small().color(dim));
-                            }
-                            None => {}
-                        }
-                        ui.add_space(2.0);
-                        style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
-                        for (rival, frac) in &rivals {
-                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
-                        }
-                    });
-                });
-            }
+            chat_out = self.chat.show(ctx, &self.net.session.chat, now, &complete_ctx, &mentions);
             if menu {
                 egui::Window::new("MENU").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
                     ctx,
@@ -983,6 +1023,8 @@ impl Game {
                         style::key_row(ui, "Fire towards cursor", "SPACE");
                         style::key_row(ui, "Aim with mouse or A / D", "M");
                         style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
+                        style::key_row(ui, "Chat, command", "T, /");
+                        style::key_row(ui, "Point at the map", "G");
                         style::key_row(ui, "Recentre, fullscreen", "R, F11");
                         style::section(ui, "MASS");
                         style::mass_legend(ui);
@@ -1005,6 +1047,18 @@ impl Game {
             has_kb = ctx.wants_keyboard_input();
         });
         egui_macroquad::draw();
+        if let Some(text) = chat_out.send {
+            self.net.session.send_chat(&text);
+        }
+        match chat_out.clicked {
+            Some(Mention::Body(slot)) => {
+                self.selected = Some(slot);
+                self.follow_paused = false;
+                self.watch = None;
+            }
+            Some(Mention::Player(id)) => self.watch = Some(id).filter(|id| *id != my_id),
+            None => {}
+        }
         if ui_scale != settings.ui_scale || zoom_speed != settings.zoom_speed {
             settings.ui_scale = ui_scale;
             settings.zoom_speed = zoom_speed;

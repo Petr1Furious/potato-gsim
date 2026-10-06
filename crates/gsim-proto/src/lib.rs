@@ -5,15 +5,17 @@ use gsim_core::{GameRules, MassiveSnapshot, Particle, ShipInput, ShipState, Tick
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
 pub const MAX_CMDS_PER_PACKET: usize = 48;
+pub const MAX_CHAT_CHARS: usize = 200;
 
 pub type PlayerId = u32;
 pub type ShellId = u32;
 
+pub mod command;
 pub mod identity;
 pub use identity::Identity;
 
@@ -45,6 +47,10 @@ pub enum ClientMsg {
     Cmds(Vec<Cmd>),
     /// Unreliable clock probe.
     Ping { client_time: f64 },
+    /// Reliable: a chat line; a leading `/` makes it a command (see [`command`]).
+    Chat { text: String },
+    /// Reliable: show everyone a marker at this point on the map.
+    Mark { x: f64, y: f64 },
     /// Reliable: my massive-tier hash disagreed, send a fresh snapshot.
     ResyncRequest,
 }
@@ -101,6 +107,10 @@ pub enum Event {
     ShellSpawn { tick: Tick, id: ShellId, owner: PlayerId, p: Particle },
     ShellGone { tick: Tick, id: ShellId, exploded: bool },
     ShipDied { tick: Tick, player: PlayerId, killer: Option<PlayerId>, body: Option<u32>, respawn_tick: Tick },
+    /// A player's totals were set by hand.
+    Score { player: PlayerId, kills: u32, deaths: u32, captures: u32 },
+    /// The round now ends at this tick (`None`: never).
+    RoundClock { round_end_tick: Option<Tick> },
     /// The objective moved to another body (or there is none).
     Objective { tick: Tick, target: Option<u32> },
     /// `player` held an orbit around `target` long enough.
@@ -123,6 +133,12 @@ pub enum ServerMsg {
     /// Reliable, to the sender only: the tick the command really took effect at.
     CmdAck { seq: u32, tick: Tick },
     Event(Event),
+    /// Reliable: a line for the chat log.
+    Chat(ChatLine),
+    /// Reliable: `player` pointed at this spot on the map.
+    Mark { player: PlayerId, x: f64, y: f64 },
+    /// Reliable: whether the receiver may use operator commands.
+    Operator(bool),
     /// Unreliable, a few times a second: ticks each player has held the objective orbit.
     Progress { holds: Vec<(PlayerId, u32)> },
     /// Unreliable safety net: authoritative ship state at the start of `tick`.
@@ -143,7 +159,7 @@ pub const CH_UNRELIABLE: u8 = 1;
 
 impl ClientMsg {
     pub fn reliable(&self) -> bool {
-        matches!(self, ClientMsg::Hello { .. } | ClientMsg::Auth { .. } | ClientMsg::ResyncRequest)
+        !matches!(self, ClientMsg::Cmds(_) | ClientMsg::Ping { .. })
     }
 }
 
@@ -185,4 +201,23 @@ pub fn netcode_protocol_id() -> u64 {
 /// The form of a player name both sides agree on: trimmed, printable, bounded.
 pub fn clean_name(name: &str) -> String {
     name.trim().chars().filter(|c| !c.is_control()).take(MAX_NAME_CHARS).collect::<String>().trim().to_string()
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ChatKind {
+    /// Said to everyone by `from`.
+    Say,
+    /// Private message; `from` is the other party, `outgoing` tells which way it went.
+    Private { outgoing: bool },
+    /// From the server: command output, notices.
+    System,
+    /// A command went wrong (only the sender sees it).
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChatLine {
+    pub kind: ChatKind,
+    pub from: Option<String>,
+    pub text: String,
 }

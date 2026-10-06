@@ -77,10 +77,33 @@ docker exec potato-gsim gsim-server admin ban-ip NAME      # or an address
 docker exec potato-gsim gsim-server admin unban NAME
 docker exec potato-gsim gsim-server admin allow NAME       # whitelist (GSIM_WHITELIST=true)
 docker exec potato-gsim gsim-server admin forget NAME      # release a reserved name
+docker exec potato-gsim gsim-server admin op NAME          # may use operator commands in chat
 ```
 
 A ban by name stops that identity; someone determined can make a new key and name, which
 is what address bans and the whitelist are for.
+
+## Chat and commands
+
+`T` or `Enter` opens chat, `/` opens it for a command, `Tab` completes command names,
+players, bodies and presets (press again to cycle), `Up`/`Down` recall earlier lines. Joins,
+kills, captures and new targets appear in chat too. Names of players and bodies in a message
+are clickable: a body gets selected, a player gets followed by the camera. `G` drops a
+marker under the cursor that everyone sees for a few seconds.
+
+Everyone: `/help`, `/list`, `/msg PLAYER TEXT`, `/r TEXT`, `/respawn`.
+
+Operators (listed in `ops.txt`; the host of a solo game always is one):
+
+| Command | Effect |
+|---|---|
+| `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left; set the round length |
+| `/tp [PLAYER] PLAYER\|BODY\|~DX ~DY\|X Y` | Teleport next to a player, near a body, or to coordinates in metres (`~` is relative, units like `5Gm` work) |
+| `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body (`@target` is the objective) |
+| `/preset NAME [SEED]`, `/timescale X` | New round in another world or at another time scale |
+| `/target BODY` | Move the objective |
+| `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
+| `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |
 
 ## Controls
 
@@ -95,6 +118,7 @@ is what address bans and the whitelist are for.
 | F | Camera follows the selected body (on by default) or stays with the ship |
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, T | Trails, trails relative to selection / world |
+| T, /, G | Chat, command, point at the map |
 | R, F3, F11, Esc | Recentre, network details, fullscreen, menu |
 
 Colour shows mass: dim slate for the lightest bodies, through ice blue and pale sand to amber
