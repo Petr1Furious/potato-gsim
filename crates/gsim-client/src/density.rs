@@ -81,6 +81,8 @@ pub struct Density {
     pool: rayon::ThreadPool,
     gpu: Option<Gpu>,
     gpu_wanted: bool,
+    /// Physical pixels across one body when the graphics card draws.
+    dot: u32,
     notice: Option<String>,
     vertices: Vec<Vertex>,
     /// Milliseconds the last frame took to rasterise.
@@ -147,6 +149,7 @@ impl Density {
             pool,
             gpu: None,
             gpu_wanted: false,
+            dot: 1,
             notice: None,
             vertices: Vec::new(),
             last_ms: 0.0,
@@ -155,10 +158,25 @@ impl Density {
 
     fn resize(&mut self) {
         let (sw, sh) = (screen_width().max(16.0), screen_height().max(16.0));
-        let scale = (sw * sh / MAX_PIXELS).sqrt().max(1.0);
-        let (w, h) = ((sw / scale).ceil() as usize, (sh / scale).ceil() as usize);
+        // On the graphics card every body is a square of a whole number of physical pixels,
+        // on a grid of exactly that pitch. Anything else leaves hairline gaps and overlaps
+        // between neighbours, which show as a faint lattice wherever bodies are dense.
+        let dpi = screen_dpi_scale().max(0.25);
+        self.dot = if self.gpu_wanted { dpi.round().max(1.0) as u32 } else { 1 };
+        let scale = if self.gpu_wanted { self.dot as f32 / dpi } else { (sw * sh / MAX_PIXELS).sqrt().max(1.0) };
+        let (w, h) = (((sw / scale).ceil() as usize).min(65_535), ((sh / scale).ceil() as usize).min(65_535));
+        self.scale = scale;
         if (w, h) != (self.w, self.h) {
-            (self.w, self.h, self.scale) = (w, h, scale);
+            (self.w, self.h) = (w, h);
+            // The rasteriser's own images are made when it next draws.
+            self.acc = Vec::new();
+        }
+    }
+
+    /// Images for drawing without the graphics card, sized for the current buffer.
+    fn allocate(&mut self) {
+        let (w, h) = (self.w, self.h);
+        if self.acc.len() != w * h {
             self.acc = vec![[0.0; 4]; w * h];
             self.across = (0..w)
                 .map(|x| {
@@ -267,6 +285,7 @@ impl Density {
             self.last_ms += started.elapsed().as_secs_f32() * 1e3;
             return;
         }
+        self.allocate();
         let (w, h, scale) = (self.w, self.h, self.scale);
         let (x0, y0, ppm) = self.corner;
         let colors = self.colors;
@@ -457,8 +476,7 @@ impl Density {
             self.exposure += 0.08 * (wanted - self.exposure);
         }
         let glow = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * self.exposure;
-        let glow_size = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
-        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), glow_size, self.exposure, glow, style::BACKGROUND);
+        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, style::BACKGROUND);
         let (x0, y0, ppm) = self.corner;
         for f in flashes {
             let (fx, fy) = (((f.x - x0) * ppm) as f32 * scale, ((f.y - y0) * ppm) as f32 * scale);

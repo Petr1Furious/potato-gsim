@@ -72,7 +72,7 @@ uniform sampler2D Glow;
 uniform vec4 Tone;
 uniform vec4 Background;
 void main() {
-    vec3 v = texture2D(Texture, uv).rgb * Tone.x + texture2D(Glow, uv).rgb * Tone.y;
+    vec3 v = texture2D(Texture, uv).rgb * Tone.x + texture2D(Glow, uv * Tone.zw).rgb * Tone.y;
     v = sqrt(v / (1.0 + v));
     gl_FragColor = vec4(Background.rgb + (1.0 - Background.rgb) * v, 1.0);
 }"#;
@@ -222,14 +222,17 @@ impl Gpu {
         ctx.delete_pipeline(self.blur);
     }
 
-    /// Draw `vertices` (positions in a `buffer` sized grid of pixels) over the whole screen.
-    /// `exposure` and `glow` scale the image and its halo before tone mapping.
-    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), glow_size: (usize, usize), exposure: f32, glow: f32, background: Color) {
+    /// Draw `vertices` (positions on a `buffer` sized grid) as squares `dot` physical pixels
+    /// across, stretched over `dest` on screen. The glow comes from an image one `block`-th
+    /// the size of the grid; `exposure` and `glow` scale the two before tone mapping.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, background: Color) {
         let ctx = context();
-        // The image has one pixel per physical pixel; each body covers one buffer pixel of it.
-        let dpi = screen_dpi_scale();
-        let (w, h) = ((screen_width() * dpi).round().clamp(16.0, 8192.0) as u32, (screen_height() * dpi).round().clamp(16.0, 8192.0) as u32);
-        self.resize(ctx, w, h, glow_size.0 as u32, glow_size.1 as u32);
+        let (w, h) = ((buffer.0 as u32 * dot).clamp(16, 16_384), (buffer.1 as u32 * dot).clamp(16, 16_384));
+        // The small image is a whole number of blocks, so it reaches a little past the edge.
+        let (gw, gh) = (buffer.0.div_ceil(block).max(1), buffer.1.div_ceil(block).max(1));
+        let covered = ((gw * block) as f32, (gh * block) as f32);
+        self.resize(ctx, w, h, gw as u32, gh as u32);
         if vertices.len() > self.capacity {
             ctx.delete_buffer(self.vertices);
             ctx.delete_buffer(self.indices);
@@ -239,14 +242,13 @@ impl Gpu {
         ctx.buffer_update(self.vertices, BufferSource::slice(vertices));
         let [image, halo, scratch] = self.targets.as_ref().unwrap();
         let points = miniquad::Bindings { vertex_buffers: vec![self.vertices], index_buffer: self.indices, images: vec![] };
-        let to_clip = (2.0 / buffer.0 as f32, 2.0 / buffer.1 as f32);
         // The same points twice: full size, and as single pixels of the small image, where
         // each pixel then holds the light of a whole block of the large one.
-        for (target, size) in [(image, w as f32 / buffer.0 as f32), (halo, 1.0)] {
+        for (target, size, grid) in [(image, dot as f32, (buffer.0 as f32, buffer.1 as f32)), (halo, 1.0, covered)] {
             ctx.begin_pass(Some(target.pass), PassAction::clear_color(0.0, 0.0, 0.0, 0.0));
             ctx.apply_pipeline(&self.points);
             ctx.apply_bindings(&points);
-            ctx.apply_uniforms(UniformsSource::table(&Vec4Uniform([to_clip.0, to_clip.1, size.max(1.0), 0.0])));
+            ctx.apply_uniforms(UniformsSource::table(&Vec4Uniform([2.0 / grid.0, 2.0 / grid.1, size, 0.0])));
             ctx.draw(0, vertices.len() as i32, 1);
             ctx.end_render_pass();
         }
@@ -261,11 +263,11 @@ impl Gpu {
                 ctx.end_render_pass();
             }
         }
-        self.tone.set_uniform("Tone", [exposure, glow, 0.0, 0.0]);
+        self.tone.set_uniform("Tone", [exposure, glow, buffer.0 as f32 / covered.0, buffer.1 as f32 / covered.1]);
         self.tone.set_uniform("Background", [background.r, background.g, background.b, 1.0]);
         self.tone.set_texture("Glow", Texture2D::from_miniquad_texture(halo.texture));
         gl_use_material(&self.tone);
-        let params = DrawTextureParams { dest_size: Some(vec2(screen_width(), screen_height())), ..Default::default() };
+        let params = DrawTextureParams { dest_size: Some(vec2(dest.0, dest.1)), ..Default::default() };
         draw_texture_ex(&Texture2D::from_miniquad_texture(image.texture), 0.0, 0.0, WHITE, params);
         gl_use_default_material();
     }
