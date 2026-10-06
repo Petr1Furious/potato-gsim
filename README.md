@@ -87,7 +87,8 @@ is what address bans and the whitelist are for.
 
 `T` or `Enter` opens chat and `/` opens it for a command. The input works like Minecraft's:
 suggestions for the word being typed appear in a list above it (arrows to move, `Tab` to
-accept and to cycle, `Shift+Tab` back, click or wheel with the mouse, `Esc` to hide); when
+accept and to cycle, `Shift+Tab` back, click or wheel with the mouse, `Esc` to hide; after a
+bare `/` the list waits for `Tab`); when
 there is nothing to suggest, a grey hint shows the arguments still expected, or a red
 message shows where the command went wrong. In plain messages `Tab` completes names of
 players and bodies. `Up`/`Down` recall earlier lines, the wheel and `PgUp`/`PgDn` scroll. Joins,
@@ -95,7 +96,8 @@ kills, captures and new targets appear in chat too. Names of players and bodies 
 are clickable: a body gets selected, a player gets followed by the camera. `G` drops a
 marker under the cursor that everyone sees for a few seconds.
 
-Everyone: `/help`, `/list`, `/msg PLAYER TEXT`, `/r TEXT`, `/respawn`.
+Everyone: `/help`, `/list`, `/msg PLAYER TEXT`, `/r TEXT`, `/respawn`. Wherever a player is
+expected, `@s` is you, `@a` everyone and `@r` someone at random; `@t` is the target body.
 
 Operators (listed in `ops.txt`; the host of a solo game always is one):
 
@@ -103,7 +105,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 |---|---|
 | `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left; set the round length |
 | `/tp [PLAYER] PLAYER\|BODY\|~DX ~DY\|X Y` | Teleport next to a player, near a body, or to coordinates in metres (`~` is relative, units like `5Gm` work) |
-| `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body (`@target` is the objective) |
+| `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body |
 | `/preset NAME [SEED]`, `/timescale X` | New round in another world or at another time scale |
 | `/target BODY` | Move the objective |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |

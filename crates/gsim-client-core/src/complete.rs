@@ -80,14 +80,15 @@ fn is_coordinate(word: &str) -> bool {
 
 fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
     let names = |lists: &[&[String]]| -> Vec<String> { lists.iter().flat_map(|l| l.iter().cloned()).collect() };
-    let with_target = |mut v: Vec<String>| {
-        v.push("@target".to_string());
+    // Selectors, as in Minecraft: yourself, everyone, someone at random; and the objective.
+    let with = |mut v: Vec<String>, extra: &[&str]| {
+        v.extend(extra.iter().map(|s| s.to_string()));
         v
     };
     match arg {
-        Arg::Player => names(&[ctx.players]),
-        Arg::Body => with_target(names(&[ctx.bodies])),
-        Arg::Place => with_target(names(&[ctx.players, ctx.bodies])),
+        Arg::Player => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
+        Arg::Body => with(names(&[ctx.bodies]), &["@t"]),
+        Arg::Place => with(names(&[ctx.players, ctx.bodies]), &["@a", "@r", "@s", "@t"]),
         Arg::Preset => ctx.presets.iter().map(|p| p.to_string()).collect(),
         Arg::Word(words) => words.iter().map(|w| w.to_string()).collect(),
         Arg::Text => names(&[ctx.players, ctx.bodies]),
@@ -269,7 +270,7 @@ mod tests {
         // the argument's options.
         assert_eq!(an("/tp").suggestions, ["/tp"]);
         let a = an("/tp ");
-        assert_eq!(a.suggestions, ["\"Ann Droid\"", "@target", "B459", "bob", "Saturn", "Sun"]);
+        assert_eq!(a.suggestions, ["\"Ann Droid\"", "@a", "@r", "@s", "@t", "B459", "bob", "Saturn", "Sun"]);
         assert_eq!((a.start, a.usage, a.error), (4, None, None));
         assert_eq!(an("/tp s").suggestions, ["Saturn", "Sun"]);
         assert_eq!(an("/tp \"an").suggestions, ["\"Ann Droid\""]);

@@ -5,6 +5,7 @@
 
 use crate::style;
 use egui_macroquad::egui;
+use macroquad::color::Color;
 use gsim_client_core::complete::{self, Analysis, Context, SpanKind};
 use gsim_client_core::ChatEntry;
 use gsim_proto::{ChatKind, PlayerId, MAX_CHAT_CHARS};
@@ -82,6 +83,8 @@ pub struct ChatBox {
     /// Frames left in which to take focus and put the cursor at the end.
     settle: u8,
     opened_with: String,
+    /// Wheel movement not yet turned into whole lines (trackpads send many tiny steps).
+    wheel_carry: f32,
     /// Lines scrolled up from the newest.
     scroll: usize,
     list: Option<List>,
@@ -124,7 +127,16 @@ impl ChatBox {
     }
 
     /// Draw the box in the bottom-left corner. `mentions` are the names worth highlighting.
-    pub fn show(&mut self, ctx: &egui::Context, log: &VecDeque<ChatEntry>, now: f64, complete_ctx: &Context, mentions: &[(String, Mention)]) -> Outcome {
+    /// `wheel` is the mouse wheel in notches since the last frame (already scaled per platform).
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        log: &VecDeque<ChatEntry>,
+        now: f64,
+        wheel: f32,
+        complete_ctx: &Context,
+        mentions: &[(String, Mention)],
+    ) -> Outcome {
         let mut out = Outcome::default();
         let visible: Vec<&ChatEntry> = if self.open {
             self.scroll = self.scroll.min(log.len().saturating_sub(LINES_OPEN));
@@ -152,7 +164,7 @@ impl ChatBox {
                         ui.label(egui::RichText::new(format!("- {} newer -", self.scroll)).small().color(style::c32(style::DIM)));
                     }
                     ui.add_space(4.0);
-                    out.send = self.input_row(ui, complete_ctx);
+                    out.send = self.input_row(ui, complete_ctx, wheel);
                 }
             });
         });
@@ -171,7 +183,8 @@ impl ChatBox {
             return;
         }
         self.hidden_for = None;
-        self.list = self.new_list(&self.analysis);
+        // A bare slash waits for Tab before listing every command, as in Minecraft.
+        self.list = if self.input == "/" { None } else { self.new_list(&self.analysis) };
     }
 
     fn new_list(&self, analysis: &Analysis) -> Option<List> {
@@ -194,7 +207,7 @@ impl ChatBox {
         list.tab_cycles = true;
     }
 
-    fn input_row(&mut self, ui: &mut egui::Ui, complete_ctx: &Context) -> Option<String> {
+    fn input_row(&mut self, ui: &mut egui::Ui, complete_ctx: &Context, wheel: f32) -> Option<String> {
         // A key that opened the chat may also arrive as typed text a frame later.
         if self.settle > 0 && self.input.len() > self.opened_with.len() && self.input.chars().all(|c| "tT/".contains(c)) {
             self.input = self.opened_with.clone();
@@ -259,7 +272,7 @@ impl ChatBox {
         }
 
         // --- keys -------------------------------------------------------------------------
-        let (enter, wheel) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.raw_scroll_delta.y));
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         if let Some(list) = self.list.as_mut() {
             // Arrows move through the list; Tab accepts, and keeps walking on repeats.
             if up || down {
@@ -284,6 +297,11 @@ impl ChatBox {
             self.scroll = if page_up { self.scroll + LINES_OPEN - 1 } else { self.scroll.saturating_sub(LINES_OPEN - 1) };
         }
 
+        // Whole lines of wheel movement; the remainder is kept for the next frame.
+        self.wheel_carry += wheel * if shift { 1.0 } else { WHEEL_LINES as f32 };
+        let steps = self.wheel_carry.trunc() as i32;
+        self.wheel_carry -= steps as f32;
+
         // --- popups above the input ---------------------------------------------------------
         let width_of = |text: &str| ui.fonts(|f| f.layout_no_wrap(text.to_string(), font.clone(), plain).size().x);
         let mut over_list = false;
@@ -298,9 +316,9 @@ impl ChatBox {
             painter.rect_filled(rect, 0.0, C_POPUP);
             let pointer = ui.input(|i| i.pointer.hover_pos());
             over_list = pointer.is_some_and(|p| rect.contains(p));
-            if over_list && wheel != 0.0 {
-                let max = list.items.len().saturating_sub(LIST_ROWS);
-                list.offset = if wheel > 0.0 { list.offset.saturating_sub(1) } else { (list.offset + 1).min(max) };
+            if over_list && steps != 0 {
+                let max = list.items.len().saturating_sub(LIST_ROWS) as i64;
+                list.offset = (list.offset as i64 - steps as i64).clamp(0, max) as usize;
             }
             for row in 0..rows {
                 let i = list.offset + row;
@@ -360,9 +378,8 @@ impl ChatBox {
             response.request_focus();
         }
         // The wheel scrolls the chat history unless it is over the suggestion list.
-        if wheel != 0.0 && !over_list {
-            let lines = if shift { 1 } else { WHEEL_LINES };
-            self.scroll = if wheel > 0.0 { self.scroll + lines } else { self.scroll.saturating_sub(lines) };
+        if steps != 0 && !over_list {
+            self.scroll = (self.scroll as i64 + steps as i64).max(0) as usize;
         }
 
         if cursor_to_end {
@@ -430,23 +447,32 @@ fn find_mentions(text: &str, mentions: &[(String, Mention)]) -> Vec<(usize, usiz
 /// One chat line. Returns the mention that was clicked, if any.
 fn line(ui: &mut egui::Ui, entry: &ChatEntry, opacity: f32, mentions: &[(String, Mention)]) -> Option<Mention> {
     let fade = |c| style::c32(style::alpha(c, opacity));
-    let (prefix, prefix_colour, text_colour) = match (&entry.kind, &entry.from) {
-        (ChatKind::Say, Some(from)) => (format!("{from}"), style::OTHER_SHIP, style::TEXT),
-        (ChatKind::Private { outgoing: true }, Some(to)) => (format!("to {to}"), style::VIOLET, style::VIOLET),
-        (ChatKind::Private { .. }, Some(from)) => (format!("from {from}"), style::VIOLET, style::VIOLET),
-        (ChatKind::Error, _) => (String::new(), style::EMBER, style::EMBER),
-        _ => (String::new(), style::DIM, style::DIM),
+    // Minecraft's formats: `<name> text`, grey italic whispers, yellow joins, red errors.
+    const GREY: Color = Color::new(0.67, 0.67, 0.67, 1.0);
+    const YELLOW: Color = Color::new(1.0, 1.0, 0.33, 1.0);
+    let (prefix, colour, italic) = match (&entry.kind, &entry.from) {
+        (ChatKind::Say, Some(from)) => (format!("<{from}> "), style::TEXT, false),
+        (ChatKind::Private { outgoing: true }, Some(to)) => (format!("You whisper to {to}: "), GREY, true),
+        (ChatKind::Private { .. }, Some(from)) => (format!("{from} whispers to you: "), GREY, true),
+        (ChatKind::Error, _) => (String::new(), Color::new(1.0, 0.33, 0.33, 1.0), false),
+        _ if entry.text.ends_with(" joined the game") || entry.text.ends_with(" left the game") => (String::new(), YELLOW, false),
+        _ => (String::new(), style::TEXT, false),
+    };
+    let (prefix_colour, text_colour) = (colour, colour);
+    let styled = |text: &str, c| {
+        let t = egui::RichText::new(text).color(fade(c));
+        if italic { t.italics() } else { t }
     };
     let mut clicked = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if !prefix.is_empty() {
-            ui.label(egui::RichText::new(format!("{prefix}  ")).color(fade(prefix_colour)));
+            ui.label(styled(&prefix, prefix_colour));
         }
         let mut at = 0;
         for (start, end, target) in find_mentions(&entry.text, mentions) {
             if start > at {
-                ui.label(egui::RichText::new(&entry.text[at..start]).color(fade(text_colour)));
+                ui.label(styled(&entry.text[at..start], text_colour));
             }
             let colour = match target {
                 Mention::Body(_) => style::GOLD,
@@ -459,7 +485,7 @@ fn line(ui: &mut egui::Ui, entry: &ChatEntry, opacity: f32, mentions: &[(String,
             at = end;
         }
         if at < entry.text.len() {
-            ui.label(egui::RichText::new(&entry.text[at..]).color(fade(text_colour)));
+            ui.label(styled(&entry.text[at..], text_colour));
         }
     });
     clicked

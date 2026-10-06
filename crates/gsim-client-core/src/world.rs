@@ -253,7 +253,7 @@ impl World {
     pub fn apply_event(&mut self, e: Event, stats: &mut Stats) {
         match e {
             Event::PlayerJoined { id, name } => {
-                self.say(self.head, format!("{name} joined"));
+                self.say(self.head, format!("{name} joined the game"));
                 self.players.entry(id).or_insert(PlayerRep {
                     name,
                     kills: 0,
@@ -267,7 +267,7 @@ impl World {
             }
             Event::PlayerLeft { id } => {
                 if let Some(p) = self.players.remove(&id) {
-                    self.say(self.head, format!("{} left", p.name));
+                    self.say(self.head, format!("{} left the game", p.name));
                 }
             }
             Event::ShipSpawn { tick, player, state } => {

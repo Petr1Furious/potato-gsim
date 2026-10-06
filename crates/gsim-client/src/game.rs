@@ -882,6 +882,8 @@ impl Game {
         );
         let (mut has_ptr, mut has_kb) = (false, false);
         let mut chat_out = chat::Outcome::default();
+        // Wheel movement in notches: raw units differ per platform, as for zooming.
+        let chat_wheel = wheel * settings.zoom_speed;
         let (mut ui_scale, mut zoom_speed) = (settings.ui_scale, settings.zoom_speed);
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
@@ -1001,7 +1003,7 @@ impl Game {
                 });
             });
 
-            chat_out = self.chat.show(ctx, &self.net.session.chat, now, &complete_ctx, &mentions);
+            chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
             if menu {
                 egui::Window::new("MENU").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
                     ctx,

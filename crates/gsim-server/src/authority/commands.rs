@@ -113,15 +113,32 @@ impl Authority {
         }
     }
 
-    /// The named player, or the caller when the argument is missing.
-    fn player_or(&self, word: Option<&String>, me: PlayerId) -> Result<PlayerId, String> {
-        word.map_or(Ok(me), |w| self.find_player(w))
+    /// Players a word stands for: a name, `@s` (the caller), `@a` (everyone) or `@r`
+    /// (someone at random).
+    fn select(&mut self, word: &str, me: PlayerId) -> Result<Vec<PlayerId>, String> {
+        match word {
+            "@s" => Ok(vec![me]),
+            "@a" => Ok(self.players.keys().copied().collect()),
+            "@r" => {
+                let ids: Vec<PlayerId> = self.players.keys().copied().collect();
+                Ok(vec![ids[(self.rng.u64() % ids.len() as u64) as usize]])
+            }
+            name => self.find_player(name).map(|id| vec![id]),
+        }
     }
 
-    /// A live body: a scenario name, `B<slot>`, a bare slot number, or `@target`.
+    /// The players named by an optional argument; the caller when it is missing.
+    fn select_or_me(&mut self, word: Option<&String>, me: PlayerId) -> Result<Vec<PlayerId>, String> {
+        match word {
+            Some(w) => self.select(w, me),
+            None => Ok(vec![me]),
+        }
+    }
+
+    /// A live body: a scenario name, `B<slot>`, a bare slot number, or `@t` (the objective).
     fn find_body(&self, word: &str) -> Result<u32, String> {
         let w = word.to_lowercase();
-        let slot = if w == "@target" {
+        let slot = if w == "@t" {
             self.target
         } else if let Some((slot, _)) = self.names.iter().find(|(_, n)| n.to_lowercase() == w) {
             Some(*slot)
@@ -129,6 +146,14 @@ impl Authority {
             w.strip_prefix('b').unwrap_or(&w).parse::<u32>().ok()
         };
         slot.filter(|s| self.massive.alive.get(*s as usize).copied().unwrap_or(false)).ok_or_else(|| format!("no body called {word:?}"))
+    }
+
+    fn body_name(&self, slot: u32) -> String {
+        self.names.iter().find(|(s, _)| *s == slot).map_or_else(|| format!("B{slot}"), |(_, n)| n.clone())
+    }
+
+    fn names_of(&self, ids: &[PlayerId]) -> String {
+        ids.iter().map(|id| self.name_of(*id)).collect::<Vec<_>>().join(", ")
     }
 
     fn ship_of(&self, id: PlayerId) -> Result<ShipState, String> {
@@ -159,8 +184,9 @@ impl Authority {
         }
     }
 
-    /// Where a `/tp` should put `who`: next to a player, near a body, or at coordinates.
-    fn destination(&self, who: PlayerId, words: &[String]) -> Result<Particle, String> {
+    /// Where a `/tp` should put `who` (next to a player, near a body, or at coordinates),
+    /// and how to describe that place.
+    fn destination(&mut self, who: PlayerId, words: &[String], me: PlayerId) -> Result<(Particle, String), String> {
         let ship = self.ship_of(who)?.p;
         match words {
             [x, y] if is_coordinate(x) && is_coordinate(y) => {
@@ -170,21 +196,22 @@ impl Authority {
                     None => parse_metres(word),
                 };
                 match (axis(x, ship.x), axis(y, ship.y)) {
-                    (Some(x), Some(y)) => Ok(Particle { x, y, ..ship }),
+                    (Some(x), Some(y)) => Ok((Particle { x, y, ..ship }, format!("{x:.4e}, {y:.4e}"))),
                     _ => Err(String::new()),
                 }
             }
             [place] => {
-                if let Ok(other) = self.find_player(place) {
+                if let Ok(others) = self.select(place, me) {
+                    let [other] = others[..] else { return Err("the destination must be a single player".into()) };
                     // Just outside each other's blast radius, flying in formation.
                     let o = self.ship_of(other)?.p;
-                    return Ok(Particle { x: o.x + 3.0 * self.rules.shell_blast_radius, ..o });
+                    return Ok((Particle { x: o.x + 3.0 * self.rules.shell_blast_radius, ..o }, self.name_of(other)));
                 }
-                let slot = self.find_body(place).map_err(|_| format!("{place:?} is neither a player nor a body"))? as usize;
-                let m = &self.massive;
+                let slot = self.find_body(place).map_err(|_| format!("{place:?} is neither a player nor a body"))?;
+                let (j, m) = (slot as usize, &self.massive);
                 // Outside the scoring band, moving with the body.
-                let d = 2.0 * self.rules.orbit_max_apo_radii * m.radius[slot];
-                Ok(Particle { x: m.x[slot] + d, y: m.y[slot], vx: m.vx[slot], vy: m.vy[slot] })
+                let d = 2.0 * self.rules.orbit_max_apo_radii * m.radius[j];
+                Ok((Particle { x: m.x[j] + d, y: m.y[j], vx: m.vx[j], vy: m.vy[j] }, self.body_name(slot)))
             }
             _ => Err(String::new()),
         }
@@ -192,6 +219,7 @@ impl Authority {
 
     // --- the commands ------------------------------------------------------------------------
 
+    /// Run a command. `Ok(Some(text))` is the feedback for the caller.
     fn run(&mut self, conn: ConnId, me: PlayerId, name: &str, args: &[String]) -> Reply {
         let hz = self.rules.tick_hz as f64;
         let rest = |from: usize| args.get(from..).unwrap_or(&[]).join(" ");
@@ -206,43 +234,49 @@ impl Authority {
             "list" => {
                 let names: Vec<String> =
                     self.players.values().map(|p| if self.state.is_op(&p.name) { format!("{} (op)", p.name) } else { p.name.clone() }).collect();
-                done(format!("online: {}", names.join(", ")))
+                done(format!("There are {} players online: {}", names.len(), names.join(", ")))
             }
             "msg" | "r" => {
                 let (to, text) = if name == "r" {
                     let to = self.players.get(&me).and_then(|p| p.reply_to).filter(|t| self.players.contains_key(t));
-                    (to.ok_or("nobody to reply to")?, rest(0))
+                    (vec![to.ok_or("nobody to reply to")?], rest(0))
                 } else {
-                    (self.find_player(args.first().ok_or("")?)?, rest(1))
+                    (self.select(args.first().ok_or("")?, me)?, rest(1))
                 };
                 if text.is_empty() {
                     return Err(String::new());
                 }
-                let (from_name, to_name) = (self.name_of(me), self.name_of(to));
-                if let Some(p) = self.players.get_mut(&to) {
-                    p.reply_to = Some(me);
+                let from_name = self.name_of(me);
+                for to in to.into_iter().filter(|t| *t != me) {
+                    let to_name = self.name_of(to);
+                    if let Some(p) = self.players.get_mut(&to) {
+                        p.reply_to = Some(me);
+                    }
+                    if let Some(p) = self.players.get_mut(&me) {
+                        p.reply_to = Some(to);
+                    }
+                    if let Some(c) = self.conn_of(to) {
+                        let line = ChatLine { kind: ChatKind::Private { outgoing: false }, from: Some(from_name.clone()), text: text.clone() };
+                        self.send(Target::One(c), ServerMsg::Chat(line));
+                    }
+                    let line = ChatLine { kind: ChatKind::Private { outgoing: true }, from: Some(to_name), text: text.clone() };
+                    self.send(Target::One(conn), ServerMsg::Chat(line));
                 }
-                if let Some(p) = self.players.get_mut(&me) {
-                    p.reply_to = Some(to);
-                }
-                if let Some(c) = self.conn_of(to) {
-                    let line = ChatLine { kind: ChatKind::Private { outgoing: false }, from: Some(from_name), text: text.clone() };
-                    self.send(Target::One(c), ServerMsg::Chat(line));
-                }
-                let line = ChatLine { kind: ChatKind::Private { outgoing: true }, from: Some(to_name), text };
-                self.send(Target::One(conn), ServerMsg::Chat(line));
                 Ok(None)
             }
             "respawn" | "kill" => {
-                let who = self.player_or(args.first(), me)?;
-                if who != me && !self.is_op(me) {
-                    return Err("only operators can respawn someone else".into());
-                }
                 if name == "kill" && args.is_empty() {
                     return Err(String::new());
                 }
-                self.destroy(who)?;
-                Ok(None)
+                let who = self.select_or_me(args.first(), me)?;
+                if who != [me] && !self.is_op(me) {
+                    return Err("only operators can respawn someone else".into());
+                }
+                let hit: Vec<PlayerId> = who.into_iter().filter(|id| self.destroy(*id).is_ok()).collect();
+                if hit.is_empty() {
+                    return Err("nobody there has a ship right now".into());
+                }
+                done(format!("Destroyed {}", self.names_of(&hit)))
             }
             "round" => {
                 let seconds = || args.get(1).and_then(|s| s.parse::<f64>().ok()).filter(|s| s.is_finite() && *s >= 0.0).ok_or(String::new());
@@ -250,48 +284,73 @@ impl Authority {
                     Some("new") => {
                         self.start_round();
                         self.announce(format!("{} started a new round", self.name_of(me)));
+                        Ok(None)
                     }
                     Some("time") => {
-                        let end = self.tick() + (seconds()? * hz) as Tick;
-                        self.round_end_tick = Some(end);
+                        let s = seconds()?;
+                        self.round_end_tick = Some(self.tick() + (s * hz) as Tick);
                         self.next_round_tick = None;
                         self.event(Event::RoundClock { round_end_tick: self.round_end_tick });
+                        done(format!("The round ends in {s} seconds"))
                     }
                     Some("length") => {
-                        self.round_ticks = (seconds()? * hz) as Tick;
+                        let s = seconds()?;
+                        self.round_ticks = (s * hz) as Tick;
                         self.round_end_tick = (self.round_ticks > 0).then(|| self.tick() + self.round_ticks);
                         self.event(Event::RoundClock { round_end_tick: self.round_end_tick });
+                        done(if s > 0.0 { format!("Rounds now last {s} seconds") } else { "Rounds no longer end".to_string() })
                     }
-                    _ => return Err(String::new()),
+                    _ => Err(String::new()),
                 }
-                Ok(None)
             }
             "tp" => {
-                // A leading player name says who moves, when something follows it.
+                // A leading player says who moves, when something follows it.
                 let named = args.len() >= 2 && !is_coordinate(&args[0]);
-                let who = if named { self.find_player(&args[0])? } else { me };
-                let place = self.destination(who, &args[named as usize..])?;
-                let old = self.ship_of(who)?;
-                self.place_ship(who, ShipState { p: place, ..old });
-                Ok(None)
+                let who = if named { self.select(&args[0], me)? } else { vec![me] };
+                let mut moved = Vec::new();
+                let mut place = String::new();
+                let mut problem = String::new();
+                for id in who {
+                    match self.destination(id, &args[named as usize..], me) {
+                        Ok((p, name)) => {
+                            let old = self.ship_of(id)?;
+                            self.place_ship(id, ShipState { p, ..old });
+                            moved.push(id);
+                            place = name;
+                        }
+                        Err(e) => problem = e,
+                    }
+                }
+                if moved.is_empty() {
+                    return Err(problem);
+                }
+                done(format!("Teleported {} to {place}", self.names_of(&moved)))
             }
             "orbit" => {
                 let (who, body) = match args {
-                    [body] => (me, body),
-                    [who, body] => (self.find_player(who)?, body),
+                    [body] => (vec![me], body),
+                    [who, body] => (self.select(who, me)?, body),
                     _ => return Err(String::new()),
                 };
-                let slot = self.find_body(body)? as usize;
-                let m = &self.massive;
-                if m.mass[slot] <= 0.0 {
+                let slot = self.find_body(body)?;
+                let j = slot as usize;
+                if self.massive.mass[j] <= 0.0 {
                     return Err("nothing can orbit a body with negative mass".into());
                 }
-                let r = 10.0 * m.radius[slot];
-                let v = (self.rules.g * m.mass[slot] / r).sqrt();
-                let p = Particle { x: m.x[slot] + r, y: m.y[slot], vx: m.vx[slot], vy: m.vy[slot] + v };
-                let old = self.ship_of(who)?;
-                self.place_ship(who, ShipState { p, ..old });
-                Ok(None)
+                let mut placed = Vec::new();
+                for id in who {
+                    let Ok(old) = self.ship_of(id) else { continue };
+                    let m = &self.massive;
+                    let r = 10.0 * m.radius[j];
+                    let v = (self.rules.g * m.mass[j] / r).sqrt();
+                    let p = Particle { x: m.x[j] + r, y: m.y[j], vx: m.vx[j], vy: m.vy[j] + v };
+                    self.place_ship(id, ShipState { p, ..old });
+                    placed.push(id);
+                }
+                if placed.is_empty() {
+                    return Err("nobody there has a ship right now".into());
+                }
+                done(format!("Put {} on an orbit around {}", self.names_of(&placed), self.body_name(slot)))
             }
             "preset" => {
                 let preset = args.first().ok_or("")?;
@@ -313,35 +372,53 @@ impl Authority {
             "target" => {
                 let slot = self.find_body(args.first().ok_or("")?)?;
                 self.set_target(slot);
-                Ok(None)
+                done(format!("The target is now {}", self.body_name(slot)))
             }
             "fuel" => {
-                let who = self.player_or(args.first(), me)?;
-                let ship = self.ship_of(who)?;
-                self.place_ship(who, ShipState { fuel: self.rules.fuel_max_mmps, ..ship });
-                Ok(None)
+                let who = self.select_or_me(args.first(), me)?;
+                let mut filled = Vec::new();
+                for id in who {
+                    if let Ok(ship) = self.ship_of(id) {
+                        self.place_ship(id, ShipState { fuel: self.rules.fuel_max_mmps, ..ship });
+                        filled.push(id);
+                    }
+                }
+                if filled.is_empty() {
+                    return Err("nobody there has a ship right now".into());
+                }
+                done(format!("Refuelled {}", self.names_of(&filled)))
             }
             "god" => {
-                let who = self.player_or(args.first(), me)?;
-                let p = self.players.get_mut(&who).ok_or("")?;
-                p.god = !p.god;
-                done(format!("{} is {} to shells", p.name, if p.god { "now immune" } else { "no longer immune" }))
+                let who = self.select_or_me(args.first(), me)?;
+                let mut lines = Vec::new();
+                for id in who {
+                    if let Some(p) = self.players.get_mut(&id) {
+                        p.god = !p.god;
+                        lines.push(format!("{} is {} to shells", p.name, if p.god { "now immune" } else { "no longer immune" }));
+                    }
+                }
+                done(lines.join("; "))
             }
             "score" => {
-                let who = self.find_player(args.first().ok_or("")?)?;
+                let who = self.select(args.first().ok_or("")?, me)?;
                 let number = |i: usize| args.get(i).and_then(|s| s.parse::<u32>().ok()).ok_or(String::new());
                 let (kills, captures) = (number(1)?, number(2)?);
-                let p = self.players.get_mut(&who).ok_or("")?;
-                (p.kills, p.captures) = (kills, captures);
-                let deaths = p.deaths;
-                self.event(Event::Score { player: who, kills, deaths, captures });
-                Ok(None)
+                for id in &who {
+                    if let Some(p) = self.players.get_mut(id) {
+                        (p.kills, p.captures) = (kills, captures);
+                        let deaths = p.deaths;
+                        self.event(Event::Score { player: *id, kills, deaths, captures });
+                    }
+                }
+                done(format!("Set {} to {kills} kills and {captures} orbits", self.names_of(&who)))
             }
             "kick" => {
-                let who = self.find_player(args.first().ok_or("")?)?;
-                let (name, reason) = (self.name_of(who), rest(1));
-                self.kick(who, if reason.is_empty() { "kicked by an operator".into() } else { format!("kicked: {reason}") });
-                self.announce(format!("{name} was kicked"));
+                let who = self.select(args.first().ok_or("")?, me)?;
+                let (names, reason) = (self.names_of(&who), rest(1));
+                for id in who {
+                    self.kick(id, if reason.is_empty() { "kicked by an operator".into() } else { format!("kicked: {reason}") });
+                }
+                self.announce(format!("{names} was kicked"));
                 Ok(None)
             }
             "ban" => {
@@ -355,7 +432,7 @@ impl Authority {
             }
             "unban" => {
                 let name = rest(0);
-                if self.state.unban(&name) { done(format!("unbanned {name}")) } else { Err(format!("{name} is not banned")) }
+                if self.state.unban(&name) { done(format!("Unbanned {name}")) } else { Err(format!("{name} is not banned")) }
             }
             "ban-ip" => {
                 let word = args.first().ok_or("")?;
@@ -367,11 +444,11 @@ impl Authority {
                     .ok_or_else(|| format!("{word:?} is neither an address nor a player with a known address"))?;
                 self.state.ban_ip(ip, &rest(1));
                 self.enforce_state();
-                done(format!("banned address {ip}"))
+                done(format!("Banned address {ip}"))
             }
             "unban-ip" => {
                 let ip = args.first().and_then(|s| s.parse::<IpAddr>().ok()).ok_or("")?;
-                if self.state.unban_ip(ip) { done(format!("unbanned {ip}")) } else { Err(format!("{ip} is not banned")) }
+                if self.state.unban_ip(ip) { done(format!("Unbanned {ip}")) } else { Err(format!("{ip} is not banned")) }
             }
             "op" | "deop" => {
                 let word = args.first().ok_or("")?;
@@ -388,21 +465,21 @@ impl Authority {
                 (Some("on"), _) | (Some("off"), _) => {
                     self.state.whitelist_enabled = args[0] == "on";
                     self.enforce_state();
-                    done(format!("whitelist {}", args[0]))
+                    done(format!("The whitelist is now {}", args[0]))
                 }
                 (Some("add"), Some(n)) => {
                     self.state.whitelist_add(n);
-                    done(format!("{n} added to the whitelist"))
+                    done(format!("Added {n} to the whitelist"))
                 }
                 (Some("remove"), Some(n)) => {
                     let removed = self.state.whitelist_remove(n);
                     self.enforce_state();
-                    if removed { done(format!("{n} removed from the whitelist")) } else { Err(format!("{n} is not on the whitelist")) }
+                    if removed { done(format!("Removed {n} from the whitelist")) } else { Err(format!("{n} is not on the whitelist")) }
                 }
                 (Some("list"), _) => {
                     let names: Vec<String> = self.state.whitelist().cloned().collect();
                     let state = if self.state.whitelist_enabled { "on" } else { "off" };
-                    done(format!("whitelist ({state}): {}", if names.is_empty() { "empty".into() } else { names.join(", ") }))
+                    done(format!("Whitelist ({state}): {}", if names.is_empty() { "empty".into() } else { names.join(", ") }))
                 }
                 _ => Err(String::new()),
             },

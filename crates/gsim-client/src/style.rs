@@ -399,4 +399,3 @@ impl Labels {
         }
     }
 }
-pub const VIOLET: Color = Color::new(0.78, 0.62, 1.0, 1.0);

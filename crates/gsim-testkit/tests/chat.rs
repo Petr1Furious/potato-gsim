@@ -53,7 +53,7 @@ fn messages_reach_everyone_and_whispers_only_their_target() {
     sim.add_client("dan", LINK);
     sim.run_with(1.0, idle);
     for i in [a, b, c] {
-        assert!(system(&sim.clients[i].session).iter().any(|l| l == "dan joined"), "{:?}", system(&sim.clients[i].session));
+        assert!(system(&sim.clients[i].session).iter().any(|l| l == "dan joined the game"), "{:?}", system(&sim.clients[i].session));
     }
 
     say(&mut sim, b, "/msg ann psst");
@@ -195,7 +195,7 @@ fn moderation_from_chat() {
     say(&mut sim, c, "/deop cat");
     assert!(!sim.clients[c].session.op);
     say(&mut sim, c, "/list");
-    assert_eq!(system(&sim.clients[c].session).last().unwrap(), "online: cat");
+    assert_eq!(system(&sim.clients[c].session).last().unwrap(), "There are 1 players online: cat");
 
     say(&mut sim, c, "/op cat");
     assert_eq!(errors(&sim.clients[c].session).last().unwrap(), "/op is for operators");
