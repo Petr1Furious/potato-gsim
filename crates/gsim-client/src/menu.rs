@@ -140,7 +140,12 @@ impl SinglePlayer {
     fn measure(&mut self, settings: &Settings, name: &'static str) {
         let mut params = params_of(settings, name);
         params.remove("count");
-        let handle = std::thread::Builder::new().name("gsim-measure".into()).spawn(move || gsim_swarm::bench::suggest(name, &params, BUDGET_MS));
+        // Measure with as many threads as the world will get.
+        let threads = crate::density::simulation_threads(settings.gpu);
+        let handle = std::thread::Builder::new().name("gsim-measure".into()).spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().map_err(|e| e.to_string())?;
+            pool.install(|| gsim_swarm::bench::suggest(name, &params, BUDGET_MS))
+        });
         self.measuring = handle.ok().map(|h| (name.to_string(), h));
     }
 

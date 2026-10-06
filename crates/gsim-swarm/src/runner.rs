@@ -21,6 +21,8 @@ pub enum Command {
     Refuel,
     Destroy,
     Watch(Vec<u32>),
+    /// How many threads the simulation may use from now on.
+    Threads(usize),
 }
 
 /// Maps wall-clock time to simulation ticks between two steps.
@@ -114,7 +116,8 @@ const MERGE_BACKLOG: usize = 6000;
 const HEAVIEST: usize = 12;
 
 impl Runner {
-    pub fn start(sim: Sim) -> Self {
+    /// `threads` is how many the simulation may use (see [`Command::Threads`]).
+    pub fn start(sim: Sim, threads: usize) -> Self {
         let bodies = sim.bodies.clone();
         let rules = sim.rules.clone();
         let published = Arc::new(Mutex::new(Published {
@@ -138,7 +141,7 @@ impl Runner {
         }));
         let (commands, inbox) = channel();
         let out = published.clone();
-        let thread = std::thread::Builder::new().name("gsim-swarm".into()).spawn(move || run(sim, inbox, out)).expect("spawn simulation thread");
+        let thread = std::thread::Builder::new().name("gsim-swarm".into()).spawn(move || run(sim, inbox, out, threads)).expect("spawn simulation thread");
         Self { bodies, published, rules, commands, thread: Some(thread) }
     }
 
@@ -158,7 +161,14 @@ impl Drop for Runner {
     }
 }
 
-fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>) {
+fn pool(threads: usize) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).thread_name(|i| format!("gsim-swarm-{i}")).build().expect("simulation threads")
+}
+
+fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, threads: usize) {
+    // The simulation has its own threads, so that whoever draws it can decide how many cores
+    // are left over for that.
+    let mut workers = pool(threads);
     let hz = sim.rules.tick_hz as f64;
     let mut input = ShipInput::default();
     let mut paused = false;
@@ -186,6 +196,11 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>) {
                 Ok(Command::Refuel) => sim.refuel(),
                 Ok(Command::Destroy) => events.extend(sim.destroy()),
                 Ok(Command::Watch(ids)) => sim.watch = ids,
+                Ok(Command::Threads(n)) => {
+                    if n.max(1) != workers.current_num_threads() {
+                        workers = pool(n);
+                    }
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
             }
@@ -220,7 +235,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>) {
         let before = sim.ship;
         // The ship is quick: publish where it will be before the long part starts, so it can
         // be drawn moving while the bodies are being computed.
-        events.append(&mut sim.step_ship(input));
+        events.append(&mut workers.install(|| sim.step_ship(input)));
         {
             let mut p = out.lock().unwrap();
             p.clock = Clock { tick: sim.tick as f64, at: started, rate };
@@ -230,17 +245,17 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>) {
             p.ship_dt = sim.rules.dt;
             p.respawn_tick = sim.respawn_tick;
         }
-        let merges = sim.step_world();
+        let merges = workers.install(|| sim.step_world());
         let took = started.elapsed().as_secs_f64();
         step_s += 0.1 * (took - step_s);
         merge_rate += 0.05 * (merges.len() as f32 * rate as f32 - merge_rate);
         if sim.tick % 900 == 450 {
             let b = sim.bodies.read().unwrap();
-            last_error = Some(sim.engine.force_error(&b, 24) as f32);
+            last_error = Some(workers.install(|| sim.engine.force_error(&b, 24)) as f32);
         }
         let heaviest = (sim.tick % 30 == 1).then(|| {
             let b = sim.bodies.read().unwrap();
-            b.heaviest(HEAVIEST).into_iter().map(|i| Heavy { id: b.id[i], mass: b.m[i], radius: b.r[i] }).collect::<Vec<_>>()
+            workers.install(|| b.heaviest(HEAVIEST)).into_iter().map(|i| Heavy { id: b.id[i], mass: b.m[i], radius: b.r[i] }).collect::<Vec<_>>()
         });
         // A fresh picture of the ship's surroundings a few times a second.
         let local = (sim.ship.is_some() && sim.local_tick + 1 == sim.tick && sim.tick >= last_local + 12).then(|| {

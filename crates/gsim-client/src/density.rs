@@ -4,6 +4,7 @@
 //! drawn properly on top.
 
 use crate::game::View;
+use crate::gpu::{Gpu, Vertex};
 use crate::style;
 use gsim_swarm::Bodies;
 use macroquad::prelude::*;
@@ -78,6 +79,10 @@ pub struct Density {
     texture: Option<Texture2D>,
     exposure: f32,
     pool: rayon::ThreadPool,
+    gpu: Option<Gpu>,
+    gpu_wanted: bool,
+    notice: Option<String>,
+    vertices: Vec<Vertex>,
     /// Milliseconds the last frame took to rasterise.
     pub last_ms: f32,
 }
@@ -114,10 +119,11 @@ pub fn raster_threads() -> usize {
     (std::thread::available_parallelism().map_or(4, |n| n.get()) / 3).clamp(2, 6)
 }
 
-/// Threads left for simulating once the rasteriser and the main thread have theirs.
-pub fn simulation_threads() -> usize {
+/// Threads left for simulating once the picture and the main thread have theirs. With the
+/// graphics card drawing, the picture needs one for a moment each frame instead of several.
+pub fn simulation_threads(gpu: bool) -> usize {
     let all = std::thread::available_parallelism().map_or(4, |n| n.get());
-    all.saturating_sub(raster_threads() + 1).max(2)
+    all.saturating_sub(if gpu { 1 } else { raster_threads() } + 1).max(2)
 }
 
 impl Density {
@@ -139,6 +145,10 @@ impl Density {
             texture: None,
             exposure: 1.0,
             pool,
+            gpu: None,
+            gpu_wanted: false,
+            notice: None,
+            vertices: Vec::new(),
             last_ms: 0.0,
         }
     }
@@ -243,6 +253,20 @@ impl Density {
     /// into light, add the glow, tone-map and draw the picture over the whole screen.
     pub fn present(&mut self, flashes: &[Flash]) {
         let started = std::time::Instant::now();
+        if self.gpu_wanted && self.gpu.is_none() {
+            match Gpu::new() {
+                Ok(gpu) => self.gpu = Some(gpu),
+                Err(why) => {
+                    self.gpu_wanted = false;
+                    self.notice = Some(why);
+                }
+            }
+        }
+        if self.gpu.is_some() {
+            self.present_gpu(flashes);
+            self.last_ms += started.elapsed().as_secs_f32() * 1e3;
+            return;
+        }
         let (w, h, scale) = (self.w, self.h, self.scale);
         let (x0, y0, ppm) = self.corner;
         let colors = self.colors;
@@ -382,5 +406,84 @@ impl Density {
         let params = DrawTextureParams { dest_size: Some(vec2(w as f32 * scale, h as f32 * scale)), ..Default::default() };
         draw_texture_ex(self.texture.as_ref().unwrap(), 0.0, 0.0, WHITE, params);
         self.last_ms += started.elapsed().as_secs_f32() * 1e3;
+    }
+
+    /// The GPU version of [`Density::present`]: hand the projected bodies to the graphics
+    /// card. Exposure cannot be read off the finished image there, so it is estimated from
+    /// how many bodies share each small block of the screen.
+    fn present_gpu(&mut self, flashes: &[Flash]) {
+        const CELL: usize = 16;
+        let (w, h, scale) = (self.w, self.h, self.scale);
+        let (cw, ch) = (w.div_ceil(CELL), h.div_ceil(CELL));
+        let colors = self.colors;
+        let n = self.pix.len();
+        self.vertices.resize(n, [0.0; 5]);
+        let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
+        let (pix, tint, vertices) = (&self.pix, &self.tint, &mut self.vertices);
+        let grid = self.pool.install(|| {
+            vertices
+                .par_chunks_mut(chunk)
+                .zip(pix.par_chunks(chunk))
+                .zip(tint.par_chunks(chunk))
+                .map(|((out, pix), tint)| {
+                    let mut grid = vec![(0u32, 0.0f32); cw * ch];
+                    for ((v, p), (shade, weight)) in out.iter_mut().zip(pix).zip(tint) {
+                        if *p == NOWHERE {
+                            // Off screen: the card clips it.
+                            *v = [-10.0, -10.0, 0.0, 0.0, 0.0];
+                            continue;
+                        }
+                        let (x, y) = ((p & 0xFFFF) as usize, (p >> 16) as usize);
+                        let c = &colors[*shade as usize];
+                        *v = [x as f32 + 0.5, y as f32 + 0.5, c[0] * weight, c[1] * weight, c[2] * weight];
+                        let cell = &mut grid[(y / CELL) * cw + x / CELL];
+                        cell.0 += 1;
+                        cell.1 += (c[0] + c[1] + c[2]) * weight;
+                    }
+                    grid
+                })
+                .reduce_with(|mut a, b| {
+                    for (x, y) in a.iter_mut().zip(b) {
+                        *x = (x.0 + y.0, x.1 + y.1);
+                    }
+                    a
+                })
+                .unwrap_or_default()
+        });
+        // Bodies in a block light at most as many pixels as the block has.
+        let (lit, light) = grid.iter().fold((0u32, 0.0f32), |s, c| (s.0 + c.0.min((CELL * CELL) as u32), s.1 + c.1));
+        if lit > 0 {
+            let wanted = (0.5 / (light / lit as f32 / 3.0)).clamp(0.05, 60.0);
+            self.exposure += 0.08 * (wanted - self.exposure);
+        }
+        let glow = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * self.exposure;
+        let glow_size = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
+        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), glow_size, self.exposure, glow, style::BACKGROUND);
+        let (x0, y0, ppm) = self.corner;
+        for f in flashes {
+            let (fx, fy) = (((f.x - x0) * ppm) as f32 * scale, ((f.y - y0) * ppm) as f32 * scale);
+            let r = (1.0 + 2.5 * (1.0 - f.life) + ((f.mass.max(1.0).log10() - 19.0) * 0.25).clamp(0.0, 2.5)) * scale.sqrt();
+            if fx > -r && fy > -r && fx < screen_width() + r && fy < screen_height() + r {
+                // A hot core inside a wider, fainter halo.
+                style::disc(fx, fy, 2.4 * r, Color::new(1.0, 0.8, 0.5, 0.22 * f.life * f.life));
+                style::disc(fx, fy, r, Color::new(1.0, 0.92, 0.7, f.life));
+            }
+        }
+    }
+
+    /// Switch between the graphics card and the rasteriser threads. Takes effect on the
+    /// next frame; if the card cannot do it, [`Density::take_notice`] says why.
+    pub fn set_gpu(&mut self, on: bool) {
+        self.gpu_wanted = on;
+        if !on {
+            if let Some(mut gpu) = self.gpu.take() {
+                gpu.delete();
+            }
+        }
+    }
+
+    /// Why GPU drawing was given up, once.
+    pub fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 }

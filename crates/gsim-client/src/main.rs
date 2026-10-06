@@ -5,6 +5,7 @@ mod chat;
 mod density;
 mod fmt;
 mod game;
+mod gpu;
 mod menu;
 mod sandbox;
 mod predictor;
@@ -37,6 +38,9 @@ struct Args {
     /// A parameter of the `--solo` world, as key=value (repeatable)
     #[arg(long = "set", value_name = "KEY=VALUE")]
     set: Vec<String>,
+    /// Draw the `--solo` world on the graphics card, whatever the saved setting says
+    #[arg(long)]
+    gpu: bool,
     /// Measure how many bodies the large-scale engine holds on this machine, then exit
     #[arg(long)]
     bench: bool,
@@ -80,7 +84,7 @@ fn main() {
     }
     // One thread per core in total, not one per core for the simulation alone: the picture
     // needs some too, and fighting over them costs more frames than it gains steps.
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(density::simulation_threads()).thread_name(|i| format!("gsim-sim-{i}")).build_global();
+    let _ = rayon::ThreadPoolBuilder::new().num_threads(density::simulation_threads(false)).thread_name(|i| format!("gsim-sim-{i}")).build_global();
     if args.bench {
         println!("kernels: {}, {} simulation threads", gsim_swarm::Level::detect().name(), rayon::current_num_threads());
         for sc in gsim_swarm::scenario::SCENARIOS {
@@ -147,6 +151,7 @@ fn join(settings: &Settings, args: &Args) -> Result<Game, String> {
 fn solo(settings: &Settings, args: &Args, world: &str) -> Result<Started, String> {
     let mut settings = settings.clone();
     settings.preset = world.to_string();
+    settings.gpu |= args.gpu;
     let params = settings.params.entry(world.to_string()).or_default();
     for setting in &args.set {
         let (key, value) = gsim_server::scenario::parse_setting(setting)?;

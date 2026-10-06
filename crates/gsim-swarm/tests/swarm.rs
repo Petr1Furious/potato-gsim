@@ -239,7 +239,7 @@ fn watched_bodies_are_followed_through_merges() {
 
 #[test]
 fn the_runner_paces_pauses_and_stops() {
-    let runner = Runner::start(Sim::new(small("cloud", 4000.0), 1));
+    let runner = Runner::start(Sim::new(small("cloud", 4000.0), 1), 4);
     std::thread::sleep(Duration::from_millis(700));
     let (tick, ship) = {
         let p = runner.published.lock().unwrap();

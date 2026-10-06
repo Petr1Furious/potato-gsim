@@ -136,9 +136,11 @@ impl Sandbox {
         let rules = sim.rules.clone();
         let pace = rules.time_scale();
         let mut log = VecDeque::new();
+        let mut density = Density::new();
+        density.set_gpu(settings.gpu);
         log.push_back(ChatEntry { at: 0.0, kind: ChatKind::System, from: None, text: "Sandbox: Space pauses, hold < or > to change how fast time passes, / for commands".into() });
         Self {
-            runner: Runner::start(sim),
+            runner: Runner::start(sim, crate::density::simulation_threads(settings.gpu)),
             rules,
             scenario,
             player: settings.name.trim().to_string(),
@@ -169,7 +171,7 @@ impl Sandbox {
             last_mouse: mouse_position(),
             chat: ChatBox::default(),
             log,
-            density: Density::new(),
+            density,
             meter: fmt::Meter::default(),
             flashes: Vec::new(),
             wrecks: Vec::new(),
@@ -200,6 +202,19 @@ impl Sandbox {
         self.log.push_back(ChatEntry { at: self.now(), kind, from: None, text: text.into() });
         while self.log.len() > 200 {
             self.log.pop_front();
+        }
+    }
+
+    /// Move the picture to the graphics card or back, and hand the simulation the cores that
+    /// frees or takes.
+    fn use_gpu(&mut self, settings: &mut Settings, on: bool) {
+        self.density.set_gpu(on);
+        self.runner.send(Command::Threads(crate::density::simulation_threads(on)));
+        if settings.gpu != on {
+            settings.gpu = on;
+            // What the machine holds depends on how many cores simulate.
+            settings.measured.clear();
+            settings.save();
         }
     }
 
@@ -780,6 +795,7 @@ impl Sandbox {
         let mut chat_out = chat::Outcome::default();
         let (mut ui_scale, mut zoom_speed) = (settings.ui_scale, settings.zoom_speed);
         let (mut new_speed, mut new_theta, mut new_god, mut new_pick) = (None, theta, god, None);
+        let mut gpu = settings.gpu;
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
@@ -889,6 +905,7 @@ impl Sandbox {
                     style::section(ui, "WORLD");
                     ui.add(egui::Slider::new(&mut new_theta, 0.3..=1.2).text("opening angle")).on_hover_text("Smaller is more accurate and slower");
                     ui.checkbox(&mut new_god, "Indestructible ship with endless fuel");
+                    ui.checkbox(&mut gpu, "Draw on the graphics card").on_hover_text("Frees processor cores for the simulation. Falls back by itself if the card cannot do it.");
                     style::section(ui, "INTERFACE");
                     ui.add(egui::Slider::new(&mut ui_scale, 0.6..=2.5).text("size"));
                     ui.add(egui::Slider::new(&mut zoom_speed, 0.002..=3.0).logarithmic(true).text("zoom speed"));
@@ -935,6 +952,13 @@ impl Sandbox {
         }
         if new_theta != theta {
             self.runner.send(Command::Theta(new_theta));
+        }
+        if gpu != settings.gpu {
+            self.use_gpu(settings, gpu);
+        }
+        if let Some(why) = self.density.take_notice() {
+            self.print(ChatKind::Error, format!("Drawing on the graphics card is not possible here: {why}"));
+            self.use_gpu(settings, false);
         }
         if new_god != god {
             self.runner.send(Command::God(new_god));
