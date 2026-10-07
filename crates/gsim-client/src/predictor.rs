@@ -16,8 +16,9 @@ pub struct Job {
     pub timeline: InputTimeline,
     pub ticks: u32,
     pub show_ship: bool,
-    /// Also predict with the scheduled thrust kept on.
+    /// Also predict with the scheduled thrust kept on, until it has spent `burn_mmps`.
     pub held: bool,
+    pub burn_mmps: i64,
     /// Muzzle state of a shell fired now, if a preview is wanted.
     pub shell: Option<Particle>,
     /// Draw everything relative to this body.
@@ -34,6 +35,11 @@ pub struct Paths {
     pub shell: Vec<(f64, f64)>,
     /// Index into `coast` and distance of the closest approach to the reference body.
     pub closest: Option<(usize, f64)>,
+    /// The same for the first point from which the path turns back towards the reference body.
+    pub farthest: Option<(usize, f64)>,
+    /// After `farthest` the path really does come back: at least half way to where it was
+    /// nearest before. A path that merely wavers on its way out does not.
+    pub returns: bool,
     pub compute_ms: f64,
 }
 
@@ -85,7 +91,7 @@ fn compute(job: &Job) -> Paths {
     let mut out = Paths { ref_slot: job.ref_slot, ..Default::default() };
     let row_at = |t: Tick| job.reader.get(t);
     if job.show_ship {
-        let coast = predict_ship(job.ship, job.start, job.ticks, |_| ShipInput::default(), row_at, &job.rules);
+        let coast = predict_ship(job.ship, job.start, job.ticks, |_, _| ShipInput::default(), row_at, &job.rules);
         out.coast_impact = coast.impact.is_some();
         out.coast = relative(job, &coast);
         if job.ref_slot.is_some() {
@@ -93,9 +99,16 @@ fn compute(job: &Job) -> Paths {
             // repeating orbit later passes are about as close and would win by a hair.
             let d: Vec<f64> = out.coast.iter().map(|q| (q.0 * q.0 + q.1 * q.1).sqrt()).collect();
             out.closest = (1..d.len().saturating_sub(1)).find(|&i| d[i] <= d[i - 1] && d[i] < d[i + 1]).map(|i| (i, d[i]));
+            out.farthest = (1..d.len().saturating_sub(1)).find(|&i| d[i] >= d[i - 1] && d[i] > d[i + 1]).map(|i| (i, d[i]));
+            out.returns = out.farthest.is_some_and(|(i, far)| {
+                let near = d[..i].iter().copied().fold(f64::MAX, f64::min);
+                d[i..].iter().any(|x| *x <= 0.5 * (near + far))
+            });
         }
         if job.held {
-            let held = predict_ship(job.ship, job.start, job.ticks, |t| job.timeline.at(t), row_at, &job.rules);
+            // The burn goes on until it has cost so much, and then the ship coasts.
+            let until = job.ship.fuel - job.burn_mmps;
+            let held = predict_ship(job.ship, job.start, job.ticks, |t, s| if s.fuel > until { job.timeline.at(t) } else { ShipInput::default() }, row_at, &job.rules);
             out.held = relative(job, &held);
         }
     }
@@ -180,6 +193,7 @@ mod tests {
             ticks: 40,
             show_ship: true,
             held: false,
+            burn_mmps: 0,
             shell: None,
             ref_slot: Some(0),
         };

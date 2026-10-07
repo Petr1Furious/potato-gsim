@@ -289,7 +289,7 @@ fn prediction_is_bit_identical_to_what_then_happens() {
     timeline.set(40, ShipInput { angle: 40000, thrust: 35 });
     timeline.set(90, ShipInput { angle: 40000, thrust: 0 });
     let start = ShipState::new(Particle { x: 3.0e10, y: -1.0e10, vx: -500.0, vy: 900.0 }, &r);
-    let path = predict_ship(start, 0, 200, |t| timeline.at(t), |t| ring.get(t), &r);
+    let path = predict_ship(start, 0, 200, |t, _| timeline.at(t), |t| ring.get(t), &r);
 
     let mut ship = start;
     let mut scratch = Scratch::default();

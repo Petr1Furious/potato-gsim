@@ -4,6 +4,28 @@ use crate::density::ColorMode;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// What the camera stays with in a world with a ship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Camera {
+    Ship,
+    Selection,
+    /// Stays with the selection like `Selection`, and moves and zooms by itself so that the
+    /// ship, its predicted path and the selected body are all on screen.
+    Auto,
+}
+
+impl Camera {
+    pub const ALL: [Camera; 3] = [Camera::Ship, Camera::Selection, Camera::Auto];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Camera::Ship => "ship",
+            Camera::Selection => "selection",
+            Camera::Auto => "auto",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub name: String,
@@ -15,6 +37,8 @@ pub struct Settings {
     pub ui_scale: f32,
     /// Zoom steps per unit of mouse-wheel delta.
     pub zoom_speed: f32,
+    /// How much delta-v (km/s) the line drawn while thrusting assumes the burn will spend.
+    pub burn_preview: f32,
     /// Draw large-scale worlds on the graphics card instead of on rasteriser threads.
     pub gpu: bool,
     // What is drawn; see `options` for what each one means.
@@ -23,7 +47,7 @@ pub struct Settings {
     pub trails: bool,
     pub trails_relative: bool,
     pub body_names: bool,
-    pub follow_selection: bool,
+    pub camera: Camera,
     /// The F3 panel: network details in exact worlds, statistics in large ones.
     pub details: bool,
     pub color: ColorMode,
@@ -37,7 +61,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, follow_selection: true, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, camera: Camera::Selection, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -76,13 +100,14 @@ impl Settings {
                 "fullscreen" => s.fullscreen = v == "1",
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
+                "burn_preview" => s.burn_preview = v.parse().unwrap_or(s.burn_preview).clamp(0.1, 100.0),
                 "gpu_drawing" => s.gpu = v != "0",
                 "prediction" => s.prediction = v != "0",
                 "shell_prediction" => s.shell_prediction = v == "1",
                 "trails" => s.trails = v == "1",
                 "trails_relative" => s.trails_relative = v != "0",
                 "body_names" => s.body_names = v == "1",
-                "follow_selection" => s.follow_selection = v != "0",
+                "camera" => s.camera = Camera::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.camera),
                 "details" => s.details = v == "1",
                 "long_exposure" => s.long_exposure = v == "1",
                 "color" => s.color = ColorMode::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.color),
@@ -114,8 +139,8 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut text = format!(
-            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu_drawing={}\n",
-            self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.gpu as u8
+            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\nburn_preview={}\ngpu_drawing={}\n",
+            self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.burn_preview, self.gpu as u8
         );
         for (key, on) in [
             ("prediction", self.prediction),
@@ -123,13 +148,13 @@ impl Settings {
             ("trails", self.trails),
             ("trails_relative", self.trails_relative),
             ("body_names", self.body_names),
-            ("follow_selection", self.follow_selection),
             ("details", self.details),
             ("long_exposure", self.long_exposure),
         ] {
             text.push_str(&format!("{key}={}\n", on as u8));
         }
         text.push_str(&format!("color={}\n", self.color.name()));
+        text.push_str(&format!("camera={}\n", self.camera.name()));
         for (world, params) in &self.params {
             for (key, value) in params {
                 text.push_str(&format!("param.{world}.{key}={value}\n"));

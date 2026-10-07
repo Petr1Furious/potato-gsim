@@ -6,7 +6,7 @@ use crate::density::{ColorMode, Density, Flash};
 use crate::fmt;
 use crate::style::{self, Rank};
 use crate::predictor::{Job, Predictor};
-use crate::settings::Settings;
+use crate::settings::{Camera, Settings};
 use egui_macroquad::egui;
 use gsim_client_core::complete::Context;
 use gsim_client_core::net::NetClient;
@@ -124,6 +124,9 @@ pub struct Game {
     zoom_pending: f32,
     /// Camera offset from whatever it follows.
     offset: (f64, f64),
+    auto: Auto,
+    /// R was pressed: select the body the round is about.
+    pick_target: bool,
     chat: ChatBox,
     /// Camera follows this player (set by clicking their name in chat).
     watch: Option<PlayerId>,
@@ -179,6 +182,8 @@ impl Game {
             zoomed_for_ship: false,
             had_ship: false,
             zoom_pending: 0.0,
+            auto: Auto { moving: false, small_since: None, path: None, path_at: 0.0, hands_off_until: 0.0, framed: None },
+            pick_target: false,
             offset: (0.0, 0.0),
             chat: ChatBox::default(),
             watch: None,
@@ -276,10 +281,19 @@ impl Game {
                 settings.shell_prediction = !settings.shell_prediction;
             }
             if is_key_pressed(KeyCode::F) {
-                settings.follow_selection = !settings.follow_selection;
+                settings.camera = match settings.camera {
+                    Camera::Ship => Camera::Selection,
+                    Camera::Selection => Camera::Auto,
+                    Camera::Auto => Camera::Ship,
+                };
                 self.watch = None;
-                self.say(if settings.follow_selection { "Following selection" } else { "Following own ship" });
+                self.say(match settings.camera {
+                    Camera::Ship => "Following own ship",
+                    Camera::Selection => "Following selection",
+                    Camera::Auto => "Auto camera",
+                });
             }
+            self.pick_target |= is_key_pressed(KeyCode::R);
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
                 settings.save();
@@ -390,6 +404,17 @@ impl Game {
                 .flatten()
                 .filter(|s| alive(*s));
         }
+        if std::mem::take(&mut self.pick_target) {
+            let text = match world.target.filter(|t| alive(*t) && world.next_round_tick.is_none()) {
+                Some(slot) => {
+                    self.selected = Some(slot);
+                    self.watch = None;
+                    format!("Selected {}", world.body_name(slot))
+                }
+                None => "No target".to_string(),
+            };
+            self.status = Some((text, get_time() + 2.0));
+        }
         let own = world.ship_at(world.my_id, tick_f);
         let me_ship = world.my_ship();
 
@@ -398,7 +423,7 @@ impl Game {
         if watched.is_none() {
             self.watch = None;
         }
-        let target = match (settings.follow_selection, own, self.selected) {
+        let target = match (settings.camera != Camera::Ship, own, self.selected) {
             _ if watched.is_some() => Target::Player(watched.unwrap().0),
             (true, _, Some(s)) => Target::Body(s),
             (_, Some(_), _) => Target::Ship,
@@ -444,7 +469,9 @@ impl Game {
         }
         self.last_target = target;
         self.last_target_pos = target_pos;
-        if let (Target::Body(_), Some(ship), false) = (target, own, self.had_ship) {
+        // Stepping in by itself: only for our own ship, and only while there is one.
+        let auto = settings.camera == Camera::Auto && own.is_some() && matches!(target, Target::Ship | Target::Body(_));
+        if let (Target::Body(_), Some(ship), false, false) = (target, own, self.had_ship, auto) {
             frame_both(&mut self.view, &mut self.offset, target_pos, (ship.x, ship.y));
         }
         self.had_ship = own.is_some();
@@ -471,6 +498,10 @@ impl Game {
             let after = self.view.to_world(mouse.0, mouse.1);
             self.offset.0 += before.0 - after.0;
             self.offset.1 += before.1 - after.1;
+            if auto {
+                // Like a drag, the wheel puts the view where the player wants it for now.
+                (self.auto.hands_off_until, self.auto.moving) = (get_time() + AUTO_HANDS_OFF, false);
+            }
         }
         let dragging = is_mouse_button_down(MouseButton::Left) || is_mouse_button_down(MouseButton::Middle);
         if pointer && (is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Middle)) {
@@ -483,9 +514,59 @@ impl Game {
             if self.drag_moved > 10.0 * ui {
                 self.offset.0 -= dx as f64 * self.view.mpp;
                 self.offset.1 -= dy as f64 * self.view.mpp;
+                // The automatic camera lets a view chosen by hand stand for a while.
+                (self.auto.hands_off_until, self.auto.moving) = (get_time() + AUTO_HANDS_OFF, false);
             }
         }
         self.last_mouse = mouse;
+        match own.filter(|_| auto) {
+            Some(ship) => {
+                // Everything to keep in sight, measured from what the camera stays with.
+                let mut seen = Bounds::default();
+                seen.add(ship.x - target_pos.0, ship.y - target_pos.1, 0.0);
+                let centre = self.selected.map(|s| (body(s), row.props.radius[s as usize]));
+                if let Some((b, radius)) = centre {
+                    seen.add(b.x - target_pos.0, b.y - target_pos.1, radius);
+                }
+                let paths = &self.predictor.latest;
+                let framed = (self.selected, self.round);
+                let fresh = self.auto.framed != Some(framed);
+                // The predicted path is looked at only now and then: it shifts with every touch
+                // of the engine, and the view should not.
+                let now = get_time();
+                let thrusting = controls.thrust > 0;
+                // Paths are kept as seen from the selected body (or in the world, without one).
+                let from = centre.map_or((0.0, 0.0), |(b, _)| (b.x, b.y));
+                let shift = (from.0 - target_pos.0, from.1 - target_pos.1);
+                if paths.ref_slot != self.selected {
+                    self.auto.path = None;
+                } else if thrusting && !fresh {
+                    // Whatever the burn makes of the path is looked at shortly after it ends.
+                    self.auto.path_at = now - AUTO_PATH_EVERY + AUTO_AFTER_BURN;
+                } else if fresh || self.auto.path.is_none() || now - self.auto.path_at >= AUTO_PATH_EVERY {
+                    // Only as far as the closest approach to the selected body: what comes after
+                    // is another matter (the whole line when there is no such point).
+                    let upto = paths.closest.map_or(paths.coast.len(), |(i, _)| i + 1);
+                    let mut path = Bounds::default();
+                    for q in paths.coast.iter().take(upto).chain(&paths.shell) {
+                        path.add(q.0, q.1, 0.0);
+                    }
+                    // A path that goes out and comes back is an orbit: all of it fits in a circle
+                    // around the body as wide as its farthest point, and that view can stay.
+                    if let Some((_, far)) = paths.farthest.filter(|_| paths.returns) {
+                        path.add(0.0, 0.0, far);
+                    }
+                    (self.auto.path, self.auto.path_at) = (Some(path), now);
+                }
+                if let Some(path) = self.auto.path.filter(|p| p.min.0 <= p.max.0) {
+                    seen.add(path.min.0 + shift.0, path.min.1 + shift.1, 0.0);
+                    seen.add(path.max.0 + shift.0, path.max.1 + shift.1, 0.0);
+                }
+                self.auto.framed = Some(framed);
+                self.auto.steer(&seen, &mut self.view.mpp, &mut self.offset, fresh, thrusting, dt as f64);
+            }
+            None => self.auto.framed = None,
+        }
         self.view.cx = target_pos.0 + self.offset.0;
         self.view.cy = target_pos.1 + self.offset.1;
         let view = self.view;
@@ -679,6 +760,7 @@ impl Game {
                         ticks: self.lookahead_ticks,
                         show_ship: settings.prediction,
                         held: controls.thrust > 0,
+                        burn_mmps: (settings.burn_preview as f64 * 1.0e6) as i64,
                         shell,
                         ref_slot,
                     });
@@ -717,6 +799,15 @@ impl Game {
                 let lines = vec![format!("closest {}", fmt::distance(d)), format!("in {eta:.1} s")];
                 labels.block(lines, s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
             }
+        }
+        if let (false, Some((i, d))) = (stale, paths.farthest) {
+            // Where the path turns back towards the selected body.
+            let q = paths.coast[i];
+            let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
+            let c = Color::from_rgba(130, 200, 255, 255);
+            style::ring(s.0, s.1, 5.0 * ui, 1.5 * ui, c);
+            let eta = i as f64 / world.rules.tick_hz as f64;
+            labels.block(vec![format!("farthest {}", fmt::distance(d)), format!("in {eta:.1} s")], s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
         }
 
         // --- ship wakes ------------------------------------------------------------------------
@@ -1121,6 +1212,113 @@ impl Game {
 
 /// How long a merge flash lasts, in ticks.
 const FLASH_TICKS: f64 = 36.0;
+
+/// The automatic camera: it leaves the view alone while everything fits, and eases to a new
+/// one when something nears the edge or everything has been small for a while.
+struct Auto {
+    /// On its way to a new view.
+    moving: bool,
+    small_since: Option<f64>,
+    /// The box around the predicted path, and when it was last taken.
+    path: Option<Bounds>,
+    path_at: f64,
+    /// The player moved the view by hand: leave it be until then.
+    hands_off_until: f64,
+    /// What it last framed (selection and round): a change is a reason to move at once.
+    framed: Option<(Option<u32>, Option<u32>)>,
+}
+
+/// Part of the screen, from the middle to the edge, that a new view fills.
+const AUTO_FILL: f64 = 0.6;
+/// Reaching this far towards the edge calls for a new view.
+const AUTO_EDGE: f64 = 0.9;
+/// So does filling less than this of the screen for [`AUTO_PATIENCE`] seconds.
+const AUTO_SMALL: f64 = 0.25;
+const AUTO_PATIENCE: f64 = 1.5;
+/// Seconds between looks at the predicted path.
+const AUTO_PATH_EVERY: f64 = 2.0;
+/// Seconds after a burn before the path it left is looked at.
+const AUTO_AFTER_BURN: f64 = 0.5;
+/// Seconds a view moved by hand is left alone.
+const AUTO_HANDS_OFF: f64 = 3.0;
+/// How quickly it eases over, per second.
+const AUTO_RATE: f64 = 3.0;
+
+impl Auto {
+    fn steer(&mut self, seen: &Bounds, mpp: &mut f64, offset: &mut (f64, f64), fresh: bool, thrusting: bool, dt: f64) {
+        // A new subject is framed as soon as the engine allows.
+        self.moving |= fresh;
+        // The view holds still under thrust: flying needs a steady picture.
+        if thrusting {
+            self.small_since = None;
+            return;
+        }
+        let (sw, sh) = (screen_width() as f64, screen_height() as f64);
+        let (w, h) = (seen.max.0 - seen.min.0, seen.max.1 - seen.min.1);
+        if !(w.max(h) > 0.0 && w.is_finite() && h.is_finite()) {
+            return;
+        }
+        let base = *mpp;
+        let reach_x = (seen.max.0 - offset.0).max(offset.0 - seen.min.0) / (0.5 * sw * base);
+        let reach_y = (seen.max.1 - offset.1).max(offset.1 - seen.min.1) / (0.5 * sh * base);
+        let fill = (w / (sw * base)).max(h / (sh * base));
+        let now = get_time();
+        if now < self.hands_off_until && !fresh {
+            self.small_since = None;
+            return;
+        }
+        if fill < AUTO_SMALL {
+            self.small_since.get_or_insert(now);
+        } else {
+            self.small_since = None;
+        }
+        if fresh || reach_x.max(reach_y) > AUTO_EDGE || self.small_since.is_some_and(|t| now - t > AUTO_PATIENCE) {
+            self.moving = true;
+        }
+        if !self.moving {
+            return;
+        }
+        let middle = (0.5 * (seen.min.0 + seen.max.0), 0.5 * (seen.min.1 + seen.max.1));
+        let goal = ((w / sw).max(h / sh) / AUTO_FILL).clamp(0.05, 1.0e12);
+        let k = 1.0 - (-AUTO_RATE * dt).exp();
+        // The scale eases over, and the centre goes as far of its way as the scale has gone of
+        // its own: that is a zoom about one fixed point, in which every edge of the view moves
+        // straight from where it is to where it will be. Nothing that is in view before and
+        // after is out of it in between.
+        let was = *mpp;
+        *mpp *= (goal / was).powf(k);
+        let part = if (goal - was).abs() > 1.0e-9 * was { (*mpp - was) / (goal - was) } else { k };
+        offset.0 += (middle.0 - offset.0) * part;
+        offset.1 += (middle.1 - offset.1) * part;
+        let off = ((middle.0 - offset.0).abs() / sw).max((middle.1 - offset.1).abs() / sh) / *mpp;
+        if off < 0.005 && (goal / *mpp).ln().abs() < 0.01 {
+            self.moving = false;
+            self.small_since = None;
+        }
+    }
+}
+
+/// A box around points and discs.
+#[derive(Clone, Copy)]
+struct Bounds {
+    min: (f64, f64),
+    max: (f64, f64),
+}
+
+impl Default for Bounds {
+    fn default() -> Self {
+        Self { min: (f64::MAX, f64::MAX), max: (f64::MIN, f64::MIN) }
+    }
+}
+
+impl Bounds {
+    fn add(&mut self, x: f64, y: f64, r: f64) {
+        if x.is_finite() && y.is_finite() {
+            self.min = (self.min.0.min(x - r), self.min.1.min(y - r));
+            self.max = (self.max.0.max(x + r), self.max.1.max(y + r));
+        }
+    }
+}
 
 /// A new ship has appeared while the camera follows a body: unless both are already on
 /// screen, centre the view between them and zoom so that both are.

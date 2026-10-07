@@ -159,8 +159,28 @@ fn solo(settings: &Settings, args: &Args, world: &str) -> Result<Started, String
     menu::launch(&settings, seed_or_random(args.seed), args.lookahead)
 }
 
+/// The window library hands macOS a 64 pixel icon, which the Dock draws far larger; give it
+/// the full-size picture instead.
+#[cfg(target_os = "macos")]
+fn dock_icon() {
+    use miniquad::native::apple::frameworks::*;
+    static PNG: &[u8] = include_bytes!("../assets/icon.png");
+    // SAFETY: plain AppKit calls on the main thread, after the application object exists.
+    unsafe {
+        let data: ObjcId = msg_send![class!(NSData), dataWithBytes: PNG.as_ptr() length: PNG.len()];
+        let image: ObjcId = msg_send![class!(NSImage), alloc];
+        let image: ObjcId = msg_send![image, initWithData: data];
+        if !image.is_null() {
+            let app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
+            let () = msg_send![app, setApplicationIconImage: image];
+        }
+    }
+}
+
 async fn run(args: Args, mut settings: Settings) {
     style::init();
+    #[cfg(target_os = "macos")]
+    dock_icon();
     let mut message = String::new();
     let updater = updater::Updater::start(!args.no_update);
     // Closing the window or pressing Cmd+Q should still say goodbye to the server and

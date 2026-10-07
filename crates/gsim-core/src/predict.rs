@@ -21,7 +21,7 @@ pub fn predict_ship(
     start: ShipState,
     start_tick: Tick,
     max_ticks: u32,
-    input_at: impl Fn(Tick) -> ShipInput,
+    input_at: impl Fn(Tick, &ShipState) -> ShipInput,
     row_at: impl Fn(Tick) -> Option<Arc<EphRow>>,
     rules: &GameRules,
 ) -> Path {
@@ -31,7 +31,8 @@ pub fn predict_ship(
     for k in 0..max_ticks as Tick {
         let t = start_tick + k;
         let Some(row) = row_at(t) else { break };
-        let hit = step_ship(&mut s, input_at(t), &row.view(), rules, &mut scratch);
+        let input = input_at(t, &s);
+        let hit = step_ship(&mut s, input, &row.view(), rules, &mut scratch);
         path.points.push((s.p.x, s.p.y));
         if hit.is_some() {
             path.impact = hit;

@@ -129,7 +129,8 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Space | Fire a shell towards the cursor (further cursor = faster shell) |
 | Wheel, drag | Zoom about the cursor, pan |
 | Click | Select a body: prediction and trails are then drawn relative to it |
-| F | Camera follows the selected body (on by default) or stays with the ship |
+| F | Camera: stays with the ship, with the selected body (the default), or automatic: with the selection, moving and zooming by itself to keep the ship, its predicted path up to the closest approach and the selected body on screen (it holds still under thrust, and leaves a view set by hand alone for a few seconds) |
+| R | Select the body the round is about |
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |

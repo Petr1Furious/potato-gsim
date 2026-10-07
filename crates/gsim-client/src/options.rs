@@ -2,7 +2,7 @@
 //! and in the menus of both kinds of world.
 
 use crate::density::ColorMode;
-use crate::settings::Settings;
+use crate::settings::{Camera, Settings};
 use crate::style;
 use egui_macroquad::egui;
 
@@ -26,8 +26,27 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
             .on_hover_text("Draw trails as seen from the selected body, so that an orbit around it looks like a loop rather than a wave.");
         style::toggle(ui, &mut settings.body_names, "Body names", "N").on_hover_text("Names next to named bodies, and as the first line of the selected body's label.");
     }
-    style::toggle(ui, &mut settings.follow_selection, "Camera follows selection", "F")
-        .on_hover_text("On: the camera stays with the body you clicked. Off: it stays with your ship, and a selected body is only marked.");
+    if world == World::Large {
+        let mut follow = settings.camera != Camera::Ship;
+        style::toggle(ui, &mut follow, "Camera follows selection", "F").on_hover_text("On: the camera stays with the body you clicked. Off: it stays where it is, and a selected body is only marked.");
+        if follow != (settings.camera != Camera::Ship) {
+            settings.camera = if follow { Camera::Selection } else { Camera::Ship };
+        }
+    } else {
+        ui.horizontal(|ui| {
+            ui.label("Camera follows");
+            for mode in Camera::ALL {
+                ui.selectable_value(&mut settings.camera, mode, mode.name());
+            }
+            style::key_hint(ui, "F");
+        })
+        .response
+        .on_hover_text(
+            "Ship: the camera stays with your ship, and a selected body is only marked. Selection: it stays with the body you clicked. \
+             Auto: it stays with the selection too, and moves and zooms by itself whenever your ship, its predicted path (as far as the closest approach to the selected body) or the selected body \
+             would leave the screen, or have become small; it holds still while you thrust, and a view you set by hand (drag or wheel) is left alone for a few seconds.",
+        );
+    }
     let details = match world {
         World::Any => "Details panel",
         World::Exact => "Network details",
@@ -69,6 +88,10 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     );
     if exact {
         style::section(ui, "FLYING");
+        ui.add(egui::Slider::new(&mut settings.burn_preview, 0.5..=20.0).suffix(" km/s").text("burn preview")).on_hover_text(
+            "While you thrust, a yellow line shows where the ship would go if you kept thrusting like this. \
+             It assumes the burn stops once it has spent this much delta-v, and that the ship coasts from there.",
+        );
         style::toggle(ui, &mut settings.mouse_aim, "Mouse aim", "M").on_hover_text(
         "On: the ship points at the cursor. Off: A and D turn it, and the cursor is free for looking around. \
          Thrust always goes where the ship points.",
