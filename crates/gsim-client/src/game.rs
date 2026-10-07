@@ -120,12 +120,10 @@ pub struct Game {
     settings_dirty: bool,
     view_ready: bool,
     zoomed_for_ship: bool,
+    had_ship: bool,
     zoom_pending: f32,
     /// Camera offset from whatever it follows.
     offset: (f64, f64),
-    follow_selection: bool,
-    /// Show body names: on the map, and as the first line of the selected body's label.
-    show_names: bool,
     chat: ChatBox,
     /// Camera follows this player (set by clicking their name in chat).
     watch: Option<PlayerId>,
@@ -134,11 +132,6 @@ pub struct Game {
     selected: Option<u32>,
     heading: f64,
     thrust_pct: f32,
-    show_trails: bool,
-    trails_relative: bool,
-    show_prediction: bool,
-    show_shell_prediction: bool,
-    show_net: bool,
     menu_open: bool,
     ui_has_pointer: bool,
     ui_has_keyboard: bool,
@@ -151,15 +144,11 @@ pub struct Game {
     meter: fmt::Meter,
     lookahead_ticks: u32,
     density: Density,
-    /// What the colour of the small bodies tells.
-    color: ColorMode,
     /// Recent merges: position and velocity of the survivor, mass absorbed, tick.
     flashes: Vec<(f64, f64, f64, f64, f32, Tick)>,
     flash_tick: Tick,
     /// The round the selection, trails and camera belong to.
     round: Option<u32>,
-    /// Automatic zooming waits until this time after the player zoomed by hand.
-    zoom_hold: f64,
     status: Option<(String, f64)>,
     started: f64,
 }
@@ -172,7 +161,7 @@ pub(crate) const TURN_RATE: f64 = 2.85;
 pub(crate) const LABEL: f32 = 12.0;
 
 impl Game {
-    pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32, show_net: bool) -> Result<Self, String> {
+    pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32) -> Result<Self, String> {
         let cfg = SessionConfig {
             name: settings.name.clone(),
             identity: settings.identity(),
@@ -188,10 +177,9 @@ impl Game {
             settings_dirty: false,
             view_ready: false,
             zoomed_for_ship: false,
+            had_ship: false,
             zoom_pending: 0.0,
             offset: (0.0, 0.0),
-            follow_selection: true,
-            show_names: false,
             chat: ChatBox::default(),
             watch: None,
             last_target: Target::Free,
@@ -199,11 +187,6 @@ impl Game {
             selected: None,
             heading: 0.0,
             thrust_pct: 100.0,
-            show_trails: false,
-            trails_relative: true,
-            show_prediction: true,
-            show_shell_prediction: false,
-            show_net,
             menu_open: false,
             ui_has_pointer: false,
             ui_has_keyboard: false,
@@ -220,11 +203,9 @@ impl Game {
                 density.sparse = true;
                 density
             },
-            color: ColorMode::Mass,
             flashes: Vec::new(),
             flash_tick: 0,
             round: None,
-            zoom_hold: 0.0,
             status: None,
             started: get_time(),
         })
@@ -235,6 +216,8 @@ impl Game {
     }
 
     pub fn frame(&mut self, settings: &mut Settings) -> Outcome {
+        // To notice what this frame changes, by key or in the menu, and save it.
+        let before = settings.clone();
         self.meter.frame(0.0);
         let dt = get_frame_time().min(0.1);
         // HUD panels scale with the window; things drawn in the world (ship, dots, labels) only mildly.
@@ -253,7 +236,7 @@ impl Game {
             }
         }
         if is_key_pressed(KeyCode::F3) {
-            self.show_net = !self.show_net;
+            settings.details = !settings.details;
         }
         if is_key_pressed(KeyCode::F11) {
             settings.fullscreen = !settings.fullscreen;
@@ -262,19 +245,19 @@ impl Game {
         }
         if keys {
             if is_key_pressed(KeyCode::L) {
-                self.show_trails = !self.show_trails;
-                self.say(if self.show_trails { "Trails on" } else { "Trails off" });
+                settings.trails = !settings.trails;
+                self.say(if settings.trails { "Trails on" } else { "Trails off" });
             }
             if is_key_pressed(KeyCode::K) {
-                self.trails_relative = !self.trails_relative;
-                self.say(if self.trails_relative { "Trails relative to reference" } else { "Trails in world frame" });
+                settings.trails_relative = !settings.trails_relative;
+                self.say(if settings.trails_relative { "Trails relative to reference" } else { "Trails in world frame" });
             }
             if is_key_pressed(KeyCode::P) {
-                self.show_prediction = !self.show_prediction;
+                settings.prediction = !settings.prediction;
             }
             if is_key_pressed(KeyCode::C) {
-                self.color = if self.color == ColorMode::Mass { ColorMode::Speed } else { ColorMode::Mass };
-                self.say(&format!("Colour shows {}", self.color.name()));
+                settings.color = if settings.color == ColorMode::Speed { ColorMode::Mass } else { ColorMode::Speed };
+                self.say(&format!("Colour shows {}", settings.color.name()));
             }
             if is_key_pressed(KeyCode::T) || is_key_pressed(KeyCode::Enter) {
                 self.chat.open_with("");
@@ -287,15 +270,15 @@ impl Game {
                 self.net.session.send_mark(x, y);
             }
             if is_key_pressed(KeyCode::N) {
-                self.show_names = !self.show_names;
+                settings.body_names = !settings.body_names;
             }
             if is_key_pressed(KeyCode::O) {
-                self.show_shell_prediction = !self.show_shell_prediction;
+                settings.shell_prediction = !settings.shell_prediction;
             }
             if is_key_pressed(KeyCode::F) {
-                self.follow_selection = !self.follow_selection;
+                settings.follow_selection = !settings.follow_selection;
                 self.watch = None;
-                self.say(if self.follow_selection { "Following selection" } else { "Following own ship" });
+                self.say(if settings.follow_selection { "Following selection" } else { "Following own ship" });
             }
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
@@ -415,7 +398,7 @@ impl Game {
         if watched.is_none() {
             self.watch = None;
         }
-        let target = match (self.follow_selection, own, self.selected) {
+        let target = match (settings.follow_selection, own, self.selected) {
             _ if watched.is_some() => Target::Player(watched.unwrap().0),
             (true, _, Some(s)) => Target::Body(s),
             (_, Some(_), _) => Target::Ship,
@@ -461,6 +444,10 @@ impl Game {
         }
         self.last_target = target;
         self.last_target_pos = target_pos;
+        if let (Target::Body(_), Some(ship), false) = (target, own, self.had_ship) {
+            frame_both(&mut self.view, &mut self.offset, target_pos, (ship.x, ship.y));
+        }
+        self.had_ship = own.is_some();
 
         let pointer = !self.ui_has_pointer && !self.menu_open;
         let wheel = mouse_wheel().1;
@@ -469,7 +456,6 @@ impl Game {
             // Wheel units differ wildly between platforms (notches vs. pixel deltas), hence the
             // per-platform default speed and the cap on what one frame can contribute.
             self.zoom_pending += (wheel * settings.zoom_speed).clamp(-1.5, 1.5);
-            self.zoom_hold = get_time() + ZOOM_HOLD;
         }
         if self.zoom_pending.abs() > 1e-3 {
             let step = self.zoom_pending * (12.0 * dt).min(1.0);
@@ -502,9 +488,6 @@ impl Game {
         self.last_mouse = mouse;
         self.view.cx = target_pos.0 + self.offset.0;
         self.view.cy = target_pos.1 + self.offset.1;
-        if let (true, Target::Body(slot), Some(ship)) = (settings.auto_zoom && get_time() >= self.zoom_hold, target, own) {
-            auto_zoom(&mut self.view, &mut self.offset, target_pos, row.props.radius[slot as usize], (ship.x, ship.y), dt);
-        }
         let view = self.view;
 
         // A click (press and release without dragging) selects the body under the cursor.
@@ -567,7 +550,7 @@ impl Game {
             })
             .collect();
         let mut shaped = vec![false; row.x.len()];
-        for big in self.density.project(&scene, &view, 0.0, self.color) {
+        for big in self.density.project(&scene, &view, 0.0, if settings.color == ColorMode::Speed { ColorMode::Speed } else { ColorMode::Mass }) {
             shaped[big.id as usize] = true;
         }
         self.density.present(&flashes);
@@ -596,8 +579,8 @@ impl Game {
         // Reference frame for trails and predictions: the selected body, if any.
         let ref_slot = self.selected;
         let ref_now = ref_slot.map(|s| body(s));
-        if self.show_trails {
-            let reference = if self.trails_relative { ref_slot } else { None };
+        if settings.trails {
+            let reference = if settings.trails_relative { ref_slot } else { None };
             draw_trails(&self.frames, &view, reference, ref_now, &row, world.my_id, ui);
         }
 
@@ -626,7 +609,7 @@ impl Game {
             if mass < 0.0 || shaped[j as usize] {
                 style::body(s, r_px, mass, j, fade, ui);
             }
-            if let Some(name) = world.names.get(&j).filter(|_| self.show_names && self.selected != Some(j)) {
+            if let Some(name) = world.names.get(&j).filter(|_| settings.body_names && self.selected != Some(j)) {
                 let size = LABEL * ui;
                 let below = s.1 + r_px.max(1.1 * ui).min(4000.0) + size;
                 labels.push(name.as_str(), s.0, below, size, style::alpha(style::DIM, fade), Rank::BodyName);
@@ -680,10 +663,10 @@ impl Game {
         // --- predictions -----------------------------------------------------------------------
         if self.predictor.poll() {
             let ship = me_ship.filter(|t| t.crashed.is_none());
-            let wanted = self.show_prediction || self.show_shell_prediction;
+            let wanted = settings.prediction || settings.shell_prediction;
             match (ship, world.eph.reader(), world.me()) {
                 (Some(track), Some(reader), Some(me)) if wanted => {
-                    let shell = own.filter(|_| self.show_shell_prediction).and_then(|ship| {
+                    let shell = own.filter(|_| settings.shell_prediction).and_then(|ship| {
                         let (angle, speed) = self.shell_aim(&ship, (mwx, mwy));
                         world.shell_muzzle(angle, speed)
                     });
@@ -694,7 +677,7 @@ impl Game {
                         start: track.end(),
                         timeline: me.timeline.clone(),
                         ticks: self.lookahead_ticks,
-                        show_ship: self.show_prediction,
+                        show_ship: settings.prediction,
                         held: controls.thrust > 0,
                         shell,
                         ref_slot,
@@ -740,7 +723,7 @@ impl Game {
         // A short fading tail behind every ship, in the same frame as the prediction line
         // (relative to the selected body, if any). The full trails replace it when switched on.
         let t0 = tick_f.floor() as Tick;
-        if !self.show_trails {
+        if !settings.trails {
             let span = (2.5 * world.rules.tick_hz as f64) as Tick;
             for (id, p) in &world.players {
                 let Some(track) = p.ship.as_ref() else { continue };
@@ -845,7 +828,7 @@ impl Game {
             draw_rectangle_lines(s.0 - r_px, s.1 - r_px, 2.0 * r_px, 2.0 * r_px, 1.5 * ui, WHITE);
             // The name line on top of the label is optional (N).
             let mut lines = Vec::new();
-            if self.show_names {
+            if settings.body_names {
                 lines.push(world.body_name(slot));
             }
             lines.push(format!("m = {}", fmt::mass(row.props.mass[slot as usize])));
@@ -939,22 +922,12 @@ impl Game {
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
         let mut outcome = Outcome::Continue;
-        let (mut trails, mut trails_rel, mut pred, mut shell_pred, mut follow_sel, mut names, mut net_dbg, mut menu) = (
-            self.show_trails,
-            self.trails_relative,
-            self.show_prediction,
-            self.show_shell_prediction,
-            self.follow_selection,
-            self.show_names,
-            self.show_net,
-            self.menu_open,
-        );
+        let mut menu = self.menu_open;
         let (mut has_ptr, mut has_kb) = (false, false);
         let mut chat_out = chat::Outcome::default();
         // Wheel movement in notches: raw units differ per platform, as for zooming.
         let chat_wheel = wheel * settings.zoom_speed;
         let mut options = settings.clone();
-        let mut color = self.color;
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
@@ -989,7 +962,7 @@ impl Game {
 
             // Top left: diagnostics, only on request; the objective sits under them.
             let mut below = 10.0;
-            if net_dbg {
+            if options.details {
                 let shown = Area::new(Id::new("net")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).interactable(false).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -1086,32 +1059,7 @@ impl Game {
                     ctx,
                     |ui| {
                         ui.set_width(330.0);
-                        style::section(ui, "VIEW");
-                        style::toggle(ui, &mut pred, "Ship trajectory", "P");
-                        style::toggle(ui, &mut shell_pred, "Shell trajectory preview", "O");
-                        style::toggle(ui, &mut trails, "Trails", "L");
-                        style::toggle(ui, &mut trails_rel, "Trails relative to selection", "K");
-                        style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
-                        style::toggle(ui, &mut net_dbg, "Network details", "F3");
-                        style::toggle(ui, &mut names, "Body names", "N");
-                        ui.horizontal(|ui| {
-                            ui.label("Colour shows");
-                            for mode in [ColorMode::Mass, ColorMode::Speed] {
-                                ui.selectable_value(&mut color, mode, mode.name());
-                            }
-                            ui.label(RichText::new("C").small().color(dim));
-                        });
-                        crate::options::show(ui, &mut options);
-                        style::section(ui, "CONTROLS");
-                        style::key_row(ui, "Thrust", "W / UP");
-                        style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
-                        style::key_row(ui, "Fire towards cursor", "SPACE");
-                        style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
-                        style::key_row(ui, "Chat, command", "T, /");
-                        style::key_row(ui, "Point at the map", "G");
-                        style::key_row(ui, "Fullscreen", "F11");
-                        style::section(ui, "MASS");
-                        style::mass_legend(ui);
+                        crate::options::scrolled(ui, |ui| crate::options::show(ui, &mut options, crate::options::World::Exact));
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("Resume").clicked() {
@@ -1142,21 +1090,14 @@ impl Game {
             Some(Mention::Player(id)) => self.watch = Some(id).filter(|id| *id != my_id),
             None => {}
         }
-        if options != *settings {
+        // Changed in the menu just now, or by a key earlier in the frame.
+        if options != before {
             *settings = options;
             self.settings_dirty = true;
         } else if self.settings_dirty && !is_mouse_button_down(MouseButton::Left) {
             self.settings_dirty = false;
             settings.save();
         }
-        self.show_trails = trails;
-        self.trails_relative = trails_rel;
-        self.show_prediction = pred;
-        self.show_shell_prediction = shell_pred;
-        self.follow_selection = follow_sel;
-        self.show_names = names;
-        self.color = color;
-        self.show_net = net_dbg;
         self.menu_open = menu;
         self.ui_has_pointer = has_ptr;
         self.ui_has_keyboard = has_kb;
@@ -1177,50 +1118,22 @@ impl Game {
 }
 
 
-/// Seconds automatic zooming keeps out of the way after the player used the wheel.
-pub(crate) const ZOOM_HOLD: f64 = 2.5;
 /// How long a merge flash lasts, in ticks.
 const FLASH_TICKS: f64 = 36.0;
 
-/// With a body selected and in the picture, keep the ship in it too: zoom out as the ship
-/// nears the edge (or was put somewhere far away), back in when it is close to the body.
-/// The body stays where the player has it on screen; `offset` is the camera's offset from
-/// the body. A body dragged out of view switches this off.
-pub(crate) fn auto_zoom(view: &mut View, offset: &mut (f64, f64), body: (f64, f64), radius: f64, ship: (f64, f64), dt: f32) {
-    if !view.on_screen(view.to_screen(body.0, body.1), 0.0) {
+/// A new ship has appeared while the camera follows a body: unless both are already on
+/// screen, centre the view between them and zoom so that both are.
+pub(crate) fn frame_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f64), ship: (f64, f64)) {
+    (view.cx, view.cy) = (body.0 + offset.0, body.1 + offset.1);
+    if view.on_screen(view.to_screen(body.0, body.1), 0.0) && view.on_screen(view.to_screen(ship.0, ship.1), 0.0) {
         return;
     }
-    let (half_w, half_h) = (0.5 * screen_width() as f64, 0.5 * screen_height() as f64);
-    // Where the body sits, in pixels from the middle of the screen, and the ship from it.
-    let (bx, by) = (-offset.0 / view.mpp, -offset.1 / view.mpp);
     let (dx, dy) = (ship.0 - body.0, ship.1 - body.1);
-    // Metres per pixel at which the ship is exactly 80 % of the way to the edge it is
-    // heading for. None if the body itself is nearer that edge than that.
-    let room = |d: f64, at: f64, half: f64| {
-        let pixels = 0.8 * half - at * d.signum();
-        if d == 0.0 { Some(0.0) } else { (pixels > 1.0).then(|| d.abs() / pixels) }
-    };
-    let (Some(rx), Some(ry)) = (room(dx, bx, half_w), room(dy, by, half_h)) else { return };
-    let fits = rx.max(ry);
-    let apart = (dx * dx + dy * dy).sqrt();
-    let small = half_w.min(half_h);
-    let wanted = if fits > view.mpp {
-        fits
-    } else if apart < 0.15 * small * view.mpp {
-        // Close to the body: come in until they are a comfortable distance apart, but not
-        // so far that the ship leaves or the body fills the screen.
-        (apart / (0.3 * small)).max(fits).max(radius / (0.2 * small))
-    } else {
-        return;
-    };
-    if wanted > view.mpp || wanted < 0.98 * view.mpp {
-        let step = (2.0 * dt as f64).min(1.0);
-        let mpp = (view.mpp * (wanted / view.mpp).powf(step)).clamp(0.05, 1.0e12);
-        // Zoom about the body, not the middle of the screen.
-        *offset = (offset.0 * mpp / view.mpp, offset.1 * mpp / view.mpp);
-        view.mpp = mpp;
-        (view.cx, view.cy) = (body.0 + offset.0, body.1 + offset.1);
-    }
+    *offset = (0.5 * dx, 0.5 * dy);
+    // Each of them half way from the middle to the edge on the tighter axis: clear of the
+    // panels in the corners, and with room for the ship to move.
+    let needed = (dx.abs() / (0.5 * screen_width() as f64)).max(dy.abs() / (0.5 * screen_height() as f64));
+    view.mpp = needed.clamp(0.05, 1.0e12);
 }
 
 pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {

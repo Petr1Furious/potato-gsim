@@ -1,11 +1,52 @@
-//! The settings that are kept between sessions, shown the same way in the main menu and in
-//! the menus of both kinds of world.
+//! Everything that is kept between sessions, shown the same way in the main menu's settings
+//! and in the menus of both kinds of world.
 
+use crate::density::ColorMode;
 use crate::settings::Settings;
 use crate::style;
 use egui_macroquad::egui;
 
-pub fn show(ui: &mut egui::Ui, settings: &mut Settings) {
+/// Which entries apply: some only mean something in one kind of world.
+#[derive(Clone, Copy, PartialEq)]
+pub enum World {
+    /// The main menu: show everything.
+    Any,
+    Exact,
+    Large,
+}
+
+pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
+    let (exact, large) = (world != World::Large, world != World::Exact);
+    style::section(ui, "VIEW");
+    style::toggle(ui, &mut settings.prediction, "Ship trajectory", "P").on_hover_text("The green line ahead of your ship: where it will go if you do nothing, and where it comes closest to the selected body.");
+    if exact {
+        style::toggle(ui, &mut settings.shell_prediction, "Shell trajectory preview", "O").on_hover_text("The path a shell would take if you fired at the cursor now.");
+        style::toggle(ui, &mut settings.trails, "Trails", "L").on_hover_text("Where every body and ship has been over the last few seconds.");
+        style::toggle(ui, &mut settings.trails_relative, "Trails relative to selection", "K")
+            .on_hover_text("Draw trails as seen from the selected body, so that an orbit around it looks like a loop rather than a wave.");
+        style::toggle(ui, &mut settings.body_names, "Body names", "N").on_hover_text("Names next to named bodies, and as the first line of the selected body's label.");
+    }
+    style::toggle(ui, &mut settings.follow_selection, "Camera follows selection", "F")
+        .on_hover_text("On: the camera stays with the body you clicked. Off: it stays with your ship, and a selected body is only marked.");
+    let details = match world {
+        World::Any => "Details panel",
+        World::Exact => "Network details",
+        World::Large => "Statistics",
+    };
+    style::toggle(ui, &mut settings.details, details, "F3").on_hover_text("Numbers for the curious: frame rate, step times, and how well this client is keeping in step.");
+    ui.horizontal(|ui| {
+        ui.label("Colour shows");
+        for mode in ColorMode::ALL {
+            // Exact worlds have no groups to tell apart.
+            if large || mode != ColorMode::Origin {
+                ui.selectable_value(&mut settings.color, mode, mode.name());
+            }
+        }
+        style::key_hint(ui, "C");
+    })
+    .response
+    .on_hover_text("What the colour of small bodies tells: their mass, how fast they move, or (in large-scale worlds) which galaxy or cloud they started in.");
+
     style::section(ui, "INTERFACE");
     ui.horizontal(|ui| {
         // A text field, not a slider: a slider would move under the pointer as the
@@ -27,12 +68,6 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings) {
         "On: the ship points at the cursor. Off: A and D turn it, and the cursor is free for looking around. \
          Thrust always goes where the ship points.",
     );
-    style::toggle(ui, &mut settings.auto_zoom, "Auto zoom", "").on_hover_text(
-        "While a body is selected and on screen, the view zooms by itself to keep your ship in the picture: \
-         out as the ship nears the edge or is teleported away, back in when it is close to the body. \
-         The body stays where you put it. Using the wheel pauses this for a moment; dragging the body off \
-         screen stops it.",
-    );
     style::section(ui, "GRAPHICS");
     ui.checkbox(&mut settings.gpu, "GPU drawing").on_hover_text(
         "On: the graphics card draws the glowing picture of the small bodies, at the screen's full \
@@ -40,4 +75,38 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings) {
          large-scale worlds means more bodies at full speed). Off: those threads draw it. If the card \
          cannot do it, the game says so and switches this off.",
     );
+
+    style::section(ui, "CONTROLS");
+    style::key_row(ui, "Thrust", "W / UP");
+    style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
+    match world {
+        World::Any => {
+            style::key_row(ui, "Fire towards cursor (exact worlds)", "SPACE");
+            style::key_row(ui, "Pause (large worlds)", "SPACE");
+        }
+        World::Exact => style::key_row(ui, "Fire towards cursor", "SPACE"),
+        World::Large => style::key_row(ui, "Pause", "SPACE"),
+    }
+    if large {
+        style::key_row(ui, "Slow time down, speed it up", "< >");
+    }
+    style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
+    style::key_row(ui, "Chat, command", "T, /");
+    if exact {
+        style::key_row(ui, "Point at the map", "G");
+    }
+    style::key_row(ui, "Fullscreen", "F11");
+    style::section(ui, "MASS");
+    style::mass_legend(ui);
+}
+
+/// A menu body that scrolls when the window is too short for it, leaving room for the
+/// title above and a row of buttons below.
+pub fn scrolled(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    let room = (ui.ctx().screen_rect().height() - 130.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+        // Keep clear of the scroll bar, which is drawn over the right edge.
+        ui.set_width(ui.available_width() - 14.0);
+        body(ui);
+    });
 }

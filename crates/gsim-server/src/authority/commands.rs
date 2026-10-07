@@ -35,6 +35,16 @@ impl Authority {
         self.send(Target::One(conn), ServerMsg::Chat(ChatLine { kind, from: None, text: text.into() }));
     }
 
+    /// As in Minecraft: what an operator's command did is shown to every other operator,
+    /// in brackets with the name of whoever ran it.
+    fn tell_operators(&mut self, except: ConnId, sender: PlayerId, text: &str) {
+        let line = format!("[{}: {text}]", self.name_of(sender));
+        let others: Vec<ConnId> = self.by_conn.iter().filter(|(c, id)| **c != except && self.is_op(**id)).map(|(c, _)| *c).collect();
+        for other in others {
+            self.tell(other, ChatKind::System, line.clone());
+        }
+    }
+
     fn announce(&mut self, text: impl Into<String>) {
         self.send(Target::All, ServerMsg::Chat(ChatLine { kind: ChatKind::System, from: None, text: text.into() }));
     }
@@ -94,7 +104,12 @@ impl Authority {
             return self.tell(conn, ChatKind::Error, format!("/{} is for operators", spec.name));
         }
         match self.run(conn, id, spec.name, &words[1..]) {
-            Ok(Some(reply)) => self.tell(conn, ChatKind::System, reply),
+            Ok(Some(reply)) => {
+                if spec.op {
+                    self.tell_operators(conn, id, &reply);
+                }
+                self.tell(conn, ChatKind::System, reply);
+            }
             Ok(None) => {}
             Err(problem) if problem.is_empty() => self.tell(conn, ChatKind::Error, format!("usage: {}", spec.usage())),
             Err(problem) => self.tell(conn, ChatKind::Error, problem),
@@ -477,7 +492,6 @@ impl Authority {
                 if changed.is_empty() {
                     return Err(format!("Nothing changed. The player {} an operator", if giving { "already is" } else { "is not" }));
                 }
-                let sender = self.name_of(me);
                 for target in &changed {
                     if giving {
                         self.state.op(target);
@@ -486,14 +500,10 @@ impl Authority {
                     }
                 }
                 self.refresh_ops();
-                // As in Minecraft: the sender is told plainly, every other operator (which now
-                // includes anyone just made one) sees it attributed in brackets.
-                let operators: Vec<ConnId> = self.by_conn.iter().filter(|(c, id)| **c != conn && self.is_op(**id)).map(|(c, _)| *c).collect();
+                // Told to the other operators after the change, so anyone just made one hears it.
                 for target in &changed {
                     let what = if giving { format!("Made {target} a server operator") } else { format!("Made {target} no longer a server operator") };
-                    for other in &operators {
-                        self.tell(*other, ChatKind::System, format!("[{sender}: {what}]"));
-                    }
+                    self.tell_operators(conn, me, &what);
                     self.tell(conn, ChatKind::System, what);
                 }
                 Ok(None)

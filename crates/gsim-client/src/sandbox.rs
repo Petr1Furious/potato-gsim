@@ -4,7 +4,7 @@
 use crate::chat::{self, ChatBox, Mention};
 use crate::density::{Big, ColorMode, Density, Flash};
 use crate::fmt;
-use crate::game::{auto_zoom, draw_path, draw_ship, Outcome, View, LABEL, PICK_RADIUS_PX, TURN_RATE, ZOOM_HOLD};
+use crate::game::{draw_path, frame_both, draw_ship, Outcome, View, LABEL, PICK_RADIUS_PX, TURN_RATE};
 use crate::predictor::{Job, Predictor};
 use crate::settings::Settings;
 use crate::style::{self, Rank};
@@ -83,11 +83,9 @@ pub struct Sandbox {
     view: View,
     view_ready: bool,
     zoomed_for_ship: bool,
+    had_ship: bool,
     zoom_pending: f32,
-    /// Automatic zooming waits until this time after the player zoomed by hand.
-    zoom_hold: f64,
     offset: (f64, f64),
-    follow_selection: bool,
     last_target: Target,
     last_target_pos: (f64, f64),
     selected: Option<u32>,
@@ -95,9 +93,6 @@ pub struct Sandbox {
     watch_told: u64,
     heading: f64,
     thrust_pct: f32,
-    show_prediction: bool,
-    show_stats: bool,
-    color: ColorMode,
     menu_open: bool,
     ui_has_pointer: bool,
     ui_has_keyboard: bool,
@@ -145,19 +140,15 @@ impl Sandbox {
             view: View { cx: 0.0, cy: 0.0, mpp: 1.0e9 },
             view_ready: false,
             zoomed_for_ship: false,
+            had_ship: false,
             zoom_pending: 0.0,
-            zoom_hold: 0.0,
             offset: (0.0, 0.0),
-            follow_selection: true,
             last_target: Target::Free,
             last_target_pos: (0.0, 0.0),
             selected: None,
             watch_told: 0,
             heading: 0.0,
             thrust_pct: 100.0,
-            show_prediction: true,
-            show_stats: false,
-            color: ColorMode::Mass,
             menu_open: false,
             ui_has_pointer: false,
             ui_has_keyboard: false,
@@ -319,6 +310,8 @@ impl Sandbox {
     }
 
     pub fn frame(&mut self, settings: &mut Settings) -> Outcome {
+        // To notice what this frame changes, by key or in the menu, and save it.
+        let before = settings.clone();
         let dt = get_frame_time().min(0.1);
         let hud = settings.ui_factor();
         let ui = settings.marker_factor();
@@ -362,7 +355,7 @@ impl Sandbox {
             }
         }
         if is_key_pressed(KeyCode::F3) {
-            self.show_stats = !self.show_stats;
+            settings.details = !settings.details;
         }
         if is_key_pressed(KeyCode::F11) {
             settings.fullscreen = !settings.fullscreen;
@@ -379,12 +372,12 @@ impl Sandbox {
                 self.set_pace(self.last_pace * 2f64.powf(turn as f64 * SPEED_KEY_RATE * dt as f64));
             }
             if is_key_pressed(KeyCode::P) {
-                self.show_prediction = !self.show_prediction;
+                settings.prediction = !settings.prediction;
             }
             if is_key_pressed(KeyCode::C) {
-                let at = ColorMode::ALL.iter().position(|m| *m == self.color).unwrap_or(0);
-                self.color = ColorMode::ALL[(at + 1) % ColorMode::ALL.len()];
-                self.say(&format!("Colour shows {}", self.color.name()));
+                let at = ColorMode::ALL.iter().position(|m| *m == settings.color).unwrap_or(0);
+                settings.color = ColorMode::ALL[(at + 1) % ColorMode::ALL.len()];
+                self.say(&format!("Colour shows {}", settings.color.name()));
             }
             if is_key_pressed(KeyCode::T) || is_key_pressed(KeyCode::Enter) {
                 self.chat.open_with("");
@@ -392,8 +385,8 @@ impl Sandbox {
                 self.chat.open_with("/");
             }
             if is_key_pressed(KeyCode::F) {
-                self.follow_selection = !self.follow_selection;
-                self.say(if self.follow_selection { "Following selection" } else { "Following own ship" });
+                settings.follow_selection = !settings.follow_selection;
+                self.say(if settings.follow_selection { "Following selection" } else { "Following own ship" });
             }
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
@@ -467,7 +460,7 @@ impl Sandbox {
             });
 
             // --- camera ------------------------------------------------------------------------
-            let target = match (self.follow_selection, ship, self.selected) {
+            let target = match (settings.follow_selection, ship, self.selected) {
                 (true, _, Some(s)) => Target::Body(s),
                 (_, Some(_), _) => Target::Ship,
                 _ => Target::Free,
@@ -495,9 +488,12 @@ impl Sandbox {
             }
             self.last_target = target;
             self.last_target_pos = target_pos;
+            if let (Target::Body(_), Some(ship), false) = (target, ship, self.had_ship) {
+                frame_both(&mut self.view, &mut self.offset, target_pos, (ship.x, ship.y));
+            }
+            self.had_ship = ship.is_some();
             if pointer && !self.chat.open && wheel != 0.0 {
                 self.zoom_pending += (wheel * settings.zoom_speed).clamp(-1.5, 1.5);
-                self.zoom_hold = get_time() + ZOOM_HOLD;
             }
             if self.zoom_pending.abs() > 1e-3 {
                 let step = self.zoom_pending * (12.0 * dt).min(1.0);
@@ -529,9 +525,6 @@ impl Sandbox {
             self.last_mouse = mouse;
             self.view.cx = target_pos.0 + self.offset.0;
             self.view.cy = target_pos.1 + self.offset.1;
-            if let (true, Target::Body(_), Some(i), Some(ship)) = (settings.auto_zoom && get_time() >= self.zoom_hold, target, chosen, ship) {
-                auto_zoom(&mut self.view, &mut self.offset, target_pos, b.r[i] as f64, (ship.x, ship.y), dt);
-            }
             let view = self.view;
 
             if clicked {
@@ -565,7 +558,7 @@ impl Sandbox {
                     Flash { x: m.x + m.vx * age * b.dt, y: m.y + m.vy * age * b.dt, life: (1.0 - age / FLASH_TICKS).clamp(0.0, 1.0) as f32, mass: m.mass }
                 })
                 .collect();
-            big = self.density.project(&b, &view, tau, self.color);
+            big = self.density.project(&b, &view, tau, settings.color);
             flashes_now = flashes;
             picked = chosen.map(|i| Picked { at: at(i), mass: b.m[i] as f64, radius: b.r[i] as f64 });
         }
@@ -593,7 +586,7 @@ impl Sandbox {
         let ref_slot = self.ahead.as_ref().zip(self.selected).and_then(|(a, id)| a.world.ids.iter().position(|v| *v == id)).map(|s| s as u32);
         if self.predictor.poll() {
             match (seen.ship, &self.ahead) {
-                (Some(state), Some(ahead)) if self.show_prediction && ahead.eph.reader().is_some() => {
+                (Some(state), Some(ahead)) if settings.prediction && ahead.eph.reader().is_some() => {
                     let mut timeline = InputTimeline::new();
                     timeline.set(seen.ship_tick, input);
                     self.predictor.submit(Job {
@@ -683,7 +676,7 @@ impl Sandbox {
         labels.draw();
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
-        self.hud(settings, &seen, bodies_n, present, picked, wheel, hud)
+        self.hud(settings, &before, &seen, bodies_n, present, picked, wheel, hud)
     }
 
     fn draw_bodies(&self, big: &[Big], ui: f32) {
@@ -726,7 +719,7 @@ impl Sandbox {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn hud(&mut self, settings: &mut Settings, seen: &Seen, bodies: usize, present: f64, picked: Option<Picked>, wheel: f32, hud: f32) -> Outcome {
+    fn hud(&mut self, settings: &mut Settings, before: &Settings, seen: &Seen, bodies: usize, present: f64, picked: Option<Picked>, wheel: f32, hud: f32) -> Outcome {
         self.meter.frame(self.density.last_ms);
         let stats = &seen.stats;
         let title = format!("{}   ·   {} BODIES", self.scenario.to_uppercase(), group_digits(bodies));
@@ -764,7 +757,7 @@ impl Sandbox {
         let now = self.now();
 
         let mut outcome = Outcome::Continue;
-        let (mut pred, mut stats_on, mut follow_sel, mut menu, mut color) = (self.show_prediction, self.show_stats, self.follow_selection, self.menu_open, self.color);
+        let mut menu = self.menu_open;
         let (mut has_ptr, mut has_kb) = (false, false);
         let mut chat_out = chat::Outcome::default();
         let mut options = settings.clone();
@@ -788,7 +781,7 @@ impl Sandbox {
                 });
             });
 
-            if stats_on {
+            if options.details {
                 Area::new(Id::new("stats")).anchor(Align2::LEFT_TOP, [10.0, 10.0]).interactable(false).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -865,30 +858,12 @@ impl Sandbox {
             if menu {
                 egui::Window::new("MENU").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                     ui.set_width(330.0);
-                    style::section(ui, "VIEW");
-                    style::toggle(ui, &mut pred, "Ship trajectory", "P");
-                    style::toggle(ui, &mut follow_sel, "Camera follows selection", "F");
-                    style::toggle(ui, &mut stats_on, "Statistics", "F3");
-                    ui.horizontal(|ui| {
-                        ui.label("Colour shows");
-                        for mode in ColorMode::ALL {
-                            ui.selectable_value(&mut color, mode, mode.name());
-                        }
-                        ui.label(RichText::new("C").small().color(dim));
+                    crate::options::scrolled(ui, |ui| {
+                        style::section(ui, "WORLD");
+                        ui.add(egui::Slider::new(&mut new_theta, 0.3..=1.2).text("opening angle")).on_hover_text("Smaller is more accurate and slower");
+                        ui.checkbox(&mut new_god, "Indestructible ship with endless fuel");
+                        crate::options::show(ui, &mut options, crate::options::World::Large);
                     });
-                    style::section(ui, "WORLD");
-                    ui.add(egui::Slider::new(&mut new_theta, 0.3..=1.2).text("opening angle")).on_hover_text("Smaller is more accurate and slower");
-                    ui.checkbox(&mut new_god, "Indestructible ship with endless fuel");
-                    crate::options::show(ui, &mut options);
-                    style::section(ui, "CONTROLS");
-                    style::key_row(ui, "Thrust", "W / UP");
-                    style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
-                    style::key_row(ui, "Pause, slow down, speed up", "SPACE, < >");
-                    style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
-                    style::key_row(ui, "Command", "/");
-                    style::key_row(ui, "Fullscreen", "F11");
-                    style::section(ui, "MASS");
-                    style::mass_legend(ui);
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Resume").clicked() {
@@ -934,14 +909,14 @@ impl Sandbox {
         if new_god != god {
             self.runner.send(Command::God(new_god));
         }
-        if options != *settings {
+        if options != *before {
             *settings = options;
             self.settings_dirty = true;
         } else if self.settings_dirty && !is_mouse_button_down(MouseButton::Left) {
             self.settings_dirty = false;
             settings.save();
         }
-        (self.show_prediction, self.show_stats, self.follow_selection, self.menu_open, self.color) = (pred, stats_on, follow_sel, menu, color);
+        self.menu_open = menu;
         self.ui_has_pointer = has_ptr;
         self.ui_has_keyboard = has_kb;
         outcome

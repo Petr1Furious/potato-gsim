@@ -1,5 +1,6 @@
 //! Small `key=value` settings file in the platform's config directory.
 
+use crate::density::ColorMode;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -16,8 +17,16 @@ pub struct Settings {
     pub zoom_speed: f32,
     /// Draw large-scale worlds on the graphics card instead of on rasteriser threads.
     pub gpu: bool,
-    /// With a body selected, zoom by itself so the ship stays in the picture.
-    pub auto_zoom: bool,
+    // What is drawn; see `options` for what each one means.
+    pub prediction: bool,
+    pub shell_prediction: bool,
+    pub trails: bool,
+    pub trails_relative: bool,
+    pub body_names: bool,
+    pub follow_selection: bool,
+    /// The F3 panel: network details in exact worlds, statistics in large ones.
+    pub details: bool,
+    pub color: ColorMode,
     /// Per single-player world: the parameters changed from their defaults.
     pub params: BTreeMap<String, BTreeMap<String, f64>>,
     /// Per large-scale world: how many bodies this machine was measured to hold.
@@ -26,7 +35,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: true, auto_zoom: true, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, follow_selection: true, details: false, color: ColorMode::Mass, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -59,7 +68,14 @@ impl Settings {
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
                 "gpu_drawing" => s.gpu = v != "0",
-                "auto_zoom" => s.auto_zoom = v != "0",
+                "prediction" => s.prediction = v != "0",
+                "shell_prediction" => s.shell_prediction = v == "1",
+                "trails" => s.trails = v == "1",
+                "trails_relative" => s.trails_relative = v != "0",
+                "body_names" => s.body_names = v == "1",
+                "follow_selection" => s.follow_selection = v != "0",
+                "details" => s.details = v == "1",
+                "color" => s.color = ColorMode::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.color),
                 key => {
                     // `param.<world>.<key>` and `measured.<world>`
                     let mut parts = key.split('.');
@@ -88,9 +104,21 @@ impl Settings {
             let _ = std::fs::create_dir_all(dir);
         }
         let mut text = format!(
-            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu_drawing={}\nauto_zoom={}\n",
-            self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.gpu as u8, self.auto_zoom as u8
+            "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\ngpu_drawing={}\n",
+            self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.gpu as u8
         );
+        for (key, on) in [
+            ("prediction", self.prediction),
+            ("shell_prediction", self.shell_prediction),
+            ("trails", self.trails),
+            ("trails_relative", self.trails_relative),
+            ("body_names", self.body_names),
+            ("follow_selection", self.follow_selection),
+            ("details", self.details),
+        ] {
+            text.push_str(&format!("{key}={}\n", on as u8));
+        }
+        text.push_str(&format!("color={}\n", self.color.name()));
         for (world, params) in &self.params {
             for (key, value) in params {
                 text.push_str(&format!("param.{world}.{key}={value}\n"));

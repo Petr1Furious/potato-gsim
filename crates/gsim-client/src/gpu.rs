@@ -19,19 +19,33 @@ pub type Vertex = [f32; 5];
 const POINT_VERTEX: &str = r#"#version 100
 attribute vec2 pos;
 attribute vec3 light;
-uniform vec4 view;
+uniform highp vec4 view;
+uniform highp vec4 target;
 varying highp vec3 c;
+varying highp vec2 centre;
 void main() {
     gl_Position = vec4(pos.x * view.x - 1.0, pos.y * view.y - 1.0, 0.0, 1.0);
     gl_PointSize = view.z;
     c = light;
+    centre = pos * view.xy * 0.5 * target.xy;
 }"#;
 
+/// With `target.z` set, a point two pixels across shares its light between the pixels it
+/// touches by how near their centres are to its own (times `target.w`, the pixels it lights in
+/// the full-size image): it then moves smoothly across a coarse
+/// image instead of jumping from pixel to pixel.
 const POINT_FRAGMENT: &str = r#"#version 100
 precision highp float;
+uniform highp vec4 target;
 varying highp vec3 c;
+varying highp vec2 centre;
 void main() {
-    gl_FragColor = vec4(c, 1.0);
+    float share = 1.0;
+    if (target.z > 0.5) {
+        vec2 off = abs(gl_FragCoord.xy - centre);
+        share = target.w * max(0.0, 1.0 - off.x) * max(0.0, 1.0 - off.y);
+    }
+    gl_FragColor = vec4(c * share, 1.0);
 }"#;
 
 const BLUR_VERTEX: &str = r#"#version 100
@@ -79,6 +93,12 @@ void main() {
 
 #[repr(C)]
 struct Vec4Uniform([f32; 4]);
+
+#[repr(C)]
+struct PointUniforms {
+    view: [f32; 4],
+    target: [f32; 4],
+}
 
 struct Target {
     texture: TextureId,
@@ -144,7 +164,7 @@ impl Gpu {
             ctx.new_shader(ShaderSource::Glsl { vertex, fragment }, meta).map_err(|e| format!("a shader did not compile: {e}"))
         };
         let additive = BlendState::new(Equation::Add, BlendFactor::One, BlendFactor::One);
-        let point_shader = shader(ctx, POINT_VERTEX, POINT_FRAGMENT, &[], &["view"])?;
+        let point_shader = shader(ctx, POINT_VERTEX, POINT_FRAGMENT, &[], &["view", "target"])?;
         let points = ctx.new_pipeline(
             &[BufferLayout { stride: std::mem::size_of::<Vertex>() as i32, ..Default::default() }],
             &[VertexAttribute::new("pos", VertexFormat::Float2), VertexAttribute::new("light", VertexFormat::Float3)],
@@ -244,11 +264,12 @@ impl Gpu {
         let points = miniquad::Bindings { vertex_buffers: vec![self.vertices], index_buffer: self.indices, images: vec![] };
         // The same points twice: full size, and as single pixels of the small image, where
         // each pixel then holds the light of a whole block of the large one.
-        for (target, size, grid) in [(image, (dot * span) as f32, (buffer.0 as f32, buffer.1 as f32)), (halo, 1.0, covered)] {
+        // In the small image a body is spread over the pixels around it (see the shader).
+        for (target, size, grid, soft) in [(image, (dot * span) as f32, (buffer.0 as f32, buffer.1 as f32), 0.0), (halo, 2.0, covered, 1.0)] {
             ctx.begin_pass(Some(target.pass), PassAction::clear_color(0.0, 0.0, 0.0, 0.0));
             ctx.apply_pipeline(&self.points);
             ctx.apply_bindings(&points);
-            ctx.apply_uniforms(UniformsSource::table(&Vec4Uniform([2.0 / grid.0, 2.0 / grid.1, size, 0.0])));
+            ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / grid.0, 2.0 / grid.1, size, 0.0], target: [target.w as f32, target.h as f32, soft, (span * span) as f32] }));
             ctx.draw(0, vertices.len() as i32, 1);
             ctx.end_render_pass();
         }

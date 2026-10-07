@@ -268,7 +268,8 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(1.0);
 }
 
-fn key_hint(ui: &mut egui::Ui, key: &str) {
+/// A keyboard shortcut, pushed to the right edge of its row.
+pub fn key_hint(ui: &mut egui::Ui, key: &str) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.label(egui::RichText::new(key).monospace().color(c32(DIM)));
     });

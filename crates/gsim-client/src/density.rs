@@ -331,6 +331,7 @@ impl Density {
                 }
             });
         });
+        let mut flash_glow: Vec<((usize, usize), f32)> = Vec::new();
         // Merge flashes: a small hot disc that fades.
         for f in flashes {
             let (fx, fy) = (((f.x - x0) * ppm) as f32, ((f.y - y0) * ppm) as f32);
@@ -349,22 +350,58 @@ impl Density {
                     at[2] += 0.55 * k;
                 }
             }
+            // The glow is made from the bodies alone; give it the flash as one lump.
+            let total = 0.5 * std::f32::consts::PI * r * r * glow;
+            let at = (((fy / GLOW_DIV as f32) as usize).min(h.div_ceil(GLOW_DIV)), ((fx / GLOW_DIV as f32) as usize).min(w.div_ceil(GLOW_DIV)));
+            flash_glow.push((at, total));
         }
 
-        // Glow: the image at a quarter of the resolution, blurred, added back in.
+        // Glow: a small image of the same light, blurred, added back in. Each body's light is
+        // shared between the four small pixels around it according to where exactly it lies,
+        // so the glow moves as smoothly as the body does instead of a small pixel at a time.
         let (gw, gh) = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
         let acc = &self.acc;
         let (glow, blur) = (&mut self.glow, &mut self.blur);
-        let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], 0.0];
+        let bands = self.pool.current_num_threads();
+        let glow_rows = gh.div_ceil(bands).max(1);
+        // A body's position in the small image, and how much light it is in all.
+        let (half, lit) = (0.5 * span as f32, (span * span) as f32);
+        let small = |v: usize| {
+            let g = ((v as f32 + half) / GLOW_DIV as f32 - 0.5).max(0.0);
+            (g as usize, g.fract())
+        };
         self.pool.install(|| {
-            glow.par_chunks_mut(gw).enumerate().for_each(|(gy, row)| {
-                row.fill([0.0; 4]);
-                for y in (gy * GLOW_DIV).min(h)..((gy + 1) * GLOW_DIV).min(h) {
-                    for (out, cell) in row.iter_mut().zip(acc[y * w..(y + 1) * w].chunks(GLOW_DIV)) {
-                        *out = cell.iter().fold(*out, |s, p| add(s, *p));
+            glow.par_chunks_mut(glow_rows * gw).enumerate().for_each(|(band, out)| {
+                out.fill([0.0; 4]);
+                let (first, last) = (band * glow_rows, band * glow_rows + out.len() / gw);
+                for (p, (shade, weight)) in pix.iter().zip(tint) {
+                    if *p == NOWHERE {
+                        continue;
+                    }
+                    let (gy, fy) = small((p >> 16) as usize);
+                    if gy + 1 < first || gy >= last {
+                        continue;
+                    }
+                    let (gx, fx) = small((p & 0xFFFF) as usize);
+                    let c = &colors[*shade as usize];
+                    for (row, wy) in [(gy, 1.0 - fy), (gy + 1, fy)] {
+                        if row < first || row >= last {
+                            continue;
+                        }
+                        for (col, wx) in [(gx, 1.0 - fx), ((gx + 1).min(gw - 1), fx)] {
+                            let at = &mut out[(row - first) * gw + col];
+                            let k = weight * lit * wx * wy;
+                            for i in 0..3 {
+                                at[i] += c[i] * k;
+                            }
+                        }
                     }
                 }
             });
+            for ((gy, gx), total) in &flash_glow {
+                let at = &mut glow[gy * gw + gx];
+                (at[0], at[1], at[2]) = (at[0] + total, at[1] + 0.85 * total, at[2] + 0.55 * total);
+            }
             // Two passes of a 1-2-1 kernel, across then down.
             let mix = |a: [f32; 4], b: [f32; 4], c: [f32; 4]| [0.25 * (a[0] + c[0]) + 0.5 * b[0], 0.25 * (a[1] + c[1]) + 0.5 * b[1], 0.25 * (a[2] + c[2]) + 0.5 * b[2], 0.0];
             for _ in 0..2 {

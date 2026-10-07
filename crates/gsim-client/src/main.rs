@@ -59,9 +59,6 @@ struct Args {
     /// Do not check for or install updates
     #[arg(long, env = "GSIM_NO_UPDATE")]
     no_update: bool,
-    /// Show the network/sync overlay from the start (F3 toggles it)
-    #[arg(long)]
-    net_overlay: bool,
     /// Show how bodies of different masses and sizes are drawn, instead of the game
     #[arg(long)]
     gallery: bool,
@@ -146,7 +143,7 @@ fn seed_or_random(seed: u64) -> u64 {
 }
 
 fn join(settings: &Settings, args: &Args) -> Result<Game, String> {
-    Game::connect(resolve(&settings.server)?, settings, None, args.lookahead, args.net_overlay)
+    Game::connect(resolve(&settings.server)?, settings, None, args.lookahead)
 }
 
 /// `--solo <world> [--set key=value ...]`: the settings file is left alone.
@@ -159,7 +156,7 @@ fn solo(settings: &Settings, args: &Args, world: &str) -> Result<Started, String
         let (key, value) = gsim_server::scenario::parse_setting(setting)?;
         params.insert(key, value);
     }
-    menu::launch(&settings, seed_or_random(args.seed), args.lookahead, args.net_overlay)
+    menu::launch(&settings, seed_or_random(args.seed), args.lookahead)
 }
 
 async fn run(args: Args, mut settings: Settings) {
@@ -225,7 +222,7 @@ async fn run(args: Args, mut settings: Settings) {
                     ctx.set_zoom_factor(factor);
                     egui::Window::new("SETTINGS").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                         ui.set_width(330.0);
-                        options::show(ui, &mut settings);
+                        options::scrolled(ui, |ui| options::show(ui, &mut settings, options::World::Any));
                         ui.separator();
                         back = ui.button("Back").clicked();
                     });
@@ -243,6 +240,9 @@ async fn run(args: Args, mut settings: Settings) {
                 egui_macroquad::ui(|ctx| {
                     ctx.set_zoom_factor(factor);
                     choice = single.show(ctx, &mut settings);
+                    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        choice = Choice::Back;
+                    }
                     if !message.is_empty() {
                         egui::Area::new(egui::Id::new("error")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -30.0]).show(ctx, |ui| {
                             ui.colored_label(egui::Color32::from_rgb(255, 140, 120), &message);
@@ -261,7 +261,7 @@ async fn run(args: Args, mut settings: Settings) {
                         settings.name = settings.name.trim().to_string();
                         settings.save();
                         let seed = seed_or_random(if single.seed() != 0 { single.seed() } else { args.seed });
-                        match menu::launch(&settings, seed, args.lookahead, args.net_overlay) {
+                        match menu::launch(&settings, seed, args.lookahead) {
                             Ok(started) => {
                                 message.clear();
                                 next = Some(started.into());
@@ -288,29 +288,31 @@ async fn run(args: Args, mut settings: Settings) {
                         .resizable(false)
                         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                         .show(ctx, |ui| {
-                            ui.set_width(320.0);
-                            egui::Grid::new("form").num_columns(2).show(ui, |ui| {
-                                ui.label("Name");
-                                ui.text_edit_singleline(&mut settings.name);
-                                ui.end_row();
-                                ui.label("Server");
-                                ui.text_edit_singleline(&mut settings.server);
-                                ui.end_row();
-                            });
-                            ui.add_space(6.0);
-                            ui.horizontal(|ui| {
-                                if ui.button("Join server").clicked() {
-                                    action = Some(join(&settings, &args));
-                                }
-                                if ui.button("Single player").clicked() {
-                                    message.clear();
-                                    next = Some(Screen::Single);
-                                }
-                                if ui.button("Settings").clicked() {
+                            ui.set_width(340.0);
+                            // One full-width button per way into the game, each under the
+                            // fields it uses.
+                            let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([ui.available_width(), 32.0], egui::Button::new(text)).clicked();
+                            style::section(ui, "PILOT");
+                            ui.add(egui::TextEdit::singleline(&mut settings.name).desired_width(f32::INFINITY).hint_text("name"));
+                            style::section(ui, "MULTIPLAYER");
+                            ui.add(egui::TextEdit::singleline(&mut settings.server).desired_width(f32::INFINITY).hint_text("server address"));
+                            ui.add_space(2.0);
+                            if wide(ui, "Join server") {
+                                action = Some(join(&settings, &args));
+                            }
+                            style::section(ui, "SINGLE PLAYER");
+                            if wide(ui, "Choose a world") {
+                                message.clear();
+                                next = Some(Screen::Single);
+                            }
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.columns(2, |columns| {
+                                if wide(&mut columns[0], "Settings") {
                                     message.clear();
                                     next = Some(Screen::Settings);
                                 }
-                                if ui.button("Quit").clicked() {
+                                if wide(&mut columns[1], "Quit") {
                                     quit = true;
                                 }
                             });
@@ -326,9 +328,9 @@ async fn run(args: Args, mut settings: Settings) {
                                 updater::Status::Ready => "installing update...".to_string(),
                                 updater::Status::Failed(e) => e.clone(),
                             };
-                            ui.add_space(4.0);
+                            ui.add_space(6.0);
                             ui.horizontal(|ui| {
-                                ui.small(note);
+                                ui.label(egui::RichText::new(note).small().color(style::c32(style::DIM)));
                                 if updater.can_check() && ui.small_button("check for updates").clicked() {
                                     updater.check();
                                 }

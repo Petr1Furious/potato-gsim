@@ -313,3 +313,17 @@ fn op_takes_selectors() {
     say(&mut sim, a, "/op @x");
     assert!(!errors(&sim.clients[a].session).last().unwrap().is_empty());
 }
+
+#[test]
+fn operators_see_what_other_operators_do() {
+    let (mut sim, a, b, c) = trio(11);
+    say(&mut sim, a, "/op bob");
+    say(&mut sim, a, "/fuel cat");
+    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Refuelled cat");
+    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "[ann: Refuelled cat]");
+    // Not an operator: cat hears nothing about it.
+    assert!(!system(&sim.clients[c].session).iter().any(|l| l.contains("Refuelled")));
+    // Commands anyone may use are nobody else's business.
+    say(&mut sim, a, "/list");
+    assert!(!system(&sim.clients[b].session).iter().any(|l| l.contains("players online")));
+}

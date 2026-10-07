@@ -96,7 +96,7 @@ pub enum Started {
 }
 
 /// Start the world selected in the settings.
-pub fn launch(settings: &Settings, seed: u64, lookahead: f32, net_overlay: bool) -> Result<Started, String> {
+pub fn launch(settings: &Settings, seed: u64, lookahead: f32) -> Result<Started, String> {
     let name = settings.preset.as_str();
     let mut params = params_of(settings, name);
     if is_large(name) {
@@ -107,7 +107,7 @@ pub fn launch(settings: &Settings, seed: u64, lookahead: f32, net_overlay: bool)
         Ok(Started::Large(Box::new(Sandbox::start(setup, seed, settings, lookahead))))
     } else {
         let (server, addr) = Solo::start(name, seed, &params)?;
-        Ok(Started::Exact(Box::new(Game::connect(addr, settings, Some(server), lookahead, net_overlay)?)))
+        Ok(Started::Exact(Box::new(Game::connect(addr, settings, Some(server), lookahead)?)))
     }
 }
 
