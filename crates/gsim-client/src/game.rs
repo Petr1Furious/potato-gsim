@@ -833,6 +833,7 @@ impl Game {
             }
             lines.push(format!("m = {}", fmt::mass(row.props.mass[slot as usize])));
             lines.push(format!("r = {}", fmt::distance(row.props.radius[slot as usize])));
+            lines.push(format!("v = {}", fmt::speed((b.vx * b.vx + b.vy * b.vy).sqrt())));
             if let Some(ship) = own {
                 let d = ((b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)).sqrt();
                 let v = ((b.vx - ship.vx).powi(2) + (b.vy - ship.vy).powi(2)).sqrt();
@@ -896,7 +897,7 @@ impl Game {
         }
         let body_names: Vec<String> = mentions.iter().filter(|m| matches!(m.1, Mention::Body(_))).map(|m| m.0.clone()).collect();
         let presets: Vec<(&str, Vec<&str>)> = PRESETS.iter().map(|p| (p.name, p.params.iter().map(|s| s.key).collect())).collect();
-        let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op, sandbox: false };
+        let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op };
         let my_id = world.my_id;
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
         let clock = |s: f64| format!("{}:{:02}", s as u32 / 60, s as u32 % 60);

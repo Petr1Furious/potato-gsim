@@ -81,9 +81,10 @@ pub struct Far<'a> {
 
 /// Four targets share each load of sources; the last pass repeats a target to fill up.
 #[inline(always)]
-unsafe fn near_impl<V: Simd>(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, hit: &mut Vec<u32>) {
+unsafe fn near_impl<V: Simd>(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, tight: f32, hit: &mut Vec<u32>, close: &mut Vec<u32>) {
     let e = V::splat(eps2);
     let zero = V::splat(0.0);
+    let limit = V::splat(tight);
     let ns = s.x.len();
     let mut i = 0;
     while i < tx.len() {
@@ -95,6 +96,7 @@ unsafe fn near_impl<V: Simd>(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32],
         let mut sx = [zero; 4];
         let mut sy = [zero; 4];
         let mut touch = [false; 4];
+        let mut held = [false; 4];
         let mut k = 0;
         while k < ns {
             let jx = V::load(s.x.as_ptr().add(k));
@@ -110,6 +112,9 @@ unsafe fn near_impl<V: Simd>(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32],
                 touch[t] |= d2.any_inside(reach.mul(reach));
                 let inv = d2.add(e).rsqrt();
                 let f = jm.mul(inv.mul(inv.mul(inv)));
+                // m / d^3 is the square of the rate at which the source would swing the
+                // target around: note the targets something holds this tightly.
+                held[t] |= f.any_above(limit, d2);
                 sx[t] = dx.mul_add(f, sx[t]);
                 sy[t] = dy.mul_add(f, sy[t]);
             }
@@ -120,6 +125,9 @@ unsafe fn near_impl<V: Simd>(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32],
             ay[i + t] = sy[t].sum();
             if touch[t] {
                 hit.push((i + t) as u32);
+            }
+            if held[t] {
+                close.push((i + t) as u32);
             }
         }
         i += w;
@@ -181,16 +189,16 @@ mod x86 {
     use crate::simd::x86::{Avx2, Avx512};
 
     #[target_feature(enable = "avx512f")]
-    pub unsafe fn near_avx512(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, hit: &mut Vec<u32>) {
-        near_impl::<Avx512>(tx, ty, tr, ax, ay, s, eps2, hit)
+    pub unsafe fn near_avx512(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, tight: f32, hit: &mut Vec<u32>, close: &mut Vec<u32>) {
+        near_impl::<Avx512>(tx, ty, tr, ax, ay, s, eps2, tight, hit, close)
     }
     #[target_feature(enable = "avx512f")]
     pub unsafe fn far_avx512(tx: &[f32], ty: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Far, eps2: f32) {
         far_impl::<Avx512>(tx, ty, ax, ay, s, eps2)
     }
     #[target_feature(enable = "avx2,fma")]
-    pub unsafe fn near_avx2(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, hit: &mut Vec<u32>) {
-        near_impl::<Avx2>(tx, ty, tr, ax, ay, s, eps2, hit)
+    pub unsafe fn near_avx2(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, tight: f32, hit: &mut Vec<u32>, close: &mut Vec<u32>) {
+        near_impl::<Avx2>(tx, ty, tr, ax, ay, s, eps2, tight, hit, close)
     }
     #[target_feature(enable = "avx2,fma")]
     pub unsafe fn far_avx2(tx: &[f32], ty: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Far, eps2: f32) {
@@ -204,8 +212,8 @@ mod arm {
     use crate::simd::arm::Neon;
 
     #[target_feature(enable = "neon")]
-    pub unsafe fn near_neon(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, hit: &mut Vec<u32>) {
-        near_impl::<Neon>(tx, ty, tr, ax, ay, s, eps2, hit)
+    pub unsafe fn near_neon(tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, tight: f32, hit: &mut Vec<u32>, close: &mut Vec<u32>) {
+        near_impl::<Neon>(tx, ty, tr, ax, ay, s, eps2, tight, hit, close)
     }
     #[target_feature(enable = "neon")]
     pub unsafe fn far_neon(tx: &[f32], ty: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Far, eps2: f32) {
@@ -214,23 +222,24 @@ mod arm {
 }
 
 /// Accelerations of the targets from `s` (overwrites `ax`/`ay`), in scaled units without G.
-/// Targets that overlap a source are appended to `hit` by their index in the group.
+/// Targets that overlap a source are appended to `hit` by their index in the group, and
+/// those for which some source has `m / d^3` above `tight` to `close`.
 ///
 /// `level` must come from [`Level::detect`] or [`Level::available`]; source lists must be
 /// padded to a multiple of [`PAD`].
-pub fn near(level: Level, tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, hit: &mut Vec<u32>) {
+pub fn near(level: Level, tx: &[f32], ty: &[f32], tr: &[f32], ax: &mut [f32], ay: &mut [f32], s: &Near, eps2: f32, tight: f32, hit: &mut Vec<u32>, close: &mut Vec<u32>) {
     assert!(s.x.len().is_multiple_of(PAD) && s.y.len() == s.x.len() && s.m.len() == s.x.len() && s.r.len() == s.x.len());
     assert!(ty.len() == tx.len() && tr.len() == tx.len() && ax.len() == tx.len() && ay.len() == tx.len());
     // SAFETY: lengths checked above; the level was detected on this CPU.
     unsafe {
         match level {
             #[cfg(target_arch = "x86_64")]
-            Level::Avx512 => x86::near_avx512(tx, ty, tr, ax, ay, s, eps2, hit),
+            Level::Avx512 => x86::near_avx512(tx, ty, tr, ax, ay, s, eps2, tight, hit, close),
             #[cfg(target_arch = "x86_64")]
-            Level::Avx2 => x86::near_avx2(tx, ty, tr, ax, ay, s, eps2, hit),
+            Level::Avx2 => x86::near_avx2(tx, ty, tr, ax, ay, s, eps2, tight, hit, close),
             #[cfg(target_arch = "aarch64")]
-            Level::Neon => arm::near_neon(tx, ty, tr, ax, ay, s, eps2, hit),
-            _ => near_impl::<Plain>(tx, ty, tr, ax, ay, s, eps2, hit),
+            Level::Neon => arm::near_neon(tx, ty, tr, ax, ay, s, eps2, tight, hit, close),
+            _ => near_impl::<Plain>(tx, ty, tr, ax, ay, s, eps2, tight, hit, close),
         }
     }
 }

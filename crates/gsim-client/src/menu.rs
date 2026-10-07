@@ -100,11 +100,12 @@ pub fn launch(settings: &Settings, seed: u64, lookahead: f32) -> Result<Started,
     let name = settings.preset.as_str();
     let mut params = params_of(settings, name);
     if is_large(name) {
-        if let Some(count) = settings.measured.get(name).filter(|_| !params.contains_key("count")) {
+        let counted = large::scenario(name).is_some_and(|s| s.params.iter().any(|p| p.key == "count"));
+        if let Some(count) = settings.measured.get(name).filter(|_| counted && !params.contains_key("count")) {
             params.insert("count".into(), *count as f64);
         }
         let setup = large::build(name, seed, &params)?;
-        Ok(Started::Large(Box::new(Sandbox::start(setup, seed, settings, lookahead))))
+        Ok(Started::Large(Box::new(Sandbox::start(setup, settings))))
     } else {
         let (server, addr) = Solo::start(name, seed, &params)?;
         Ok(Started::Exact(Box::new(Game::connect(addr, settings, Some(server), lookahead)?)))
@@ -214,7 +215,8 @@ impl SinglePlayer {
                         ui.add(egui::TextEdit::singleline(&mut self.seed).desired_width(120.0).hint_text("random"));
                         ui.end_row();
                     });
-                    if world.large {
+                    // Only a world with a number of bodies to choose has anything to measure.
+                    if world.large && world.specs.iter().any(|s| s.key == "count") {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             match (&self.measuring, measured) {

@@ -37,6 +37,8 @@ pub struct Big {
     pub y: f32,
     pub r: f32,
     pub mass: f32,
+    /// 1 here to stay .. 0 gone.
+    pub fade: f32,
 }
 
 /// A brief light where two bodies merged, in buffer pixels.
@@ -57,6 +59,10 @@ const BIG_PX: f32 = 1.6;
 const MAX_PIXELS: f32 = 1.6e6;
 const GLOW_DIV: usize = 4;
 const NOWHERE: u32 = u32::MAX;
+/// How long lingering light takes to fade to about a third, and how bright one frame of it is
+/// next to the body that left it.
+const TRAIL_SECONDS: f32 = 2.5;
+const TRAIL_STRENGTH: f32 = 0.12;
 
 pub struct Density {
     w: usize,
@@ -84,10 +90,18 @@ pub struct Density {
     /// A world of a few thousand bodies, where each one should be easy to see: dots are
     /// larger and brighter and glow more than in a crowd of hundreds of thousands.
     pub sparse: bool,
+    /// Light lingers and fades slowly, so that moving bodies draw streaks.
+    pub long_exposure: bool,
+    /// The lingering light (rasteriser only; the graphics card keeps its own).
+    trail: Vec<[f32; 4]>,
+    trail_stale: bool,
+    last_frame: std::time::Instant,
     /// Physical pixels across one body when the graphics card draws.
     dot: u32,
     notice: Option<String>,
     vertices: Vec<Vertex>,
+    /// Light added up per pixel, for when many bodies share few pixels.
+    merged: Vec<[f32; 3]>,
     /// Milliseconds the last frame took to rasterise.
     pub last_ms: f32,
 }
@@ -153,9 +167,14 @@ impl Density {
             gpu: None,
             gpu_wanted: false,
             sparse: false,
+            long_exposure: false,
+            trail: Vec::new(),
+            trail_stale: false,
+            last_frame: std::time::Instant::now(),
             dot: 1,
             notice: None,
             vertices: Vec::new(),
+            merged: Vec::new(),
             last_ms: 0.0,
         }
     }
@@ -175,6 +194,18 @@ impl Density {
             // The rasteriser's own images are made when it next draws.
             self.acc = Vec::new();
         }
+    }
+
+    /// Forget the light that has lingered so far: the view moved, and it would smear.
+    pub fn clear_trail(&mut self) {
+        self.trail_stale = true;
+    }
+
+    /// What share of lingering light survives this frame, and how strongly it is shown.
+    fn linger(&mut self) -> Option<(f32, f32)> {
+        let frame = self.last_frame.elapsed().as_secs_f32().min(0.1);
+        self.last_frame = std::time::Instant::now();
+        self.long_exposure.then(|| ((-frame / TRAIL_SECONDS).exp(), TRAIL_STRENGTH))
     }
 
     /// How bright a typical lit pixel should come out, before tone mapping.
@@ -243,7 +274,7 @@ impl Density {
                             continue;
                         }
                         if r * scale >= big_r {
-                            big.push(Big { id: bodies.id[i], x: bx * scale, y: by * scale, r: r * scale, mass });
+                            big.push(Big { id: bodies.id[i], x: bx * scale, y: by * scale, r: r * scale, mass, fade: 1.0 - bodies.fade[i] });
                             continue;
                         }
                         if bx < 0.0 || by < 0.0 || bx >= w as f32 || by >= h as f32 {
@@ -261,7 +292,7 @@ impl Density {
                         // A dot's light grows with its area until it fills a pixel; heavier
                         // bodies shine a little more so they stand out when zoomed far out.
                         let area = (r * r * std::f32::consts::PI).clamp(faintest, 1.0);
-                        let weight = area.sqrt() * (0.35 + 0.65 * ((mass.log10() - 19.0) / 8.0).clamp(0.0, 1.0));
+                        let weight = area.sqrt() * (0.35 + 0.65 * ((mass.log10() - 19.0) / 8.0).clamp(0.0, 1.0)) * (1.0 - bodies.fade[i]);
                         *t = ((shade * (PALETTE - 1) as f32 + 0.5) as u8, weight);
                     }
                     big
@@ -301,6 +332,7 @@ impl Density {
             return;
         }
         self.allocate();
+        let linger = self.linger();
         let (w, h, scale) = (self.w, self.h, self.scale);
         let (x0, y0, ppm) = self.corner;
         let colors = self.colors;
@@ -420,6 +452,29 @@ impl Density {
             }
         });
 
+        if let Some((keep, _)) = linger {
+            if self.trail.len() != self.acc.len() || self.trail_stale {
+                self.trail = vec![[0.0; 4]; self.acc.len()];
+            }
+            let (trail, acc) = (&mut self.trail, &self.acc);
+            self.pool.install(|| {
+                trail.par_chunks_mut(w).zip(acc.par_chunks(w)).for_each(|(trail, acc)| {
+                    for (t, a) in trail.iter_mut().zip(acc) {
+                        for k in 0..4 {
+                            t[k] = t[k] * keep + a[k];
+                        }
+                    }
+                });
+            });
+        } else {
+            self.trail = Vec::new();
+        }
+        self.trail_stale = false;
+        // Without lingering light the image is read twice, the second time for nothing.
+        let (lingering, strength) = match linger {
+            Some((_, strength)) => (&self.trail[..], strength * self.exposure),
+            None => (&self.acc[..], 0.0),
+        };
         // Tone mapping. Exposure follows the typical brightness of lit pixels, smoothly.
         let exposure = self.exposure;
         let glow = &self.glow;
@@ -432,10 +487,11 @@ impl Density {
                 .bytes
                 .par_chunks_mut(w * 4)
                 .zip(acc.par_chunks(w))
+                .zip(lingering.par_chunks(w))
                 .enumerate()
                 .map_init(
                     || vec![[0.0f32; 4]; gw],
-                    |halo, (y, (out, row))| {
+                    |halo, (y, ((out, row), past))| {
                         // The glow for this row: blend the two rows of the small image it lies
                         // between once, then only across for each pixel.
                         let gy = ((y as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
@@ -448,13 +504,13 @@ impl Density {
                         }
                         let mut light = [0.0f32; 4];
                         let mut lit = 0u32;
-                        for ((px, a), (gx, fx)) in out.chunks_exact_mut(4).zip(row).zip(across) {
+                        for (((px, a), (gx, fx)), t) in out.chunks_exact_mut(4).zip(row).zip(across).zip(past) {
                             let (h0, h1) = (halo[*gx as usize], halo[*gx as usize + 1]);
                             lit += (a[0] + a[1] + a[2] > 0.0) as u32;
                             let mut v = [0.0f32; 4];
                             for k in 0..4 {
                                 light[k] += a[k];
-                                v[k] = a[k] * exposure + h0[k] + (h1[k] - h0[k]) * fx;
+                                v[k] = a[k] * exposure + t[k] * strength + h0[k] + (h1[k] - h0[k]) * fx;
                                 // Compress highlights, lift faint light.
                                 v[k] = (v[k] / (1.0 + v[k])).sqrt();
                             }
@@ -536,8 +592,52 @@ impl Density {
             let wanted = (self.brightness() / (light / lit as f32 / 3.0)).clamp(0.05, 200.0);
             self.exposure += 0.08 * (wanted - self.exposure);
         }
+        // Hundreds of thousands of points piled onto a few pixels are slow for a graphics
+        // card to blend one by one. When bodies share pixels that heavily, add their light up
+        // here and send one point for each lit pixel instead.
+        let seen: u32 = grid.iter().map(|c| c.0).sum();
+        if span == 1 && seen > 2 * lit {
+            let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
+            for (i, _) in grid.iter().enumerate().filter(|(_, c)| c.0 > 0) {
+                (x0, x1, y0, y1) = (x0.min(i % cw), x1.max(i % cw), y0.min(i / cw), y1.max(i / cw));
+            }
+            // The part of the screen that has anything on it.
+            let (left, top) = (x0 * CELL, y0 * CELL);
+            let (bw, bh) = (((x1 + 1) * CELL).min(w) - left, ((y1 + 1) * CELL).min(h) - top);
+            self.merged.clear();
+            self.merged.resize(bw * bh, [0.0; 3]);
+            let rows = bh.div_ceil(self.pool.current_num_threads()).max(1);
+            let (pix, tint, merged) = (&self.pix, &self.tint, &mut self.merged);
+            self.vertices = self.pool.install(|| {
+                merged.par_chunks_mut(rows * bw).enumerate().for_each(|(band, out)| {
+                    let (first, last) = (top + band * rows, top + band * rows + out.len() / bw);
+                    for (p, (shade, weight)) in pix.iter().zip(tint) {
+                        let y = (p >> 16) as usize;
+                        if *p == NOWHERE || y < first || y >= last {
+                            continue;
+                        }
+                        let at = &mut out[(y - first) * bw + (p & 0xFFFF) as usize - left];
+                        let c = &colors[*shade as usize];
+                        for k in 0..3 {
+                            at[k] += c[k] * weight;
+                        }
+                    }
+                });
+                merged
+                    .par_chunks(bw)
+                    .enumerate()
+                    .flat_map_iter(|(row, line)| {
+                        line.iter().enumerate().filter(|(_, l)| l[0] + l[1] + l[2] > 0.0).map(move |(col, l)| [(left + col) as f32 + 0.5, (top + row) as f32 + 0.5, l[0], l[1], l[2]])
+                    })
+                    .collect()
+            });
+        }
         let glow = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * self.exposure * self.halo();
-        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, span, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, style::BACKGROUND);
+        let linger = self.linger();
+        if std::mem::take(&mut self.trail_stale) {
+            self.gpu.as_mut().unwrap().clear_trail();
+        }
+        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, span, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, linger, style::BACKGROUND);
         let (x0, y0, ppm) = self.corner;
         for f in flashes {
             let (fx, fy) = (((f.x - x0) * ppm) as f32 * scale, ((f.y - y0) * ppm) as f32 * scale);

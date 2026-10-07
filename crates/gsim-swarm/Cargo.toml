@@ -4,5 +4,4 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gsim-core.workspace = true
 rayon.workspace = true

@@ -27,6 +27,8 @@ pub struct Settings {
     /// The F3 panel: network details in exact worlds, statistics in large ones.
     pub details: bool,
     pub color: ColorMode,
+    /// Large-scale worlds: light lingers, so that moving bodies draw streaks.
+    pub long_exposure: bool,
     /// Per single-player world: the parameters changed from their defaults.
     pub params: BTreeMap<String, BTreeMap<String, f64>>,
     /// Per large-scale world: how many bodies this machine was measured to hold.
@@ -35,7 +37,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, follow_selection: true, details: false, color: ColorMode::Mass, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, follow_selection: true, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -50,6 +52,13 @@ fn path() -> Option<PathBuf> {
         PathBuf::from(std::env::var_os("HOME")?).join(".config")
     };
     Some(dir.join("potato_gsim").join("settings.txt"))
+}
+
+impl Settings {
+    /// Where the settings file lives: saved worlds go next to it.
+    pub fn directory() -> Option<PathBuf> {
+        path().and_then(|p| p.parent().map(PathBuf::from))
+    }
 }
 
 impl Settings {
@@ -75,6 +84,7 @@ impl Settings {
                 "body_names" => s.body_names = v == "1",
                 "follow_selection" => s.follow_selection = v != "0",
                 "details" => s.details = v == "1",
+                "long_exposure" => s.long_exposure = v == "1",
                 "color" => s.color = ColorMode::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.color),
                 key => {
                     // `param.<world>.<key>` and `measured.<world>`
@@ -115,6 +125,7 @@ impl Settings {
             ("body_names", self.body_names),
             ("follow_selection", self.follow_selection),
             ("details", self.details),
+            ("long_exposure", self.long_exposure),
         ] {
             text.push_str(&format!("{key}={}\n", on as u8));
         }

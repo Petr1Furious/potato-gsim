@@ -12,8 +12,6 @@ pub struct Context<'a> {
     pub presets: &'a [(&'a str, Vec<&'a str>)],
     /// Offer operator commands.
     pub op: bool,
-    /// A large-scale single-player world: only the commands that exist there.
-    pub sandbox: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,7 +95,6 @@ fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
         Arg::Word(words) => words.iter().map(|w| w.to_string()).collect(),
         Arg::Text => names(&[ctx.players, ctx.bodies]),
         // Settings depend on the preset typed before them: see `setting_keys`.
-        Arg::Span => ["0", "1h", "6h", "1d", "2d", "4d"].iter().map(|w| w.to_string()).collect(),
         Arg::Number | Arg::Settings => Vec::new(),
     }
 }
@@ -134,7 +131,7 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     if ws.len() == 1 && !trailing_space {
         let typed = first.text.trim_start_matches('/').to_lowercase();
         let mut names: Vec<String> =
-            command::COMMANDS.iter().filter(|c| (ctx.op || !c.op) && c.available(ctx.sandbox) && c.name.starts_with(&typed)).map(|c| format!("/{}", c.name)).collect();
+            command::COMMANDS.iter().filter(|c| (ctx.op || !c.op) && c.name.starts_with(&typed)).map(|c| format!("/{}", c.name)).collect();
         names.sort();
         if names.is_empty() {
             a.error = Some(error_at("Unknown or incomplete command", input, input.len()));
@@ -147,7 +144,7 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     }
 
     let name = first.text.trim_start_matches('/');
-    let Some(spec) = command::find(name).filter(|c| (ctx.op || !c.op) && c.available(ctx.sandbox)) else {
+    let Some(spec) = command::find(name).filter(|c| ctx.op || !c.op) else {
         a.error = Some(error_at("Unknown or incomplete command", input, first.end));
         a.spans.push((0, input.len(), SpanKind::Error));
         return a;
@@ -208,7 +205,6 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
     if a.suggestions.is_empty() {
         let hopeless = match arg {
             Arg::Word(_) | Arg::Preset => !partial.is_empty(),
-            Arg::Span => !partial.is_empty() && command::parse_span(partial).is_none() && partial.parse::<f64>().is_err(),
             // Wrong unless it is a known key with a value still being typed.
             Arg::Settings => !partial.is_empty() && !partial.split_once('=').is_some_and(|(key, _)| setting_keys(spec, args, ctx).contains(&key)),
             Arg::Number => !partial.is_empty() && !is_coordinate(partial) && partial.parse::<f64>().is_err() && !"-+.~".contains(partial),
@@ -235,7 +231,6 @@ fn valid(spec: &Command, i: usize, arg: &Arg, word: &str, args: &[Word], ctx: &C
         Arg::Preset => ctx.presets.iter().any(|p| p.0 == word),
         Arg::Settings => is_setting(word, &setting_keys(spec, args, ctx)),
         Arg::Number => word.parse::<f64>().is_ok(),
-        Arg::Span => command::parse_span(word).is_some(),
         // Names are checked by the server: a player may have just joined.
         _ => true,
     }
@@ -279,7 +274,7 @@ mod tests {
     }
 
     fn ctx<'a>(players: &'a [String], bodies: &'a [String], presets: &'a [(&'a str, Vec<&'a str>)], op: bool) -> Context<'a> {
-        Context { players, bodies, presets, op, sandbox: false }
+        Context { players, bodies, presets, op }
     }
 
     #[test]
@@ -337,7 +332,7 @@ mod tests {
         let an = |s: &str| analyze(s, &op, false);
 
         // Command names: listed as soon as the slash is typed, narrowed while typing.
-        assert_eq!(an("/").suggestions.len(), command::COMMANDS.iter().filter(|c| c.available(false)).count());
+        assert_eq!(an("/").suggestions.len(), command::COMMANDS.len());
         assert_eq!(an("/t").suggestions, ["/target", "/timescale", "/tp"]);
         assert_eq!(analyze("/", &guest, false).suggestions, ["/help", "/list", "/msg", "/r", "/respawn"]);
         assert_eq!(an("/t").start, 0);

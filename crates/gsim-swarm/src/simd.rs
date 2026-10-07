@@ -25,6 +25,8 @@ pub trait Simd: Copy {
     unsafe fn sum(self) -> f32;
     /// Is `0 < self < hi` in any lane?
     unsafe fn any_inside(self, hi: Self) -> bool;
+    /// Is `self > lo` in any lane where `d` is positive?
+    unsafe fn any_above(self, lo: Self, d: Self) -> bool;
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -88,6 +90,10 @@ impl Simd for Plain {
     unsafe fn any_inside(self, hi: Self) -> bool {
         (0..4).any(|i| self.0[i] > 0.0 && self.0[i] < hi.0[i])
     }
+    #[inline(always)]
+    unsafe fn any_above(self, lo: Self, d: Self) -> bool {
+        (0..4).any(|i| self.0[i] > lo.0[i] && d.0[i] > 0.0)
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -142,6 +148,11 @@ pub mod x86 {
             let below = _mm512_cmp_ps_mask(self.0, hi.0, _CMP_LT_OQ);
             _mm512_mask_cmp_ps_mask(below, self.0, _mm512_setzero_ps(), _CMP_GT_OQ) != 0
         }
+        #[inline(always)]
+        unsafe fn any_above(self, lo: Self, d: Self) -> bool {
+            let over = _mm512_cmp_ps_mask(self.0, lo.0, _CMP_GT_OQ);
+            _mm512_mask_cmp_ps_mask(over, d.0, _mm512_setzero_ps(), _CMP_GT_OQ) != 0
+        }
     }
 
     #[derive(Clone, Copy)]
@@ -193,6 +204,12 @@ pub mod x86 {
             let below = _mm256_cmp_ps(self.0, hi.0, _CMP_LT_OQ);
             let above = _mm256_cmp_ps(self.0, _mm256_setzero_ps(), _CMP_GT_OQ);
             _mm256_movemask_ps(_mm256_and_ps(below, above)) != 0
+        }
+        #[inline(always)]
+        unsafe fn any_above(self, lo: Self, d: Self) -> bool {
+            let over = _mm256_cmp_ps(self.0, lo.0, _CMP_GT_OQ);
+            let real = _mm256_cmp_ps(d.0, _mm256_setzero_ps(), _CMP_GT_OQ);
+            _mm256_movemask_ps(_mm256_and_ps(over, real)) != 0
         }
     }
 }
@@ -250,6 +267,11 @@ pub mod arm {
         unsafe fn any_inside(self, hi: Self) -> bool {
             let inside = vandq_u32(vcltq_f32(self.0, hi.0), vcgtq_f32(self.0, vdupq_n_f32(0.0)));
             vmaxvq_u32(inside) != 0
+        }
+        #[inline(always)]
+        unsafe fn any_above(self, lo: Self, d: Self) -> bool {
+            let both = vandq_u32(vcgtq_f32(self.0, lo.0), vcgtq_f32(d.0, vdupq_n_f32(0.0)));
+            vmaxvq_u32(both) != 0
         }
     }
 }

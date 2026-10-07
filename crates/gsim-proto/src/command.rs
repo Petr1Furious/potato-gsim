@@ -10,8 +10,6 @@ pub enum Arg {
     PlayerOrBody,
     Preset,
     Number,
-    /// A length of time such as `6h` or `2d` (see [`parse_span`]).
-    Span,
     /// One of a fixed set of words.
     Word(&'static [&'static str]),
     /// The rest of the line.
@@ -109,8 +107,6 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "unban-ip", help: "lift an address ban", op: true, params: &[req("address", Arg::Text)] },
     Command { name: "op", help: "make players operators", op: true, params: &[req("players", Arg::Player)] },
     Command { name: "deop", help: "take operator rights away", op: true, params: &[req("players", Arg::Player)] },
-    Command { name: "speed", help: "simulation time per real world second", op: true, params: &[req("time", Arg::Span)] },
-    Command { name: "accuracy", help: "opening angle of the gravity approximation", op: true, params: &[req("angle", Arg::Number)] },
     Command {
         name: "whitelist",
         help: "manage the whitelist",
@@ -118,22 +114,6 @@ pub const COMMANDS: &[Command] = &[
         params: &[req("on|off|add|remove|list", Arg::Word(&["on", "off", "add", "remove", "list"])), opt("player", Arg::Player)],
     },
 ];
-
-/// Commands that work in a large-scale single-player world, which has no server behind it.
-const SANDBOX: &[&str] = &["help", "respawn", "tp", "orbit", "fuel", "god", "kill", "speed", "accuracy"];
-/// Commands that only exist there.
-const SANDBOX_ONLY: &[&str] = &["speed", "accuracy"];
-
-impl Command {
-    /// Whether the command exists in this kind of world.
-    pub fn available(&self, sandbox: bool) -> bool {
-        if sandbox {
-            SANDBOX.contains(&self.name)
-        } else {
-            !SANDBOX_ONLY.contains(&self.name)
-        }
-    }
-}
 
 pub fn find(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name.eq_ignore_ascii_case(name))
@@ -184,13 +164,6 @@ pub fn parse_metres(word: &str) -> Option<f64> {
     number.parse::<f64>().ok().filter(|v| v.is_finite()).map(|v| v * scale)
 }
 
-/// A length of time in seconds: `90m`, `6h`, `2d`, `1y`, or plain seconds.
-pub fn parse_span(word: &str) -> Option<f64> {
-    let units = [("min", 60.0), ("s", 1.0), ("m", 60.0), ("h", 3600.0), ("d", 86_400.0), ("y", 31_557_600.0)];
-    let (number, scale) = units.iter().find_map(|(u, k)| word.strip_suffix(u).map(|n| (n, *k))).unwrap_or((word, 1.0));
-    number.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(|v| v * scale)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,10 +179,5 @@ mod tests {
         assert_eq!(parse_metres("12m"), Some(12.0));
         assert_eq!(parse_metres("abc"), None);
         assert!(find("TP").is_some() && find("nope").is_none());
-        assert_eq!(parse_span("6h"), Some(21_600.0));
-        assert_eq!(parse_span("90min"), Some(5400.0));
-        assert_eq!(parse_span("2d"), Some(172_800.0));
-        assert_eq!(parse_span("0"), Some(0.0));
-        assert_eq!((parse_span("-1h"), parse_span("soon")), (None, None));
     }
 }

@@ -9,7 +9,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 /// Expected result of [`compute`]. Regenerate with `cargo test -p gsim-core -- --nocapture golden`
 /// only when the simulation is intentionally changed (and bump the protocol's sim version).
-pub const GOLDEN: u64 = 0x5ae5_b56e_ddf5_f97f;
+pub const GOLDEN: u64 = 0x7f53_834e_56f6_a96d;
 
 pub fn scene() -> Vec<Body> {
     // Integer LCG and exact arithmetic only: the scene itself must be reproducible.

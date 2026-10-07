@@ -41,13 +41,15 @@ const fn p(key: &'static str, label: &'static str, help: &'static str, unit: &'s
     Param { key, label, help, unit, kind, default, min, max }
 }
 
-const COUNT: Param = p("count", "Bodies", "How many bodies the world starts with", "", Kind::Log, 50_000.0, 1_000.0, 4_000_000.0);
+const PACE: Param = p("time_scale", "Pace", "Simulated seconds per second to start with", "x", Kind::Log, 86_400.0, 60.0, 1.0e9);
+
+const COUNT: Param = p("count", "Bodies", "How many bodies the world starts with", "", Kind::Log, 50_000.0, 10.0, 4_000_000.0);
 const SIZE: Param = p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.1, 0.02, 50.0);
 const ACCURACY: Param =
     p("accuracy", "Opening angle", "How readily distant groups are treated as one lump: smaller is more accurate and slower", "", Kind::Linear, 0.7, 0.3, 1.2);
-const TIME: Param = p("time_scale", "Time scale", "Simulated seconds per second", "x", Kind::Log, 86_400.0, 3_600.0, 2_000_000.0);
 
 pub const SCENARIOS: &[Scenario] = &[
+    Scenario { name: "empty", about: "Nothing at all: build a world from scratch with the tools", params: &[ACCURACY, PACE] },
     Scenario {
         name: "galaxy",
         about: "A heavy core inside a rotating disc that grows spiral arms and clumps",
@@ -59,7 +61,7 @@ pub const SCENARIOS: &[Scenario] = &[
             p("heat", "Random motion", "Random speed as a fraction of orbital speed: a cold disc clumps, a warm one stays smooth", "", Kind::Linear, 0.03, 0.0, 0.5),
             SIZE,
             ACCURACY,
-            TIME,
+            PACE,
         ],
     },
     Scenario {
@@ -78,7 +80,7 @@ pub const SCENARIOS: &[Scenario] = &[
             p("heat", "Random motion", "Random speed as a fraction of orbital speed", "", Kind::Linear, 0.03, 0.0, 0.5),
             SIZE,
             ACCURACY,
-            TIME,
+            PACE,
         ],
     },
     Scenario {
@@ -92,7 +94,7 @@ pub const SCENARIOS: &[Scenario] = &[
             p("heat", "Random motion", "Random speed as a fraction of orbital speed at the edge", "", Kind::Linear, 0.04, 0.0, 0.5),
             p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.3, 0.02, 50.0),
             ACCURACY,
-            TIME,
+            PACE,
         ],
     },
 ];
@@ -105,11 +107,6 @@ pub fn scenario(name: &str) -> Option<&'static Scenario> {
 pub struct Setup {
     pub name: String,
     pub bodies: Bodies,
-    /// Ships appear on a circular orbit at a radius in this range...
-    pub spawn_r: (f64, f64),
-    /// ...around this body (by id) while it exists, else around the centre of mass.
-    pub spawn_around: Option<u32>,
-    pub escape_radius: f64,
     pub theta: f32,
     pub time_scale: f64,
     pub group_names: Vec<&'static str>,
@@ -238,6 +235,72 @@ fn settle(out: &mut Bodies, first: usize, velocity: (f64, f64)) {
     }
 }
 
+/// A cloud in solid-body rotation: `rotation` = 1 would balance gravity at the edge.
+#[allow(clippy::too_many_arguments)]
+fn cloud(rng: &mut Rng, count: usize, radius: f64, mass: f64, rotation: f64, heat: f64, size: f64, group: u8, out: &mut Bodies) {
+    let first = out.len();
+    let weights: Vec<f64> = (0..count).map(|_| rng.weight()).collect();
+    let unit = mass / weights.iter().sum::<f64>().max(1e-300);
+    let omega = rotation * (G * mass / radius.powi(3)).sqrt();
+    let jitter = heat * (G * mass / radius).sqrt();
+    for w in weights {
+        let (r, a) = (radius * rng.f64().sqrt(), rng.f64() * TAU);
+        let (x, y) = (r * a.cos(), r * a.sin());
+        let (nx, ny) = rng.normal2();
+        let m = w * unit;
+        out.push(x, y, -omega * y + nx * jitter, omega * x + ny * jitter, m, radius_from_mass(m, DENSITY) * size, group);
+    }
+    settle(out, first, (0.0, 0.0));
+}
+
+/// Something to drop into a running world.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Structure {
+    /// A core with a rotating disc.
+    Galaxy,
+    /// A slowly turning cloud with no centre.
+    Cloud,
+    /// Small bodies circling a body that is already there.
+    Ring,
+}
+
+impl Structure {
+    pub const ALL: [Structure; 3] = [Structure::Galaxy, Structure::Cloud, Structure::Ring];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Structure::Galaxy => "galaxy",
+            Structure::Cloud => "cloud",
+            Structure::Ring => "ring",
+        }
+    }
+}
+
+/// `count` bodies of `mass` in all, within `radius` of the origin and at rest as a whole.
+/// A ring is given the mass of the body it circles as `centre`, and does not include it.
+pub fn structure(kind: Structure, seed: u64, count: usize, radius: f64, mass: f64, centre: f64, group: u8) -> Bodies {
+    let mut rng = Rng(seed ^ 0x5EED_0F5A);
+    let mut out = Bodies::default();
+    let count = count.max(1);
+    match kind {
+        Structure::Galaxy => {
+            let d = Disc { centre: (0.0, 0.0), velocity: (0.0, 0.0), count, radius, core_mass: 0.7 * mass, disc_mass: 0.3 * mass, heat: 0.03, spin: 1.0, size: 0.1, group };
+            disc(&mut rng, &d, &mut out);
+        }
+        Structure::Cloud => cloud(&mut rng, count, radius, mass, 0.6, 0.04, 0.3, group, &mut out),
+        Structure::Ring => {
+            let each = mass / count as f64;
+            for _ in 0..count {
+                // A band a fifth of the radius wide, each body on its own circle.
+                let (r, a) = (radius * (0.9 + 0.2 * rng.f64()), rng.f64() * TAU);
+                let v = (G * centre.max(1.0) / r).sqrt();
+                out.push(r * a.cos(), r * a.sin(), -v * a.sin(), v * a.cos(), each, radius_from_mass(each, DENSITY) * 0.3, group);
+            }
+        }
+    }
+    out
+}
+
 pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
     validate(name, params)?;
     let sc = scenario(name).unwrap();
@@ -245,7 +308,7 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
     let mut rng = Rng(seed ^ 0x5EED_0F5A);
     let count = get("count") as usize;
     let mut bodies = Bodies::default();
-    let (spawn_r, extent, group_names);
+    let group_names;
     match name {
         "galaxy" => {
             let radius = get("radius");
@@ -262,8 +325,6 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
                 group: 0,
             };
             disc(&mut rng, &d, &mut bodies);
-            spawn_r = (0.35 * radius, 0.7 * radius);
-            extent = radius;
             group_names = vec!["disc"];
         }
         "collision" => {
@@ -303,37 +364,21 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
             };
             disc(&mut rng, &a, &mut bodies);
             disc(&mut rng, &b, &mut bodies);
-            spawn_r = (0.4 * radius, 0.8 * radius);
-            extent = apart;
             group_names = vec!["first galaxy", "second galaxy"];
         }
+        "empty" => {
+            // Nothing: a world to build with the tools. Nothing is ever dropped from it.
+            group_names = vec![];
+        }
         _ => {
-            let (radius, mass, size) = (get("radius"), get("mass"), get("size"));
-            let weights: Vec<f64> = (0..count).map(|_| rng.weight()).collect();
-            let unit = mass / weights.iter().sum::<f64>().max(1e-300);
-            // Solid-body rotation: `rotation` = 1 would balance gravity at the edge.
-            let omega = get("rotation") * (G * mass / radius.powi(3)).sqrt();
-            let jitter = get("heat") * (G * mass / radius).sqrt();
-            for w in weights {
-                let (r, a) = (radius * rng.f64().sqrt(), rng.f64() * TAU);
-                let (x, y) = (r * a.cos(), r * a.sin());
-                let (nx, ny) = rng.normal2();
-                let m = w * unit;
-                bodies.push(x, y, -omega * y + nx * jitter, omega * x + ny * jitter, m, radius_from_mass(m, DENSITY) * size, 0);
-            }
-            settle(&mut bodies, 0, (0.0, 0.0));
-            spawn_r = (0.9 * radius, 1.3 * radius);
-            extent = radius;
+            let radius = get("radius");
+            cloud(&mut rng, count, radius, get("mass"), get("rotation"), get("heat"), get("size"), 0, &mut bodies);
             group_names = vec!["cloud"];
         }
     }
     Ok(Setup {
         name: name.to_string(),
         bodies,
-        spawn_r,
-        // Galaxies keep their core as body 0; a cloud has no centre to speak of.
-        spawn_around: (name != "cloud").then_some(0),
-        escape_radius: 8.0 * extent,
         theta: get("accuracy") as f32,
         time_scale: get("time_scale"),
         group_names,

@@ -18,8 +18,8 @@ pub enum World {
 pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     let (exact, large) = (world != World::Large, world != World::Exact);
     style::section(ui, "VIEW");
-    style::toggle(ui, &mut settings.prediction, "Ship trajectory", "P").on_hover_text("The green line ahead of your ship: where it will go if you do nothing, and where it comes closest to the selected body.");
     if exact {
+        style::toggle(ui, &mut settings.prediction, "Ship trajectory", "P").on_hover_text("The green line ahead of your ship: where it will go if you do nothing, and where it comes closest to the selected body.");
         style::toggle(ui, &mut settings.shell_prediction, "Shell trajectory preview", "O").on_hover_text("The path a shell would take if you fired at the cursor now.");
         style::toggle(ui, &mut settings.trails, "Trails", "L").on_hover_text("Where every body and ship has been over the last few seconds.");
         style::toggle(ui, &mut settings.trails_relative, "Trails relative to selection", "K")
@@ -34,6 +34,10 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         World::Large => "Statistics",
     };
     style::toggle(ui, &mut settings.details, details, "F3").on_hover_text("Numbers for the curious: frame rate, step times, and how well this client is keeping in step.");
+    if large {
+        style::toggle(ui, &mut settings.long_exposure, "Long exposure", "X")
+            .on_hover_text("In large-scale worlds, light lingers for a few seconds and fades: orbits draw themselves as streaks. Moving the view starts it afresh.");
+    }
     ui.horizontal(|ui| {
         ui.label("Colour shows");
         for mode in ColorMode::ALL {
@@ -63,11 +67,13 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         "How far one step of the mouse wheel or trackpad zooms the map. Trackpads send many small steps, \
          so they usually want a much lower value than a wheel.",
     );
-    style::section(ui, "FLYING");
-    style::toggle(ui, &mut settings.mouse_aim, "Mouse aim", "M").on_hover_text(
+    if exact {
+        style::section(ui, "FLYING");
+        style::toggle(ui, &mut settings.mouse_aim, "Mouse aim", "M").on_hover_text(
         "On: the ship points at the cursor. Off: A and D turn it, and the cursor is free for looking around. \
          Thrust always goes where the ship points.",
-    );
+        );
+    }
     style::section(ui, "GRAPHICS");
     ui.checkbox(&mut settings.gpu, "GPU drawing").on_hover_text(
         "On: the graphics card draws the glowing picture of the small bodies, at the screen's full \
@@ -77,23 +83,28 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     );
 
     style::section(ui, "CONTROLS");
-    style::key_row(ui, "Thrust", "W / UP");
-    style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
-    match world {
-        World::Any => {
-            style::key_row(ui, "Fire towards cursor (exact worlds)", "SPACE");
-            style::key_row(ui, "Pause (large worlds)", "SPACE");
+    if exact {
+        if world == World::Any {
+            style::caption(ui, "EXACT WORLDS");
         }
-        World::Exact => style::key_row(ui, "Fire towards cursor", "SPACE"),
-        World::Large => style::key_row(ui, "Pause", "SPACE"),
+        style::key_row(ui, "Thrust", "W / UP");
+        style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
+        style::key_row(ui, "Fire towards cursor", "SPACE");
+        style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
+        style::key_row(ui, "Chat, command", "T, /");
+        style::key_row(ui, "Point at the map", "G");
     }
     if large {
+        if world == World::Any {
+            style::caption(ui, "LARGE-SCALE WORLDS");
+        }
+        style::key_row(ui, "Move the view", "DRAG, W A S D");
+        style::key_row(ui, "Zoom", "WHEEL, Q / E");
+        style::key_row(ui, "Tools", "1 - 6");
+        style::key_row(ui, "Pan with a tool in hand", "RIGHT DRAG");
+        style::key_row(ui, "Pause", "SPACE");
         style::key_row(ui, "Slow time down, speed it up", "< >");
-    }
-    style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
-    style::key_row(ui, "Chat, command", "T, /");
-    if exact {
-        style::key_row(ui, "Point at the map", "G");
+        style::key_row(ui, "Delete the selected body", "DEL");
     }
     style::key_row(ui, "Fullscreen", "F11");
     style::section(ui, "MASS");
@@ -106,7 +117,9 @@ pub fn scrolled(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let room = (ui.ctx().screen_rect().height() - 130.0).max(120.0);
     egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
         // Keep clear of the scroll bar, which is drawn over the right edge.
-        ui.set_width(ui.available_width() - 14.0);
+        let width = ui.available_width() - 14.0;
+        ui.set_width(width);
+        ui.set_max_width(width);
         body(ui);
     });
 }

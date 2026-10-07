@@ -53,7 +53,7 @@ the preset does not have, or a value outside its range, stops the server at star
 
 ## The game
 
-You fly a ship with a 10 km/s delta-v budget (it refills after a few seconds of coasting)
+You fly a ship with a 20 km/s delta-v budget (it refills after a few seconds of coasting)
 through a system of moving, merging bodies (try the `disc` or `solar` presets for orbital
 speeds several times that budget). Score by:
 
@@ -172,27 +172,27 @@ ones `--set` and `/preset` take) and a seed. There are two kinds:
 
 - **Exact** worlds are the multiplayer presets, run by a server inside the client: rounds,
   the orbit objective, shells, every command.
-- **Large scale** worlds (`galaxy`, `collision`, `cloud`) are run by a separate engine,
-  `gsim-swarm`, that trades exactness for size: hundreds of thousands of bodies at 60 steps
-  per second. It is a sandbox, with no score and no shells. Space pauses, holding `<` or `>` makes each
-  step cover less or more time (shown as what one second is worth, e.g. `1 s = 6 h`; there is
-  no limit, and very long steps are as crude as they sound), `C` switches what colour shows (mass, speed, origin), and
-  `/tp`, `/orbit`, `/god`, `/fuel`, `/kill`, `/speed` and `/accuracy` work from the chat line.
-  The glowing picture of the small bodies is drawn by the graphics card, in every kind of
-  world; "GPU drawing" in the settings (or `--no-gpu`) moves it to processor threads, and it
-  switches itself off where the card cannot do it.
-  The first time a large world is selected the client measures the machine and suggests a
-  body count; if a step still takes too long, time slows down rather than the picture.
+- **Large scale** worlds (`empty`, `galaxy`, `collision`, `cloud`) are run by a separate engine,
+  `gsim-swarm`, that trades exactness for size: hundreds of thousands of bodies. There is no
+  ship: you watch through a free camera (drag or WASD, wheel or Q/E, click a body to follow
+  it) and change the world with the tools on keys 1 to 6: place and throw a body, spray
+  many, drop a whole galaxy, cloud or ring, erase, shatter. The selected body's mass, size
+  and velocity can be edited. Space pauses; holding `<` or `>` changes how much time one
+  second is worth. `X` makes light linger so orbits draw themselves, `C` switches what
+  colour shows. Worlds can be saved and loaded from the Esc menu, which also goes back to
+  the last automatic checkpoint.
 
-How the large-scale engine gets its speed: bodies are kept sorted along a Z-order curve and
-grouped into a tree; each group of up to 64 neighbours gathers one list of what acts on it
-(nearby bodies one by one, distant cells as a point mass plus quadrupole) and evaluates it
-with AVX-512, AVX2 or NEON, sixteen, eight or four pairs per instruction. Positions are
-double precision; forces are single precision relative to each group. Overlapping bodies
-merge. Nothing in it is reproducible between machines, which is why it is single player only.
-The ship is the same test particle as in multiplayer, integrated against the few hundred
-bodies and lumps that matter where it is; its predicted path comes from simulating that
-small neighbourhood ahead with the exact engine.
+How the large-scale engine works: there is no fixed step rate. It steps as fast as it can,
+and each step covers "pace x how long steps have been taking", so the world keeps its pace
+whether a step takes one millisecond or fifty. A step is never longer than a fifth of the
+time the tightest bound orbit takes to turn a radian; when that limit bites, time runs slower
+than asked and the header says so. Above 4000 bodies they are kept sorted along a Z-order
+curve and grouped into a tree, and each group of up to 64 neighbours gathers one list of what
+acts on it (nearby bodies one by one, distant cells as a point mass plus quadrupole) and
+evaluates it with AVX-512, AVX2 or NEON. Up to 4000, every pair is summed through the same
+kernels; up to 192, in double precision with a fourth-order integrator. Positions are double
+precision throughout. Overlapping bodies merge. Nothing in it is reproducible between
+machines, which is why it is single player only.
 
 ## Layout
 
@@ -217,9 +217,10 @@ cargo test --workspace
   bit for bit, golden self-test.
 - `gsim-server`: every preset runs; the solar system keeps all orbits (and the Moon) for two
   simulated years; the figure-eight returns to its start; the runaway pair accelerates.
-- `gsim-swarm`: forces against exact sums on every instruction set the machine has, a
-  three-year orbit, merges conserving mass and momentum, every scenario at the limits of its
-  parameters, ship spawning, crashing and indestructibility, pacing and pausing.
+- `gsim-swarm`: forces against exact sums on every instruction set the machine has, the
+  pairwise and precise modes, finding tight orbits in a crowd, merges conserving mass and
+  momentum, every scenario at the limits of its parameters, editing and saving worlds,
+  holding the pace and slowing down for a tight orbit.
 - `gsim-testkit`: server plus clients over simulated links (clean, lossy and jittery, 500 ms
   round trip, late join, forced divergence and resync, shell kills, arming, crashes, orbit
   capture, round rollover into a new world).

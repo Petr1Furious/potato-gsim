@@ -14,6 +14,8 @@
 use crate::kernel::{self, Far, Level, Near, PAD, PAD_X};
 use rayon::prelude::*;
 
+const FILE_MAGIC: &[u8; 4] = b"GSW1";
+
 /// All bodies, as parallel arrays in tree order (which changes every step; `id` does not).
 /// A body with zero mass was absorbed or removed and disappears at the next sort.
 #[derive(Clone, Default)]
@@ -32,10 +34,15 @@ pub struct Bodies {
     pub id: Vec<u32>,
     /// Which cloud or galaxy the body started in (kept by the heavier partner in a merge).
     pub group: Vec<u8>,
-    /// The tick these positions belong to (maintained by whoever steps the engine).
-    pub tick: u64,
-    /// Seconds the step that led to `tick` covered: bodies moved `v * dt` to get here.
+    /// 0 for a body that is staying. One found to be leaving the world for good fades from
+    /// just above 0 to 1 and is then dropped.
+    pub fade: Vec<f32>,
+    /// Simulated time these positions belong to (maintained by whoever steps the engine).
+    pub time: f64,
+    /// Seconds the step that led here covered: bodies moved `v * dt` to arrive.
     pub dt: f64,
+    /// The id the next new body gets: ids are never reused.
+    pub next_id: u32,
 }
 
 impl Bodies {
@@ -48,7 +55,8 @@ impl Bodies {
     }
 
     pub fn push(&mut self, x: f64, y: f64, vx: f64, vy: f64, mass: f64, radius: f64, group: u8) {
-        self.id.push(self.x.len() as u32);
+        self.id.push(self.next_id);
+        self.next_id += 1;
         self.x.push(x);
         self.y.push(y);
         self.vx.push(vx);
@@ -58,10 +66,95 @@ impl Bodies {
         self.m.push(mass as f32);
         self.r.push(radius as f32);
         self.group.push(group);
+        self.fade.push(0.0);
     }
 
     pub fn alive(&self, i: usize) -> bool {
         self.m[i] > 0.0
+    }
+
+    /// Add all of `other`, giving its bodies new ids.
+    pub fn append(&mut self, other: &Bodies) {
+        for i in 0..other.len() {
+            self.push(other.x[i], other.y[i], other.vx[i], other.vy[i], other.m[i] as f64, other.r[i] as f64, other.group[i]);
+        }
+    }
+
+    /// Drop the bodies for which `keep` says no (and any already dead).
+    pub fn retain(&mut self, mut keep: impl FnMut(&Bodies, usize) -> bool) {
+        let stay: Vec<bool> = (0..self.len()).map(|i| self.alive(i) && keep(self, i)).collect();
+        fn sift<T>(v: &mut Vec<T>, stay: &[bool]) {
+            let mut i = 0;
+            v.retain(|_| {
+                i += 1;
+                stay[i - 1]
+            });
+        }
+        sift(&mut self.x, &stay);
+        sift(&mut self.y, &stay);
+        sift(&mut self.vx, &stay);
+        sift(&mut self.vy, &stay);
+        sift(&mut self.ax, &stay);
+        sift(&mut self.ay, &stay);
+        sift(&mut self.m, &stay);
+        sift(&mut self.r, &stay);
+        sift(&mut self.id, &stay);
+        sift(&mut self.group, &stay);
+        sift(&mut self.fade, &stay);
+    }
+
+    /// Write the world in a simple binary form (little-endian arrays after a short header).
+    pub fn write(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        out.write_all(FILE_MAGIC)?;
+        out.write_all(&(self.len() as u64).to_le_bytes())?;
+        out.write_all(&self.time.to_le_bytes())?;
+        out.write_all(&self.next_id.to_le_bytes())?;
+        for v in [&self.x, &self.y, &self.vx, &self.vy] {
+            for value in v {
+                out.write_all(&value.to_le_bytes())?;
+            }
+        }
+        for v in [&self.m, &self.r] {
+            for value in v {
+                out.write_all(&value.to_le_bytes())?;
+            }
+        }
+        for id in &self.id {
+            out.write_all(&id.to_le_bytes())?;
+        }
+        out.write_all(&self.group)
+    }
+
+    /// Read what [`Bodies::write`] wrote.
+    pub fn read(input: &mut impl std::io::Read) -> std::io::Result<Bodies> {
+        fn take<const N: usize>(input: &mut impl std::io::Read) -> std::io::Result<[u8; N]> {
+            let mut bytes = [0u8; N];
+            input.read_exact(&mut bytes)?;
+            Ok(bytes)
+        }
+        let bad = |what: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, what.to_string());
+        if &take::<4>(input)? != FILE_MAGIC {
+            return Err(bad("not a saved world"));
+        }
+        let n = u64::from_le_bytes(take(input)?) as usize;
+        if n > 50_000_000 {
+            return Err(bad("implausible body count"));
+        }
+        let mut b = Bodies { time: f64::from_le_bytes(take(input)?), next_id: u32::from_le_bytes(take(input)?), ..Default::default() };
+        for v in [&mut b.x, &mut b.y, &mut b.vx, &mut b.vy] {
+            *v = (0..n).map(|_| take(input).map(f64::from_le_bytes)).collect::<Result<_, _>>()?;
+        }
+        for v in [&mut b.m, &mut b.r] {
+            *v = (0..n).map(|_| take(input).map(f32::from_le_bytes)).collect::<Result<_, _>>()?;
+        }
+        b.id = (0..n).map(|_| take(input).map(u32::from_le_bytes)).collect::<Result<_, _>>()?;
+        b.group = vec![0; n];
+        input.read_exact(&mut b.group)?;
+        (b.ax, b.ay, b.fade) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        if b.x.iter().chain(&b.y).chain(&b.vx).chain(&b.vy).any(|v| !v.is_finite()) || b.m.iter().chain(&b.r).any(|v| !v.is_finite()) {
+            return Err(bad("the file holds numbers that are not finite"));
+        }
+        Ok(b)
     }
 
     /// Where the body with this id currently sits.
@@ -139,13 +232,6 @@ impl Node {
     fn size(&self) -> f64 {
         (self.max_x - self.min_x).max(self.max_y - self.min_y)
     }
-
-    /// Squared distance from a box to this node's box (0 if they overlap).
-    fn gap2(&self, x0: f64, x1: f64, y0: f64, y1: f64) -> f64 {
-        let dx = (x0 - self.max_x).max(self.min_x - x1).max(0.0);
-        let dy = (y0 - self.max_y).max(self.min_y - y1).max(0.0);
-        dx * dx + dy * dy
-    }
 }
 
 /// Two bodies became one. Positions are where the survivor ended up.
@@ -159,70 +245,6 @@ pub struct Merge {
     pub mass: f32,
     pub survivor: u32,
     pub absorbed: u32,
-}
-
-/// Everything that acts on one point: nearby bodies one by one and the rest of the world as
-/// a few hundred lumps. Small enough to integrate a ship against, or to simulate ahead.
-#[derive(Clone, Default)]
-pub struct Local {
-    pub x: Vec<f64>,
-    pub y: Vec<f64>,
-    pub vx: Vec<f64>,
-    pub vy: Vec<f64>,
-    pub ax: Vec<f64>,
-    pub ay: Vec<f64>,
-    pub mass: Vec<f64>,
-    /// 0 for lumps: only real bodies can be hit.
-    pub radius: Vec<f64>,
-    /// Body id, or `u32::MAX` for a lump.
-    pub id: Vec<u32>,
-}
-
-impl Local {
-    pub fn len(&self) -> usize {
-        self.x.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.x.is_empty()
-    }
-
-    fn clear(&mut self) {
-        for v in [&mut self.x, &mut self.y, &mut self.vx, &mut self.vy, &mut self.ax, &mut self.ay, &mut self.mass, &mut self.radius] {
-            v.clear();
-        }
-        self.id.clear();
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn push(&mut self, x: f64, y: f64, vx: f64, vy: f64, ax: f64, ay: f64, mass: f64, radius: f64, id: u32) {
-        self.x.push(x);
-        self.y.push(y);
-        self.vx.push(vx);
-        self.vy.push(vy);
-        self.ax.push(ax);
-        self.ay.push(ay);
-        self.mass.push(mass);
-        self.radius.push(radius);
-        self.id.push(id);
-    }
-
-    pub fn slot_of(&self, id: u32) -> Option<usize> {
-        self.id.iter().position(|v| *v == id)
-    }
-
-    /// Gravitational acceleration at a point (softened like the engine's).
-    pub fn accel_at(&self, px: f64, py: f64, g: f64, softening: f64) -> (f64, f64) {
-        let (mut ax, mut ay) = (0.0, 0.0);
-        for j in 0..self.len() {
-            let (dx, dy) = (self.x[j] - px, self.y[j] - py);
-            let d2 = dx * dx + dy * dy + softening * softening;
-            let f = g * self.mass[j] / (d2 * d2.sqrt());
-            ax += dx * f;
-            ay += dy * f;
-        }
-        (ax, ay)
-    }
 }
 
 /// Shares a raw pointer between rayon tasks that write disjoint ranges through it.
@@ -307,7 +329,42 @@ struct Lists {
     /// Body index of each near entry.
     ids: Vec<u32>,
     hit: Vec<u32>,
+    close: Vec<u32>,
     stack: Vec<u32>,
+}
+
+/// A step may be this fraction of the time the fastest bound orbit takes to turn one radian
+/// (about 30 steps per revolution).
+pub const ORBIT_FRACTION: f64 = 0.2;
+/// Up to this many bodies every pair is summed: no approximation, and cheaper than a tree.
+pub const PAIRWISE_MAX: usize = 4000;
+/// In tree mode, the share of the world's mass a pair (or a distant cell) must hold for its
+/// orbital rate to limit the step.
+const SUBSTANTIAL: f32 = 1.0e-3;
+/// Orbits are looked for down to those that would only limit a step this many times longer
+/// than the one asked for.
+pub(crate) const HINT_MARGIN: f64 = 4.0;
+/// Up to this many, in double precision with a fourth-order integrator as well.
+pub const PRECISE_MAX: usize = 192;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Distant groups approximated through the tree.
+    Tree,
+    /// Every pair, single-precision vector kernels.
+    Pairwise,
+    /// Every pair, double precision, fourth order.
+    Precise,
+}
+
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Tree => "tree",
+            Mode::Pairwise => "every pair",
+            Mode::Precise => "every pair, 4th order",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -321,6 +378,54 @@ pub struct StepStats {
     pub removed: u32,
 }
 
+/// A body counts as clear of the crowd beyond this many times the radius that holds
+/// [`CROWD`] of the mass.
+pub const CLEAR: f64 = 1.5;
+pub const CROWD: f64 = 0.9;
+/// Each body is looked at for leaving about once in this many steps.
+const ROUND: usize = 64;
+const CENSUS_EVERY: u32 = 128;
+/// Pairs summed a step, at most, to settle whether bodies are leaving.
+const SUM_BUDGET: usize = 4_000_000;
+
+/// Where the mass of the world is, taken now and then.
+#[derive(Clone, Copy, Default)]
+struct Census {
+    mass: f64,
+    x: f64,
+    y: f64,
+    vx: f64,
+    vy: f64,
+    /// Radius around the centre of mass holding [`CROWD`] of the mass.
+    crowd: f64,
+}
+
+impl Census {
+    fn take(b: &Bodies) -> Self {
+        let mut c = Census::default();
+        for i in 0..b.len() {
+            let m = b.m[i] as f64;
+            c.mass += m;
+            (c.x, c.y, c.vx, c.vy) = (c.x + m * b.x[i], c.y + m * b.y[i], c.vx + m * b.vx[i], c.vy + m * b.vy[i]);
+        }
+        if c.mass <= 0.0 {
+            return Census::default();
+        }
+        (c.x, c.y, c.vx, c.vy) = (c.x / c.mass, c.y / c.mass, c.vx / c.mass, c.vy / c.mass);
+        let mut far: Vec<(f32, f32)> = (0..b.len()).map(|i| (((b.x[i] - c.x).powi(2) + (b.y[i] - c.y).powi(2)).sqrt() as f32, b.m[i])).collect();
+        far.par_sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut within = 0.0;
+        for (d, m) in far {
+            within += m as f64;
+            c.crowd = d as f64;
+            if within >= CROWD * c.mass {
+                break;
+            }
+        }
+        c
+    }
+}
+
 pub struct Engine {
     level: Level,
     /// Largest number of bodies in a group.
@@ -330,9 +435,13 @@ pub struct Engine {
     pub g: f64,
     /// Plummer softening (m).
     pub softening: f64,
-    /// Bodies beyond this distance from the centre of mass that are moving outwards are
-    /// dropped (0 = never).
-    pub escape_radius: f64,
+    /// How much of its fade a leaving body goes through in one step.
+    pub fade_step: f32,
+    census: Census,
+    /// Steps until the census is taken again.
+    census_due: u32,
+    fading: usize,
+    dice: u64,
     mass_unit: f64,
     len_unit: f64,
     max_radius: f64,
@@ -353,6 +462,14 @@ pub struct Engine {
     pairs: Vec<(u32, u32)>,
     /// False until the first force pass over the current arrays.
     primed: bool,
+    /// The step length the caller would like next: pairs bound tightly enough to need a
+    /// shorter one are looked for during the force pass.
+    pub dt_hint: f64,
+    /// Square of the fastest orbital rate (rad/s) found in the last force pass, among bound
+    /// pairs that tight and the pull of distant cells.
+    pub omega2: f64,
+    /// How the last step was computed.
+    pub mode: Mode,
     steps: u64,
     pub stats: StepStats,
 }
@@ -374,7 +491,11 @@ impl Engine {
             theta: 0.7,
             g,
             softening,
-            escape_radius: 0.0,
+            fade_step: 1.0 / 64.0,
+            census: Census::default(),
+            census_due: 0,
+            fading: 0,
+            dice: 0x9E37_79B9_7F4A_7C15,
             mass_unit: 1.0,
             len_unit: 1.0,
             max_radius: 0.0,
@@ -393,6 +514,9 @@ impl Engine {
             acc_y: Vec::new(),
             pairs: Vec::new(),
             primed: false,
+            dt_hint: 0.0,
+            omega2: 0.0,
+            mode: Mode::Tree,
             steps: 0,
             stats: StepStats::default(),
         }
@@ -404,6 +528,10 @@ impl Engine {
 
     /// Compute accelerations for a freshly filled or edited set of bodies.
     pub fn prime(&mut self, b: &mut Bodies) {
+        self.primed = true;
+        if b.is_empty() {
+            return;
+        }
         self.mass_unit = b.total_mass().max(1.0);
         self.sort(b);
         self.forces(b);
@@ -412,8 +540,28 @@ impl Engine {
         self.primed = true;
     }
 
+    /// The bodies were changed from outside: accelerations must be worked out afresh.
+    pub fn invalidate(&mut self) {
+        self.primed = false;
+        self.census_due = 0;
+    }
+
+    /// Whether a world of this size is stepped in one go by [`Engine::step`] alone (the
+    /// three phases are for the tree and pairwise modes).
+    pub fn precise(&self, b: &Bodies) -> bool {
+        b.len() <= PRECISE_MAX
+    }
+
     /// One whole step. See the module docs for running the phases under a lock instead.
     pub fn step(&mut self, b: &mut Bodies, dt: f64) -> Vec<Merge> {
+        if self.precise(b) {
+            let t0 = std::time::Instant::now();
+            let (merges, omega2) = crate::exact::step(b, dt, self.g, self.softening, self.dt_hint);
+            (self.omega2, self.mode, self.primed) = (omega2, Mode::Precise, true);
+            self.steps += 1;
+            self.stats = StepStats { force_ms: ms(t0), interactions: b.len() as f32, merges: merges.len() as u32, ..Default::default() };
+            return merges;
+        }
         self.advance(b, dt);
         self.forces(b);
         self.finish(b, dt)
@@ -423,6 +571,9 @@ impl Engine {
     pub fn advance(&mut self, b: &mut Bodies, dt: f64) {
         if !self.primed {
             self.prime(b);
+        }
+        if b.is_empty() {
+            return;
         }
         let t0 = std::time::Instant::now();
         let half = 0.5 * dt;
@@ -467,7 +618,7 @@ impl Engine {
         for v in [&mut b.x, &mut b.y, &mut b.vx, &mut b.vy] {
             permute(v, &mut self.s64, &self.keys);
         }
-        for v in [&mut b.m, &mut b.r] {
+        for v in [&mut b.m, &mut b.r, &mut b.fade] {
             permute(v, &mut self.s32, &self.keys);
         }
         permute(&mut b.id, &mut self.su32, &self.keys);
@@ -607,6 +758,11 @@ impl Engine {
 
     /// Phase 2: accelerations at the current positions, and which bodies overlap.
     pub fn forces(&mut self, b: &Bodies) {
+        if b.is_empty() {
+            self.pairs.clear();
+            self.omega2 = 0.0;
+            return;
+        }
         let t0 = std::time::Instant::now();
         self.refit(b);
         let n = b.len();
@@ -620,7 +776,21 @@ impl Engine {
         // Softening in scaled units; the floor keeps 1/r^5 inside single precision.
         let eps = (self.softening * inv_lu).max(3.0e-7) as f32;
         let eps2 = eps * eps;
-        let theta2 = self.theta * self.theta;
+        // A zero opening angle opens every cell: the sum over every pair, through the same
+        // code, with each group still measuring from its own centre.
+        self.mode = if n <= PAIRWISE_MAX { Mode::Pairwise } else { Mode::Tree };
+        let theta = if self.mode == Mode::Pairwise { 0.0 } else { self.theta };
+        let theta2 = theta * theta;
+        // m / d^3 above which a neighbour may be turning a body faster than the wanted step
+        // resolves (in the kernels' scaled units).
+        let rate_unit = self.g * self.mass_unit * inv_lu * inv_lu * inv_lu;
+        // With a margin, so that a pace that is being raised does not outrun what is known.
+        let tight = if self.dt_hint > 0.0 { ((ORBIT_FRACTION / (HINT_MARGIN * self.dt_hint)).powi(2) / rate_unit) as f32 } else { f32::MAX };
+        let g = self.g;
+        // In a crowd, only orbits around something substantial are worth slowing the whole
+        // world down for: chance pairings of small bodies are left to fend for themselves.
+        let heavy = if self.mode == Mode::Tree { SUBSTANTIAL } else { 0.0 };
+        let heavy_kg = heavy as f64 * self.mass_unit;
         // No body of a cell further than this from a group's box can touch a body in it.
         // In the walk's scaled single precision, with slack for its rounding.
         let clear = (2.0 * self.max_radius * inv_lu + 2.0e-6) as f32;
@@ -628,7 +798,7 @@ impl Engine {
         let to_si = (self.g * self.mass_unit * inv_lu * inv_lu) as f32;
         let (nodes, walk, moments, origin, level) = (&self.nodes, &self.walk, &self.moments, self.origin, self.level);
         let (out_x, out_y) = (Shared(self.acc_x.as_mut_ptr()), Shared(self.acc_y.as_mut_ptr()));
-        let (count, mut pairs) = self
+        let (count, mut pairs, omega2) = self
             .leaves
             .par_iter()
             .map_init(Lists::default, |l, &at| {
@@ -641,9 +811,12 @@ impl Engine {
                 }
                 l.ids.clear();
                 l.hit.clear();
+                l.close.clear();
                 l.stack.clear();
                 l.stack.push(0);
                 let me = walk[at as usize];
+                // The strongest m / d^3 among the distant cells heavy enough to matter.
+                let mut far_rate = 0.0f32;
                 // The group's centre in the walk's coordinates.
                 let (gx0, gy0) = (((ox - origin.0) * inv_lu) as f32, ((oy - origin.1) * inv_lu) as f32);
                 while let Some(i) = l.stack.pop() {
@@ -656,6 +829,10 @@ impl Engine {
                     if w.size2 < theta2 * (dx * dx + dy * dy) && gx * gx + gy * gy > clear2 {
                         // Single precision is plenty for where a distant cell is.
                         let m = &moments[i as usize];
+                        let d2 = dx * dx + dy * dy;
+                        if m[0] >= heavy {
+                            far_rate = far_rate.max(m[0] / (d2 * d2.sqrt()));
+                        }
                         for (list, v) in l.far.iter_mut().zip([w.cx - gx0, w.cy - gy0, m[0], m[1], m[2], m[3]]) {
                             list.push(v);
                         }
@@ -705,7 +882,8 @@ impl Engine {
                 l.ay.clear();
                 l.ay.resize(count, 0.0);
                 let near = Near { x: &l.near[0], y: &l.near[1], m: &l.near[2], r: &l.near[3] };
-                kernel::near(level, &l.tx, &l.ty, &l.tr, &mut l.ax, &mut l.ay, &near, eps2, &mut l.hit);
+                kernel::near(level, &l.tx, &l.ty, &l.tr, &mut l.ax, &mut l.ay, &near, eps2, tight, &mut l.hit, &mut l.close);
+                let mut omega2 = far_rate as f64 * rate_unit;
                 if !l.far[0].is_empty() {
                     let far = Far { x: &l.far[0], y: &l.far[1], m: &l.far[2], qxx: &l.far[3], qxy: &l.far[4], qyy: &l.far[5] };
                     kernel::far(level, &l.tx, &l.ty, &mut l.ax, &mut l.ay, &far, eps2);
@@ -730,16 +908,36 @@ impl Engine {
                         }
                     }
                 }
-                (sources * count, pairs)
+                // Also rare: of the neighbours that pull a body hard, the ones it is bound to
+                // (a passing stranger does not need the step shortened for it).
+                for &t in &l.close {
+                    let a = lo + t as usize;
+                    for &j in &l.ids {
+                        let j = j as usize;
+                        if a == j || b.m[j] <= 0.0 || ((b.m[a] + b.m[j]) as f64) < heavy_kg {
+                            continue;
+                        }
+                        let (dx, dy) = (b.x[j] - b.x[a], b.y[j] - b.y[a]);
+                        let d = (dx * dx + dy * dy).sqrt().max((b.r[a] + b.r[j]) as f64);
+                        let pull = g * (b.m[a] + b.m[j]) as f64 / d;
+                        let speed2 = (b.vx[j] - b.vx[a]).powi(2) + (b.vy[j] - b.vy[a]).powi(2);
+                        if speed2 < 2.0 * pull {
+                            omega2 = omega2.max(pull / (d * d));
+                        }
+                    }
+                }
+                (sources * count, pairs, omega2)
             })
             .reduce(
-                || (0, Vec::new()),
+                || (0, Vec::new(), 0.0),
                 |mut a, mut b| {
                     a.0 += b.0;
                     a.1.append(&mut b.1);
+                    a.2 = a.2.max(b.2);
                     a
                 },
             );
+        self.omega2 = omega2;
         // A pair is seen from the flagged side only; the partner may have been flagged too.
         pairs.par_sort_unstable();
         pairs.dedup();
@@ -750,6 +948,9 @@ impl Engine {
 
     /// Phase 3: second half kick, then merge what overlaps.
     pub fn finish(&mut self, b: &mut Bodies, dt: f64) -> Vec<Merge> {
+        if b.is_empty() {
+            return Vec::new();
+        }
         let t0 = std::time::Instant::now();
         std::mem::swap(&mut b.ax, &mut self.acc_x);
         std::mem::swap(&mut b.ay, &mut self.acc_y);
@@ -781,28 +982,86 @@ impl Engine {
             b.r[a] = 0.0;
         }
         self.steps += 1;
-        let mut removed = 0;
-        if self.escape_radius > 0.0 && self.steps.is_multiple_of(64) {
-            let root = self.nodes[0];
-            let limit2 = self.escape_radius * self.escape_radius;
-            removed = (0..b.len())
-                .into_par_iter()
-                .filter(|&i| {
-                    let (dx, dy) = (b.x[i] - root.cx, b.y[i] - root.cy);
-                    b.m[i] > 0.0 && dx * dx + dy * dy > limit2 && dx * (b.vx[i] - root.vx) + dy * (b.vy[i] - root.vy) > 0.0
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|i| {
-                    b.m[i] = 0.0;
-                    b.r[i] = 0.0;
-                })
-                .count() as u32;
-        }
         self.stats.merges = merges.len() as u32;
-        self.stats.removed = removed;
         self.stats.finish_ms = ms(t0);
         merges
+    }
+
+    /// Find bodies that are leaving for good, and fade and drop those found earlier.
+    ///
+    /// A body is leaving when it is beyond [`CLEAR`] times the radius holding [`CROWD`] of the
+    /// mass, moving outwards, and has more energy than the pull of every other body can take
+    /// back. A random handful is looked at each step, so each body comes up every
+    /// [`ROUND`] steps or so; the energy is summed exactly, and only for those few that a
+    /// cheap estimate lets through.
+    pub fn leave(&mut self, b: &mut Bodies) {
+        self.stats.removed = 0;
+        let n = b.len();
+        if n < 2 {
+            return;
+        }
+        if self.census_due == 0 {
+            self.census = Census::take(b);
+            self.census_due = CENSUS_EVERY;
+            self.fading = b.fade.iter().filter(|f| **f > 0.0).count();
+        }
+        self.census_due -= 1;
+        let c = self.census;
+        if self.fading > 0 {
+            let mut left = 0;
+            for i in 0..n {
+                if b.fade[i] > 0.0 && b.m[i] > 0.0 {
+                    b.fade[i] += self.fade_step;
+                    if b.fade[i] >= 1.0 {
+                        (b.m[i], b.r[i]) = (0.0, 0.0);
+                        self.stats.removed += 1;
+                    } else {
+                        left += 1;
+                    }
+                }
+            }
+            self.fading = left;
+        }
+        let clear2 = (CLEAR * c.crowd).powi(2);
+        let mut suspects: Vec<usize> = Vec::new();
+        // No more exact sums a step than cost a small part of it.
+        let most = (SUM_BUDGET / n).clamp(1, 64);
+        for _ in 0..n.div_ceil(ROUND).min(4096) {
+            self.dice ^= self.dice << 13;
+            self.dice ^= self.dice >> 7;
+            self.dice ^= self.dice << 17;
+            let i = (self.dice % n as u64) as usize;
+            if b.m[i] <= 0.0 || b.fade[i] > 0.0 {
+                continue;
+            }
+            let (dx, dy, vx, vy) = (b.x[i] - c.x, b.y[i] - c.y, b.vx[i] - c.vx, b.vy[i] - c.vy);
+            let d2 = dx * dx + dy * dy;
+            // Half the energy a point holding all the mass would ask for: lumps nearby can
+            // only hold a body tighter than that, which the exact sum then finds.
+            if d2 > clear2 && dx * vx + dy * vy > 0.0 && (vx * vx + vy * vy) * d2.sqrt() > self.g * c.mass && !suspects.contains(&i) {
+                suspects.push(i);
+                if suspects.len() == most {
+                    break;
+                }
+            }
+        }
+        let eps2 = self.softening * self.softening;
+        for i in suspects {
+            let (x, y) = (b.x[i], b.y[i]);
+            let well: f64 = (0..n)
+                .into_par_iter()
+                .with_min_len(GRAIN)
+                .map(|j| {
+                    let d2 = (b.x[j] - x).powi(2) + (b.y[j] - y).powi(2) + eps2;
+                    if j != i && d2 > 0.0 { b.m[j] as f64 / d2.sqrt() } else { 0.0 }
+                })
+                .sum();
+            let v2 = (b.vx[i] - c.vx).powi(2) + (b.vy[i] - c.vy).powi(2);
+            if 0.5 * v2 > self.g * well {
+                b.fade[i] = f32::MIN_POSITIVE;
+                self.fading += 1;
+            }
+        }
     }
 
     /// Centre of mass of the world and its velocity, as of the last force pass.
@@ -813,40 +1072,6 @@ impl Engine {
     /// Half-width of the world as of the last sort.
     pub fn extent(&self) -> f64 {
         self.len_unit
-    }
-
-    /// What acts on the point `(px, py)`: bodies within `near` metres (and those in cells
-    /// that look large from there) one by one, everything else as lumps. Bodies listed in
-    /// `always` (by id) are included individually wherever they are.
-    ///
-    /// Valid between steps, when the tree matches the bodies.
-    pub fn local(&self, b: &Bodies, px: f64, py: f64, theta: f64, near: f64, always: &[u32], out: &mut Local) {
-        out.clear();
-        if self.nodes.is_empty() || !self.primed {
-            return;
-        }
-        let wanted: Vec<usize> = always.iter().filter_map(|id| b.locate(*id)).collect();
-        let (theta2, near2) = (theta * theta, near * near);
-        let mut stack = vec![0u32];
-        while let Some(i) = stack.pop() {
-            let node = &self.nodes[i as usize];
-            if node.mass <= 0.0 {
-                continue;
-            }
-            let (dx, dy) = (node.cx - px, node.cy - py);
-            let s = node.size();
-            let holds_wanted = wanted.iter().any(|w| (node.lo as usize..node.hi as usize).contains(w));
-            if !holds_wanted && s * s < theta2 * (dx * dx + dy * dy) && node.gap2(px, px, py, py) > near2 {
-                out.push(node.cx, node.cy, node.vx, node.vy, 0.0, 0.0, node.mass * self.mass_unit, 0.0, u32::MAX);
-            } else if node.left == 0 {
-                for j in (node.lo as usize..node.hi as usize).filter(|j| b.alive(*j)) {
-                    out.push(b.x[j], b.y[j], b.vx[j], b.vy[j], b.ax[j] as f64, b.ay[j] as f64, b.m[j] as f64, b.r[j] as f64, b.id[j]);
-                }
-            } else {
-                stack.push(node.left);
-                stack.push(node.right);
-            }
-        }
     }
 
     /// Root-mean-square error of the stored accelerations relative to the typical one,

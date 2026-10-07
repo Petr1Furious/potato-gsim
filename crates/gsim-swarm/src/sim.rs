@@ -1,108 +1,146 @@
-//! A large world with one ship in it. The ship is a `gsim-core` test particle integrated
-//! against the few hundred bodies and lumps that matter at its position.
+//! A world that can be stepped and edited: the engine plus the bodies it works on, shared
+//! with whoever draws them.
 
-use crate::engine::{Bodies, Engine, Local, Merge};
+use crate::engine::{Bodies, Engine, Merge};
 use crate::scenario::Setup;
 use crate::Level;
-use gsim_core::ship::step_ship;
-use gsim_core::{GameRules, MassiveSnapshot, MassiveView, Particle, Scratch, ShipInput, ShipState};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
-/// How finely the world is resolved around the ship (opening angle of its own tree walk).
-const SHIP_THETA: f64 = 0.85;
-/// The ship's neighbourhood is resized to keep its list of attractors within these bounds.
-const LOCAL_MIN: usize = 200;
-const LOCAL_MAX: usize = 450;
-/// Acceleration of a ship at full thrust (m/s^2), as in `GameRules`.
-const THRUST: f64 = 0.02;
-
-#[derive(Clone, Copy, Debug)]
-pub enum Event {
-    Spawned,
-    /// The ship ran into the body with this id.
-    Crashed { x: f64, y: f64, vx: f64, vy: f64, body: u32 },
-}
+const G: f64 = 6.67430e-11;
+/// Plummer softening between bodies (m).
+const SOFTENING: f64 = 1.0e6;
 
 pub struct Sim {
-    pub rules: GameRules,
     pub engine: Engine,
-    /// Shared with whoever draws the world; only written inside [`Sim::step`].
+    /// Shared with whoever draws the world; only written inside the methods here.
     pub bodies: Arc<RwLock<Bodies>>,
-    pub tick: u64,
     /// Simulated seconds since the start.
     pub time: f64,
-    pub ship: Option<ShipState>,
-    /// The ship one tick ago (for drawing between ticks).
-    pub ship_before: Option<ShipState>,
-    pub respawn_tick: Option<u64>,
-    /// Nothing can destroy the ship and its fuel never runs out.
-    pub god: bool,
-    /// Bodies (by id) to keep following through merges and to resolve individually around
-    /// the ship: the selected one, typically.
+    pub steps: u64,
+    /// Bodies (by id) to keep following through merges: the selected one, typically.
     pub watch: Vec<u32>,
     pub merges_total: u64,
     pub removed_total: u64,
-    pub deaths: u32,
-    /// What acted on the ship at `local_tick`.
-    pub local: Local,
-    pub local_tick: u64,
-    spawn_r: (f64, f64),
-    spawn_around: Option<u32>,
-    near: f64,
     seed: u64,
-    /// Fraction of a mm/s of thrust not yet spent (steps can be too short for a whole one).
-    burn_carry: f64,
-    scratch: Scratch,
-    no_radius: Vec<f64>,
-    alive: Vec<bool>,
+    /// Raised by whoever wants to read the bodies. A small world is stepped hundreds of
+    /// thousands of times a second, each step taking the lock for itself; without this a
+    /// reader could wait a long time for a gap.
+    pub reader_waiting: Arc<AtomicBool>,
 }
 
 impl Sim {
-    pub fn new(setup: Setup, seed: u64) -> Self {
-        Self::with_level(setup, seed, Level::detect())
+    pub fn new(setup: Setup) -> Self {
+        Self::with_level(setup, Level::detect())
     }
 
-    pub fn with_level(setup: Setup, seed: u64, level: Level) -> Self {
-        let rules = GameRules::new(setup.time_scale, 60);
-        let mut engine = Engine::with_level(level, rules.g, rules.softening);
+    pub fn with_level(setup: Setup, level: Level) -> Self {
+        let mut engine = Engine::with_level(level, G, SOFTENING);
         engine.theta = setup.theta;
-        engine.escape_radius = setup.escape_radius;
         let mut bodies = setup.bodies;
         engine.prime(&mut bodies);
-        let near = engine.extent() / 40.0;
-        Self {
-            rules,
-            engine,
-            bodies: Arc::new(RwLock::new(bodies)),
-            tick: 0,
-            time: 0.0,
-            burn_carry: 0.0,
-            ship: None,
-            ship_before: None,
-            respawn_tick: Some(0),
-            god: false,
-            watch: Vec::new(),
-            merges_total: 0,
-            removed_total: 0,
-            deaths: 0,
-            local: Local::default(),
-            local_tick: 0,
-            spawn_r: setup.spawn_r,
-            spawn_around: setup.spawn_around,
-            near,
-            seed,
-            scratch: Scratch::default(),
-            no_radius: Vec::new(),
-            alive: Vec::new(),
+        Self { engine, bodies: Arc::new(RwLock::new(bodies)), time: 0.0, steps: 0, watch: Vec::new(), merges_total: 0, removed_total: 0, seed: 0x9E37_79B9, reader_waiting: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// Stand aside while somebody is waiting to read the bodies (but not forever: a reader
+    /// that never lowers its flag must not stop the world).
+    pub fn let_readers_in(&self) {
+        let since = Instant::now();
+        while self.reader_waiting.load(Ordering::Acquire) && since.elapsed() < Duration::from_millis(50) {
+            std::thread::yield_now();
         }
     }
 
-    /// Change how much simulated time a step covers, as simulated seconds per real second.
-    /// Any positive value goes: long steps are fast and crude, short ones slow and exact.
-    pub fn set_pace(&mut self, pace: f64) {
-        if pace.is_finite() && pace > 0.0 {
-            self.rules = GameRules::new(pace, self.rules.tick_hz);
+    /// Few enough bodies that a step is done on the calling thread alone.
+    pub fn small(&self) -> bool {
+        self.engine.precise(&self.bodies.read().unwrap())
+    }
+
+    /// Advance the world by `dt` seconds. The long middle part only reads the bodies, so
+    /// they can be drawn meanwhile.
+    pub fn step(&mut self, dt: f64) -> Vec<Merge> {
+        let small = self.engine.precise(&self.bodies.read().unwrap());
+        self.let_readers_in();
+        let merges = if small {
+            let mut b = self.bodies.write().unwrap();
+            let merges = self.engine.step(&mut b, dt);
+            (b.time, b.dt) = (self.time + dt, dt);
+            self.engine.leave(&mut b);
+            merges
+        } else {
+            {
+                let mut b = self.bodies.write().unwrap();
+                self.engine.advance(&mut b, dt);
+                (b.time, b.dt) = (self.time + dt, dt);
+            }
+            {
+                let b = self.bodies.read().unwrap();
+                self.engine.forces(&b);
+            }
+            self.let_readers_in();
+            let mut b = self.bodies.write().unwrap();
+            let merges = self.engine.finish(&mut b, dt);
+            self.engine.leave(&mut b);
+            merges
+        };
+        for m in &merges {
+            for w in self.watch.iter_mut().filter(|w| **w == m.absorbed) {
+                *w = m.survivor;
+            }
         }
+        self.merges_total += merges.len() as u64;
+        self.removed_total += self.engine.stats.removed as u64;
+        self.time += dt;
+        self.steps += 1;
+        merges
+    }
+
+    /// Change the bodies from outside a step; everything derived from them is redone.
+    fn change<T>(&mut self, edit: impl FnOnce(&mut Bodies) -> T) -> T {
+        self.let_readers_in();
+        let mut b = self.bodies.write().unwrap();
+        let out = edit(&mut b);
+        self.engine.invalidate();
+        self.engine.prime(&mut b);
+        out
+    }
+
+    /// Work everything out afresh from the bodies as they are (after changing what the
+    /// engine should look for, say).
+    pub fn refresh(&mut self) {
+        self.change(|_| ());
+    }
+
+    /// Add bodies; they get new ids.
+    pub fn add(&mut self, new: &Bodies) {
+        self.change(|b| b.append(new));
+    }
+
+    /// Remove everything within `r` of a point. Returns how many bodies went.
+    pub fn erase(&mut self, x: f64, y: f64, r: f64) -> usize {
+        self.change(|b| {
+            let before = b.len();
+            b.retain(|b, i| (b.x[i] - x).powi(2) + (b.y[i] - y).powi(2) > r * r);
+            before - b.len()
+        })
+    }
+
+    pub fn remove(&mut self, id: u32) -> bool {
+        self.change(|b| {
+            let before = b.len();
+            b.retain(|b, i| b.id[i] != id);
+            b.len() < before
+        })
+    }
+
+    /// Change a body's mass, radius and velocity. False if it is gone.
+    pub fn edit(&mut self, id: u32, mass: f64, radius: f64, vx: f64, vy: f64) -> bool {
+        self.change(|b| {
+            let Some(i) = b.locate(id) else { return false };
+            (b.m[i], b.r[i], b.vx[i], b.vy[i]) = (mass.max(1.0) as f32, radius.max(1.0) as f32, vx, vy);
+            true
+        })
     }
 
     fn random(&mut self) -> f64 {
@@ -113,188 +151,33 @@ impl Sim {
         ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    /// Position, velocity and acceleration of what ships orbit when they appear.
-    fn anchor(&self, b: &Bodies) -> [f64; 6] {
-        match self.spawn_around.and_then(|id| b.locate(id)) {
-            Some(i) => [b.x[i], b.y[i], b.vx[i], b.vy[i], b.ax[i] as f64, b.ay[i] as f64],
-            None => {
-                let (x, y, vx, vy) = self.engine.barycentre();
-                [x, y, vx, vy, 0.0, 0.0]
+    /// Break a body into `pieces` equal fragments flying apart. `violence` is their speed
+    /// at the edge as a multiple of the body's escape speed. False if the body is gone.
+    pub fn shatter(&mut self, id: u32, pieces: usize, violence: f64) -> bool {
+        let pieces = pieces.clamp(2, 5000);
+        let turn = self.random() * std::f64::consts::TAU;
+        self.change(|b| {
+            let Some(i) = b.locate(id) else { return false };
+            let (x, y, vx, vy, mass, radius, group) = (b.x[i], b.y[i], b.vx[i], b.vy[i], b.m[i] as f64, b.r[i] as f64, b.group[i]);
+            b.retain(|b, k| b.id[k] != id);
+            // Same total volume; laid out on a sunflower spiral with room between them, so
+            // they do not fall straight back into one another.
+            let each = radius / (pieces as f64).cbrt();
+            let pitch = 1.6 * each;
+            let edge = pitch * (pieces as f64).sqrt();
+            let escape = (2.0 * G * mass / radius).sqrt();
+            for k in 0..pieces {
+                let (r, a) = (pitch * (k as f64 + 0.5).sqrt(), turn + k as f64 * 2.399_963_229_728_653);
+                let speed = violence * escape * r / edge;
+                b.push(x + r * a.cos(), y + r * a.sin(), vx + speed * a.cos(), vy + speed * a.sin(), mass / pieces as f64, each, group);
             }
-        }
+            true
+        })
     }
 
-    /// A state on a circular orbit about `centre` at `(x, y)`, judged from the pull actually
-    /// felt there. `None` if the spot is inside or right next to a body.
-    fn orbit_at(&self, b: &Bodies, x: f64, y: f64, centre: [f64; 6]) -> Option<Particle> {
-        let mut local = Local::default();
-        self.engine.local(b, x, y, SHIP_THETA, self.near, &[], &mut local);
-        let crowded = (0..local.len()).any(|j| {
-            let (dx, dy) = (local.x[j] - x, local.y[j] - y);
-            dx * dx + dy * dy < (6.0 * local.radius[j]).powi(2)
-        });
-        if crowded {
-            return None;
-        }
-        let (ax, ay) = local.accel_at(x, y, self.rules.g, self.rules.softening);
-        let (rx, ry) = (x - centre[0], y - centre[1]);
-        let d = (rx * rx + ry * ry).sqrt().max(1.0);
-        // Pull towards the centre, in the centre's own (accelerating) frame.
-        let inward = -((ax - centre[4]) * rx + (ay - centre[5]) * ry) / d;
-        let v = (inward.max(0.0) * d).sqrt();
-        Some(Particle { x, y, vx: centre[2] - v * ry / d, vy: centre[3] + v * rx / d })
-    }
-
-    fn spawn(&mut self) -> bool {
-        let bodies = self.bodies.clone();
-        let b = bodies.read().unwrap();
-        let centre = self.anchor(&b);
-        for _ in 0..16 {
-            let r = self.spawn_r.0 + (self.spawn_r.1 - self.spawn_r.0) * self.random();
-            let a = self.random() * std::f64::consts::TAU;
-            if let Some(p) = self.orbit_at(&b, centre[0] + r * a.cos(), centre[1] + r * a.sin(), centre) {
-                self.place(p);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Put the ship somewhere with full tanks.
-    pub fn place(&mut self, p: Particle) {
-        let fuel = self.ship.map_or(self.rules.fuel_max_mmps, |s| s.fuel);
-        self.ship = Some(ShipState { p, fuel, idle_ticks: 0 });
-        self.ship_before = self.ship;
-        self.respawn_tick = None;
-    }
-
-    /// Circular orbit around a body, twenty radii out. False if the body is gone.
-    pub fn orbit(&mut self, id: u32) -> bool {
-        let bodies = self.bodies.clone();
-        let b = bodies.read().unwrap();
-        let Some(i) = b.locate(id) else { return false };
-        let r = 20.0 * b.r[i] as f64;
-        let v = (self.rules.g * b.m[i] as f64 / r).sqrt();
-        self.place(Particle { x: b.x[i] + r, y: b.y[i], vx: b.vx[i], vy: b.vy[i] + v });
-        true
-    }
-
-    pub fn refuel(&mut self) {
-        if let Some(s) = self.ship.as_mut() {
-            s.fuel = self.rules.fuel_max_mmps;
-        }
-    }
-
-    /// Destroy the ship; a new one appears after the usual delay.
-    pub fn destroy(&mut self) -> Option<Event> {
-        let s = self.ship.take()?;
-        self.ship_before = None;
-        self.deaths += 1;
-        self.respawn_tick = Some(self.tick + self.rules.respawn_ticks as u64);
-        Some(Event::Crashed { x: s.p.x, y: s.p.y, vx: s.p.vx, vy: s.p.vy, body: u32::MAX })
-    }
-
-    /// Advance the world and the ship by one tick.
-    pub fn step(&mut self, input: ShipInput) -> (Vec<Merge>, Vec<Event>) {
-        let events = self.step_ship(input);
-        (self.step_world(), events)
-    }
-
-    /// First half of a step, and the quick one: the ship moves on to tick + 1. It only
-    /// needs the world as it is at the start of the tick.
-    pub fn step_ship(&mut self, input: ShipInput) -> Vec<Event> {
-        let mut events = Vec::new();
-        if self.ship.is_none() && self.respawn_tick.is_some_and(|t| self.tick >= t) && self.spawn() {
-            events.push(Event::Spawned);
-        }
-        self.ship_before = self.ship;
-        if let Some(mut ship) = self.ship {
-            {
-                let b = self.bodies.read().unwrap();
-                self.engine.local(&b, ship.p.x, ship.p.y, SHIP_THETA, self.near, &self.watch, &mut self.local);
-            }
-            self.local_tick = self.tick;
-            let n = self.local.len();
-            if n > LOCAL_MAX {
-                self.near *= 0.8;
-            } else if n < LOCAL_MIN {
-                self.near = (self.near * 1.25).min(self.engine.extent());
-            }
-            self.alive.clear();
-            self.alive.resize(n, true);
-            self.no_radius.clear();
-            self.no_radius.resize(n, 0.0);
-            let l = &self.local;
-            let radius = if self.god { &self.no_radius } else { &l.radius };
-            let view = MassiveView { x: &l.x, y: &l.y, vx: &l.vx, vy: &l.vy, ax: &l.ax, ay: &l.ay, mass: &l.mass, radius, alive: &self.alive };
-            if input.thrust > 0 {
-                // The engine gives the same acceleration at any pace; keep the fraction of a
-                // mm/s that a very short step cannot spend for the next one.
-                let burn = THRUST * self.rules.dt * 1.0e3 + self.burn_carry;
-                self.rules.burn_per_tick_mmps = burn.floor().min(1.0e15) as i64;
-                self.burn_carry = burn - burn.floor();
-            }
-            let hit = step_ship(&mut ship, input, &view, &self.rules, &mut self.scratch);
-            if self.god {
-                ship.fuel = self.rules.fuel_max_mmps;
-            }
-            match hit.filter(|_| !self.god) {
-                Some(slot) => {
-                    self.ship = None;
-                    self.deaths += 1;
-                    self.respawn_tick = Some(self.tick + 1 + self.rules.respawn_ticks as u64);
-                    let body = self.local.id[slot as usize];
-                    events.push(Event::Crashed { x: ship.p.x, y: ship.p.y, vx: self.local.vx[slot as usize], vy: self.local.vy[slot as usize], body });
-                }
-                None => self.ship = Some(ship),
-            }
-        }
-        events
-    }
-
-    /// Second half: the bodies move on to tick + 1.
-    pub fn step_world(&mut self) -> Vec<Merge> {
-        {
-            let mut b = self.bodies.write().unwrap();
-            self.engine.advance(&mut b, self.rules.dt);
-            b.dt = self.rules.dt;
-            b.tick = self.tick + 1;
-        }
-        {
-            let b = self.bodies.read().unwrap();
-            self.engine.forces(&b);
-        }
-        let merges = {
-            let mut b = self.bodies.write().unwrap();
-            self.engine.finish(&mut b, self.rules.dt)
-        };
-        for m in &merges {
-            for w in self.watch.iter_mut().filter(|w| **w == m.absorbed) {
-                *w = m.survivor;
-            }
-        }
-        self.merges_total += merges.len() as u64;
-        self.removed_total += self.engine.stats.removed as u64;
-        self.tick += 1;
-        self.time += self.rules.dt;
-        merges
-    }
-
-    /// The ship's surroundings as a small world the exact engine can run ahead, plus the
-    /// body id behind each of its slots (`u32::MAX` for lumps).
-    pub fn local_snapshot(&self) -> (MassiveSnapshot, Vec<u32>) {
-        let l = &self.local;
-        let snapshot = MassiveSnapshot {
-            tick: self.local_tick,
-            x: l.x.clone(),
-            y: l.y.clone(),
-            vx: l.vx.clone(),
-            vy: l.vy.clone(),
-            mass: l.mass.clone(),
-            // An indestructible ship flies through bodies; its predicted path should too.
-            radius: if self.god { vec![0.0; l.len()] } else { l.radius.clone() },
-            alive: vec![true; l.len()],
-        };
-        (snapshot, l.id.clone())
+    /// Swap the whole world for another (a saved one, or a checkpoint).
+    pub fn replace(&mut self, bodies: Bodies) {
+        self.time = bodies.time;
+        self.change(|b| *b = bodies);
     }
 }

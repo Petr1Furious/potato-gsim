@@ -7,7 +7,7 @@
 //! the caller then keeps using the CPU rasteriser.
 
 use macroquad::miniquad::{
-    self, Backend, BlendFactor, BlendState, BufferId, BufferLayout, BufferSource, BufferType, BufferUsage, Equation, FilterMode, PassAction, Pipeline,
+    self, Backend, BlendFactor, BlendState, BlendValue, BufferId, BufferLayout, BufferSource, BufferType, BufferUsage, Equation, FilterMode, PassAction, Pipeline,
     PipelineParams, PrimitiveType, RenderPass, RenderingBackend, ShaderMeta, ShaderSource, TextureFormat, TextureId, TextureParams, TextureWrap,
     UniformBlockLayout, UniformDesc, UniformType, UniformsSource, VertexAttribute, VertexFormat,
 };
@@ -66,6 +66,15 @@ void main() {
     gl_FragColor = 0.25 * texture2D(tex, uv - step.xy) + 0.5 * texture2D(tex, uv) + 0.25 * texture2D(tex, uv + step.xy);
 }"#;
 
+/// Drawn over an image with a blend that multiplies what is there by the alpha written here:
+/// light that lingers and fades.
+const FADE_FRAGMENT: &str = r#"#version 100
+precision highp float;
+uniform vec4 step;
+void main() {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, step.x);
+}"#;
+
 const TONE_VERTEX: &str = r#"#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
@@ -83,10 +92,12 @@ precision highp float;
 varying highp vec2 uv;
 uniform sampler2D Texture;
 uniform sampler2D Glow;
+uniform sampler2D Trail;
 uniform vec4 Tone;
+uniform vec4 Linger;
 uniform vec4 Background;
 void main() {
-    vec3 v = texture2D(Texture, uv).rgb * Tone.x + texture2D(Glow, uv * Tone.zw).rgb * Tone.y;
+    vec3 v = texture2D(Texture, uv).rgb * Tone.x + texture2D(Trail, uv).rgb * Linger.x + texture2D(Glow, uv * Tone.zw).rgb * Tone.y;
     v = sqrt(v / (1.0 + v));
     gl_FragColor = vec4(Background.rgb + (1.0 - Background.rgb) * v, 1.0);
 }"#;
@@ -130,14 +141,16 @@ impl Target {
 pub struct Gpu {
     points: Pipeline,
     blur: Pipeline,
+    fade: Pipeline,
     tone: Material,
     vertices: BufferId,
     indices: BufferId,
     /// Bodies the two buffers have room for.
     capacity: usize,
     quad: (BufferId, BufferId),
-    /// Full-size image, quarter-size glow, and scratch for blurring it.
-    targets: Option<[Target; 3]>,
+    /// Full-size image, quarter-size glow, scratch for blurring it, and the full-size image
+    /// in which light lingers.
+    targets: Option<[Target; 4]>,
 }
 
 fn context() -> &'static mut dyn RenderingBackend {
@@ -173,6 +186,14 @@ impl Gpu {
         );
         let blur_shader = shader(ctx, BLUR_VERTEX, BLUR_FRAGMENT, &["tex"], &["step"])?;
         let blur = ctx.new_pipeline(&[BufferLayout::default()], &[VertexAttribute::new("pos", VertexFormat::Float2)], blur_shader, PipelineParams::default());
+        let dim = BlendState::new(Equation::Add, BlendFactor::Zero, BlendFactor::Value(BlendValue::SourceAlpha));
+        let fade_shader = shader(ctx, BLUR_VERTEX, FADE_FRAGMENT, &[], &["step"])?;
+        let fade = ctx.new_pipeline(
+            &[BufferLayout::default()],
+            &[VertexAttribute::new("pos", VertexFormat::Float2)],
+            fade_shader,
+            PipelineParams { color_blend: Some(dim), alpha_blend: Some(dim), ..Default::default() },
+        );
         let corners: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0];
         let order: [u16; 6] = [0, 1, 2, 0, 2, 3];
         let quad = (
@@ -182,8 +203,8 @@ impl Gpu {
         let tone = load_material(
             macroquad::prelude::ShaderSource::Glsl { vertex: TONE_VERTEX, fragment: TONE_FRAGMENT },
             MaterialParams {
-                uniforms: vec![UniformDesc::new("Tone", UniformType::Float4), UniformDesc::new("Background", UniformType::Float4)],
-                textures: vec!["Glow".to_string()],
+                uniforms: vec![UniformDesc::new("Tone", UniformType::Float4), UniformDesc::new("Linger", UniformType::Float4), UniformDesc::new("Background", UniformType::Float4)],
+                textures: vec!["Glow".to_string(), "Trail".to_string()],
                 ..Default::default()
             },
         )
@@ -192,7 +213,7 @@ impl Gpu {
         // SAFETY: plain state change on the thread that owns the GL context.
         unsafe { miniquad::gl::glEnable(miniquad::gl::GL_PROGRAM_POINT_SIZE) };
         let (vertices, indices) = Self::buffers(ctx, 1 << 16);
-        let mut gpu = Self { points, blur, tone, vertices, indices, capacity: 1 << 16, quad, targets: None };
+        let mut gpu = Self { points, blur, fade, tone, vertices, indices, capacity: 1 << 16, quad, targets: None };
         // Try the images now: a driver without float render targets shows here, not as a
         // black screen later.
         gpu.resize(ctx, 64, 64, 16, 16);
@@ -226,7 +247,25 @@ impl Gpu {
         for t in self.targets.iter().flatten() {
             t.delete(ctx);
         }
-        self.targets = Some([Target::new(ctx, w, h, FilterMode::Nearest), Target::new(ctx, gw, gh, FilterMode::Linear), Target::new(ctx, gw, gh, FilterMode::Linear)]);
+        self.targets = Some([
+            Target::new(ctx, w, h, FilterMode::Nearest),
+            Target::new(ctx, gw, gh, FilterMode::Linear),
+            Target::new(ctx, gw, gh, FilterMode::Linear),
+            Target::new(ctx, w, h, FilterMode::Nearest),
+        ]);
+        // Nothing lingers in a new image.
+        let trail = &self.targets.as_ref().unwrap()[3];
+        ctx.begin_pass(Some(trail.pass), PassAction::clear_color(0.0, 0.0, 0.0, 0.0));
+        ctx.end_render_pass();
+    }
+
+    /// Forget the light that has lingered so far.
+    pub fn clear_trail(&mut self) {
+        if let Some(targets) = &self.targets {
+            let ctx = context();
+            ctx.begin_pass(Some(targets[3].pass), PassAction::clear_color(0.0, 0.0, 0.0, 0.0));
+            ctx.end_render_pass();
+        }
     }
 
     /// Free everything this owns on the graphics card.
@@ -240,13 +279,16 @@ impl Gpu {
         }
         ctx.delete_pipeline(self.points);
         ctx.delete_pipeline(self.blur);
+        ctx.delete_pipeline(self.fade);
     }
 
     /// Draw `vertices` (positions on a `buffer` sized grid whose cells are `dot` physical
     /// pixels) as squares `span` cells across, stretched over `dest` on screen. The glow comes from an image one `block`-th
-    /// the size of the grid; `exposure` and `glow` scale the two before tone mapping.
+    /// the size of the grid; `exposure` and `glow` scale the two before tone mapping. With
+    /// `linger`, light also stays behind: each frame what was there is multiplied by the
+    /// first number, and it is shown with the second as its strength.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, span: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, background: Color) {
+    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, span: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, linger: Option<(f32, f32)>, background: Color) {
         let ctx = context();
         let (w, h) = ((buffer.0 as u32 * dot).clamp(16, 16_384), (buffer.1 as u32 * dot).clamp(16, 16_384));
         // The small image is a whole number of blocks, so it reaches a little past the edge.
@@ -260,7 +302,7 @@ impl Gpu {
             (self.vertices, self.indices) = Self::buffers(ctx, self.capacity);
         }
         ctx.buffer_update(self.vertices, BufferSource::slice(vertices));
-        let [image, halo, scratch] = self.targets.as_ref().unwrap();
+        let [image, halo, scratch, trail] = self.targets.as_ref().unwrap();
         let points = miniquad::Bindings { vertex_buffers: vec![self.vertices], index_buffer: self.indices, images: vec![] };
         // The same points twice: full size, and as single pixels of the small image, where
         // each pixel then holds the light of a whole block of the large one.
@@ -270,6 +312,18 @@ impl Gpu {
             ctx.apply_pipeline(&self.points);
             ctx.apply_bindings(&points);
             ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / grid.0, 2.0 / grid.1, size, 0.0], target: [target.w as f32, target.h as f32, soft, (span * span) as f32] }));
+            ctx.draw(0, vertices.len() as i32, 1);
+            ctx.end_render_pass();
+        }
+        if let Some((keep, _)) = linger {
+            ctx.begin_pass(Some(trail.pass), PassAction::Nothing);
+            ctx.apply_pipeline(&self.fade);
+            ctx.apply_bindings(&miniquad::Bindings { vertex_buffers: vec![self.quad.0], index_buffer: self.quad.1, images: vec![] });
+            ctx.apply_uniforms(UniformsSource::table(&Vec4Uniform([keep, 0.0, 0.0, 0.0])));
+            ctx.draw(0, 6, 1);
+            ctx.apply_pipeline(&self.points);
+            ctx.apply_bindings(&points);
+            ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / buffer.0 as f32, 2.0 / buffer.1 as f32, (dot * span) as f32, 0.0], target: [trail.w as f32, trail.h as f32, 0.0, 1.0] }));
             ctx.draw(0, vertices.len() as i32, 1);
             ctx.end_render_pass();
         }
@@ -287,6 +341,9 @@ impl Gpu {
         self.tone.set_uniform("Tone", [exposure, glow, buffer.0 as f32 / covered.0, buffer.1 as f32 / covered.1]);
         self.tone.set_uniform("Background", [background.r, background.g, background.b, 1.0]);
         self.tone.set_texture("Glow", Texture2D::from_miniquad_texture(halo.texture));
+        // Without lingering light the same image is read twice, the second time for nothing.
+        self.tone.set_uniform("Linger", [linger.map_or(0.0, |l| l.1 * exposure), 0.0, 0.0, 0.0]);
+        self.tone.set_texture("Trail", Texture2D::from_miniquad_texture(if linger.is_some() { trail.texture } else { image.texture }));
         gl_use_material(&self.tone);
         let params = DrawTextureParams { dest_size: Some(vec2(dest.0, dest.1)), ..Default::default() };
         draw_texture_ex(&Texture2D::from_miniquad_texture(image.texture), 0.0, 0.0, WHITE, params);

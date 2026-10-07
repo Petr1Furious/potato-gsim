@@ -97,7 +97,7 @@ impl Authority {
     fn command(&mut self, conn: ConnId, id: PlayerId, line: &str) {
         let words = command::split(line);
         let Some(name) = words.first() else { return };
-        let Some(spec) = command::find(name).filter(|c| c.available(false)) else {
+        let Some(spec) = command::find(name) else {
             return self.tell(conn, ChatKind::Error, format!("Unknown command: /{name}"));
         };
         if spec.op && !self.is_op(id) {
@@ -237,7 +237,7 @@ impl Authority {
         match name {
             "help" => {
                 let op = self.is_op(me);
-                for c in command::COMMANDS.iter().filter(|c| (op || !c.op) && c.available(false)) {
+                for c in command::COMMANDS.iter().filter(|c| op || !c.op) {
                     self.tell(conn, ChatKind::System, format!("{}  -  {}", c.usage(), c.help));
                 }
                 Ok(None)
