@@ -173,9 +173,14 @@ impl Session {
                     self.marks.pop_front();
                 }
             }
-            ServerMsg::Progress { holds } => {
+            ServerMsg::Progress { objectives, holds } => {
                 if let Some(w) = self.world.as_mut() {
-                    w.holds = holds.into_iter().collect();
+                    // Which bodies are objectives comes with the events, in order; this only
+                    // says how much time each has left.
+                    for o in w.objectives.iter_mut() {
+                        o.left = objectives.iter().find(|new| new.slot == o.slot).map_or(o.left, |new| new.left);
+                    }
+                    w.holds = holds.into_iter().filter(|h| w.is_target(h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
                 }
             }
             ServerMsg::ShipCheck { tick, player, state } => {
@@ -295,7 +300,8 @@ impl Session {
         if let Some((angle, speed)) = controls.fire {
             let ready = w.me().map_or(Tick::MAX, |m| m.next_fire_tick).max(self.fire_ready_tick);
             let alive = w.my_ship().is_some();
-            if alive && apply_tick >= ready && apply_tick >= self.last_cmd_tick {
+            let loaded = w.me().is_some_and(|m| m.magazine.at(apply_tick, &w.rules) > 0);
+            if alive && loaded && apply_tick >= ready && apply_tick >= self.last_cmd_tick {
                 self.pending.push_back(Cmd { seq: self.next_seq, tick: apply_tick, kind: CmdKind::Fire { angle, speed } });
                 self.next_seq += 1;
                 self.last_cmd_tick = apply_tick;

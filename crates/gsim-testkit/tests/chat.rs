@@ -4,6 +4,7 @@ use gsim_client_core::{Controls, Session};
 use gsim_core::objective::orbit_status;
 use gsim_core::Particle;
 use gsim_proto::ChatKind;
+use gsim_server::authority::TargetPlan;
 use gsim_testkit::*;
 
 fn idle(_: usize, _: f64) -> Controls {
@@ -216,8 +217,17 @@ fn world_control() {
     sim.server.set_rounds(600 * hz, hz, None);
     sim.server.enable_objective();
     say(&mut sim, a, "/target star");
-    assert_eq!(sim.server.target(), Some(0));
-    assert_eq!(sim.clients[b].session.world.as_ref().unwrap().target, Some(0));
+    assert_eq!(sim.server.targets(), [0]);
+    assert!(sim.clients[b].session.world.as_ref().unwrap().is_target(0));
+    say(&mut sim, a, "/targets count 3");
+    assert_eq!(sim.server.target_plan, TargetPlan::Fixed(3));
+    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Set the number of targets to 3");
+    say(&mut sim, a, "/targets per 4");
+    assert_eq!(sim.server.target_plan, TargetPlan::PerPlayers(4));
+    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Set the number of targets to one for every 4 players");
+    say(&mut sim, a, "/targets count 0");
+    assert!(errors(&sim.clients[a].session).last().unwrap().starts_with("usage: /targets"));
+    assert_eq!(sim.server.target_plan, TargetPlan::PerPlayers(4));
 
     say(&mut sim, a, "/preset solar seed=7");
     sim.run_with(1.5, idle);

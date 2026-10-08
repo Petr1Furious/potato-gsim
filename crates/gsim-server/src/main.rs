@@ -48,6 +48,15 @@ struct Args {
     /// Pause between rounds in seconds
     #[arg(long, env = "GSIM_INTERMISSION_SECONDS", default_value_t = 10.0)]
     intermission_seconds: f64,
+    /// One target for every so many players, and at least one [default: 2]
+    #[arg(long, env = "GSIM_PLAYERS_PER_TARGET", conflicts_with = "targets", value_parser = clap::value_parser!(u32).range(1..))]
+    players_per_target: Option<u32>,
+    /// A fixed number of targets instead, however many players there are
+    #[arg(long, env = "GSIM_TARGETS", value_parser = clap::value_parser!(u32).range(1..=64))]
+    targets: Option<u32>,
+    /// Seconds a target stays on one body before it moves on (0 = until it is captured)
+    #[arg(long, env = "GSIM_TARGET_SECONDS", default_value_t = 90.0)]
+    target_seconds: f64,
     /// Directory for player names, whitelist and ban lists
     #[arg(long, env = "GSIM_STATE_DIR", default_value = "data", global = true)]
     state_dir: PathBuf,
@@ -96,6 +105,9 @@ fn main() {
         quiet: false,
         round_seconds: args.round_seconds,
         intermission_seconds: args.intermission_seconds,
+        players_per_target: args.players_per_target,
+        targets: args.targets,
+        target_seconds: args.target_seconds,
         state_dir: Some(args.state_dir.clone()),
         whitelist: args.whitelist,
         op_all: false,

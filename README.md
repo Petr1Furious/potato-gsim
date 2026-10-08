@@ -57,10 +57,16 @@ You fly a ship with a 20 km/s delta-v budget (it refills after a few seconds of 
 through a system of moving, merging bodies (try the `disc` or `solar` presets for orbital
 speeds several times that budget). Score by:
 
-- **Holding an orbit** around the marked target body for 10 s (+3): eccentricity at most 0.5,
-  lowest point at least 1.5 body radii, highest point within 60. The bottom-left panel shows
+- **Holding an orbit** around a marked target body for 10 s (+3): eccentricity at most 0.5,
+  lowest point at least 1.5 body radii, highest point within 60. The top-left panel shows
   which condition is failing. The target then moves to another body.
-- **Destroying other ships** with shells (+1).
+- **Destroying other ships** with shells (+1). A ship carries 10 and fires at most one a
+  second; after 4 s without firing, one comes back every 2 s.
+
+A target nobody captures moves to another body after 90 s (`GSIM_TARGET_SECONDS`, 0 = never).
+The time left is shown next to the target and in the panel, and stands still while a ship is
+on a qualifying orbit around it. There is one target for every two players
+(`GSIM_PLAYERS_PER_TARGET`) or a fixed number of them (`GSIM_TARGETS`): set one or the other.
 
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
@@ -115,7 +121,8 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | `/tp [PLAYER] PLAYER\|~DX ~DY\|X Y` | Teleport onto a player or to coordinates in metres (`~` is relative, units like `5Gm` work) |
 | `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body, 20 radii up |
 | `/preset NAME [KEY=VALUE ...]`, `/timescale X` | New round in another world (e.g. `/preset random count=300 seed=7`; what is not set returns to its default) or at another time scale |
-| `/target BODY` | Move the objective |
+| `/target BODY` | Make a body a target |
+| `/targets count N`, `/targets per N` | A fixed number of targets, or one for every N players |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |
 
@@ -130,7 +137,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Wheel, drag | Zoom about the cursor, pan |
 | Click | Select a body: prediction and trails are then drawn relative to it |
 | F | Camera: stays with the ship, with the selected body (the default), or automatic: with the selection, moving and zooming by itself to keep the ship, its predicted path up to the closest approach and the selected body on screen (it holds still under thrust, and leaves a view set by hand alone for a few seconds) |
-| R | Select the body the round is about |
+| R | Select the nearest target, then the next one |
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
@@ -223,8 +230,8 @@ cargo test --workspace
   momentum, every scenario at the limits of its parameters, editing and saving worlds,
   holding the pace and slowing down for a tight orbit.
 - `gsim-testkit`: server plus clients over simulated links (clean, lossy and jittery, 500 ms
-  round trip, late join, forced divergence and resync, shell kills, arming, crashes, orbit
-  capture, round rollover into a new world).
+  round trip, late join, forced divergence and resync, shell kills, arming, the shell stock,
+  crashes, orbit capture, targets timing out, their number, round rollover into a new world).
 
 ## Credits
 

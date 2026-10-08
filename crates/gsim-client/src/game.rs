@@ -15,7 +15,7 @@ use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
-use gsim_proto::PlayerId;
+use gsim_proto::{Objective, PlayerId};
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
 use std::collections::VecDeque;
@@ -125,7 +125,7 @@ pub struct Game {
     /// Camera offset from whatever it follows.
     offset: (f64, f64),
     auto: Auto,
-    /// R was pressed: select the body the round is about.
+    /// R was pressed: select a target.
     pick_target: bool,
     chat: ChatBox,
     /// Camera follows this player (set by clicking their name in chat).
@@ -404,19 +404,33 @@ impl Game {
                 .flatten()
                 .filter(|s| alive(*s));
         }
+        let own = world.ship_at(world.my_id, tick_f);
+        let me_ship = world.my_ship();
+        // The targets of the round, the nearest to the ship first.
+        let mut targets: Vec<Objective> = world.objectives.iter().filter(|o| alive(o.slot) && world.next_round_tick.is_none()).copied().collect();
+        if let Some(ship) = own {
+            let far = |o: &Objective| {
+                let b = body(o.slot);
+                (b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)
+            };
+            targets.sort_by(|a, b| far(a).total_cmp(&far(b)));
+        }
         if std::mem::take(&mut self.pick_target) {
-            let text = match world.target.filter(|t| alive(*t) && world.next_round_tick.is_none()) {
-                Some(slot) => {
-                    self.selected = Some(slot);
+            // The nearest one, then the next one each time.
+            let after = self.selected.and_then(|s| targets.iter().position(|o| o.slot == s)).map_or(0, |i| i + 1);
+            let text = match targets.get(after % targets.len().max(1)) {
+                Some(o) => {
+                    self.selected = Some(o.slot);
                     self.watch = None;
-                    format!("Selected {}", world.body_name(slot))
+                    format!("Selected {}", world.body_name(o.slot))
                 }
                 None => "No target".to_string(),
             };
             self.status = Some((text, get_time() + 2.0));
         }
-        let own = world.ship_at(world.my_id, tick_f);
-        let me_ship = world.my_ship();
+        // The one the panel is about: the one being held, else the selected, else the nearest.
+        let holding = world.holds.get(&world.my_id).map(|h| h.0);
+        let objective = holding.into_iter().chain(self.selected).find_map(|s| targets.iter().find(|o| o.slot == s)).or(targets.first()).copied();
 
         // --- camera ----------------------------------------------------------------------------
         let watched = self.watch.and_then(|id| world.ship_at(id, tick_f).map(|p| (id, p)));
@@ -869,9 +883,11 @@ impl Game {
 
         // --- objective -------------------------------------------------------------------------
         let gold = style::GOLD;
-        let target = world.target.filter(|t| alive(*t) && world.next_round_tick.is_none());
+        let clock = |s: f64| format!("{}:{:02}", s as u32 / 60, s as u32 % 60);
+        let target_secs = |o: &Objective| o.left as f64 / world.rules.tick_hz as f64;
         let mut orbit = None;
-        if let Some(slot) = target {
+        for o in &targets {
+            let slot = o.slot;
             let b = body(slot);
             let radius = row.props.radius[slot as usize];
             let s = view.to_screen(b.x, b.y);
@@ -892,7 +908,8 @@ impl Game {
                     style::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, style::alpha(gold, a));
                 }
                 style::ring(s.0, s.1, ring, 2.0 * ui, gold);
-                labels.push("TARGET", s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold, Rank::Target);
+                let label = if world.rules.target_ticks > 0 { format!("TARGET {}", clock(target_secs(o))) } else { "TARGET".to_string() };
+                labels.push(label, s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold, Rank::Target);
             } else {
                 // Off screen: an arrow on the edge pointing at it.
                 let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
@@ -907,7 +924,7 @@ impl Game {
                     labels.push(fmt::distance(d), ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui, LABEL * ui, gold, Rank::Target);
                 }
             }
-            if let Some(ship) = own {
+            if let Some(ship) = own.filter(|_| objective.is_some_and(|t| t.slot == slot)) {
                 orbit = Some((orbit_status(&ship, &b, row.props.mass[slot as usize], radius, &world.rules), radius));
             }
         }
@@ -955,7 +972,9 @@ impl Game {
         let me = world.me();
         let fuel = me.and_then(|m| m.ship.as_ref()).map(|t| t.last().fuel);
         let respawn_in = me.and_then(|m| m.respawn_tick).map(|t| (t as f64 - tick_f).max(0.0) / world.rules.tick_hz as f64);
-        let reload = ((fire_ready as f64 - tick_f) / world.rules.tick_hz as f64).max(0.0);
+        let reloading = fire_ready as f64 > tick_f;
+        let shells_max = world.rules.shell_max;
+        let (shells, next_shell) = me.map_or((0, 0.0), |m| (m.magazine.at(tick_f as Tick, &world.rules), m.magazine.next(tick_f as Tick, &world.rules)));
         let mut scores: Vec<(String, u32, u32, u32, u32, bool)> = world
             .players
             .iter()
@@ -966,22 +985,30 @@ impl Game {
         let round_left = world.round_end_tick.map(secs);
         let intermission = world.next_round_tick.map(secs);
         let hold_goal = world.rules.hold_ticks as f32;
-        let my_hold = world.holds.get(&world.my_id).copied().unwrap_or(0) as f32 / hold_goal;
+        let on_target = |h: &(u32, u32)| objective.is_some_and(|t| t.slot == h.0);
+        let my_hold = world.holds.get(&world.my_id).filter(|h| on_target(h)).map_or(0, |h| h.1) as f32 / hold_goal;
         let rivals: Vec<(String, f32)> = world
             .holds
             .iter()
-            .filter(|(id, _)| **id != world.my_id)
-            .map(|(id, h)| (world.player_name(*id).to_string(), *h as f32 / hold_goal))
+            .filter(|(id, h)| **id != world.my_id && on_target(h))
+            .map(|(id, h)| (world.player_name(*id).to_string(), h.1 as f32 / hold_goal))
             .collect();
-        let target_name = target.map(|t| world.body_name(t));
+        let target_name = objective.map(|t| world.body_name(t.slot));
+        // For each target: the time left, that as a share of the whole, and whether somebody
+        // on the orbit is keeping it from running out.
+        let target_span = world.rules.target_ticks as f32;
+        let timer = |o: &Objective| (clock(target_secs(o)), o.left as f32 / target_span.max(1.0), world.holds.values().any(|h| h.0 == o.slot));
+        let target_time = objective.as_ref().filter(|_| target_span > 0.0).map(timer);
+        let others: Vec<(String, (String, f32, bool))> =
+            targets.iter().filter(|o| objective.is_some_and(|t| t.slot != o.slot)).map(|o| (world.body_name(o.slot), timer(o))).collect();
         let limits = (world.rules.orbit_max_ecc, world.rules.orbit_min_peri_radii, world.rules.orbit_max_apo_radii);
         let capture_points = world.rules.capture_points;
         // What the chat box needs: names to complete and to highlight.
         let player_names: Vec<String> = world.players.values().map(|p| p.name.clone()).collect();
         let mut mentions: Vec<(String, Mention)> = world.players.iter().map(|(id, p)| (p.name.clone(), Mention::Player(*id))).collect();
         mentions.extend(world.names.iter().map(|(slot, name)| (name.clone(), Mention::Body(*slot))));
-        // Unnamed bodies are worth mentioning when they are the target or selected.
-        for slot in [target, self.selected].into_iter().flatten() {
+        // Unnamed bodies are worth mentioning when they are targets or selected.
+        for slot in targets.iter().map(|o| o.slot).chain(self.selected) {
             if !world.names.contains_key(&slot) {
                 mentions.push((world.body_name(slot), Mention::Body(slot)));
             }
@@ -991,8 +1018,7 @@ impl Game {
         let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op };
         let my_id = world.my_id;
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
-        let clock = |s: f64| format!("{}:{:02}", s as u32 / 60, s as u32 % 60);
-        let title = format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round);
+        let title =format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round);
         let horizon = (paths.coast.len().max(1) - 1) as f64 / world.rules.tick_hz as f64;
         let predict_ms = paths.compute_ms;
         let net_lines: Vec<String> = vec![
@@ -1008,7 +1034,6 @@ impl Game {
         ];
         let status = self.status.as_ref().filter(|s| s.1 > get_time()).map(|s| s.0.clone());
         let fuel_max = world.rules.fuel_max_mmps;
-        let cooldown = world.rules.shell_cooldown_ticks as f64 / world.rules.tick_hz as f64;
         let thrust_pct = self.thrust_pct;
         // The ruler replaces a "metres per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
@@ -1089,9 +1114,26 @@ impl Game {
                             mark(ui, "LOW", state.map(|(o, r)| o.peri / r >= limits.1));
                             mark(ui, "HIGH", state.map(|(o, r)| o.apo / r <= limits.2));
                         });
+                        // The time left stands still, dimmed, while somebody is on the orbit.
+                        let time = |ui: &mut egui::Ui, label: &str, (left, frac, held): &(String, f32, bool)| {
+                            style::gauge(ui, label, left, *frac, if *held { style::DIM } else { style::ACCENT });
+                        };
+                        if let Some(t) = &target_time {
+                            time(ui, if t.2 { "TIME · HELD" } else { "TIME" }, t);
+                        }
                         style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
                         for (rival, frac) in &rivals {
                             style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
+                        }
+                        if !others.is_empty() {
+                            style::section(ui, "OTHER TARGETS");
+                            for (name, t) in &others {
+                                if target_time.is_some() {
+                                    time(ui, &name.to_uppercase(), t);
+                                } else {
+                                    ui.label(RichText::new(name).small());
+                                }
+                            }
                         }
                     });
                 });
@@ -1128,9 +1170,9 @@ impl Game {
                             let fuel_colour = if frac < 0.2 { style::EMBER } else { style::ACCENT };
                             style::gauge(ui, "DELTA-V", &fmt::speed(f as f64 / 1000.0), frac, fuel_colour);
                             style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
-                            let loaded = (1.0 - reload / cooldown.max(1e-6)).clamp(0.0, 1.0) as f32;
-                            let shell = if reload > 0.0 { format!("{reload:.1} s") } else { "ready".to_string() };
-                            style::gauge(ui, "SHELL", &shell, loaded, if reload > 0.0 { style::DIM } else { style::EMBER });
+                            let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
+                            let ready = shells > 0 && !reloading;
+                            style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
                         }
                         None => {
                             style::caption(ui, "SHIP LOST");

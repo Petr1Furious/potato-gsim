@@ -1,6 +1,6 @@
 //! Real-time driver: UDP transport plus the fixed-rate tick loop.
 
-use crate::authority::Authority;
+use crate::authority::{Authority, TargetPlan};
 use crate::scenario::{self, Params};
 use gsim_core::GameRules;
 use gsim_proto::*;
@@ -29,6 +29,13 @@ pub struct ServerOptions {
     /// 0 = endless.
     pub round_seconds: f64,
     pub intermission_seconds: f64,
+    /// One target for every so many players, and at least one (2 when neither this nor
+    /// `targets` is given). Not together with `targets`.
+    pub players_per_target: Option<u32>,
+    /// A fixed number of targets instead, however many players there are.
+    pub targets: Option<u32>,
+    /// How long a target stays on one body before it moves on (0 = until it is captured).
+    pub target_seconds: f64,
     /// Where name ownership, whitelist and bans are kept (`None`: in memory only).
     pub state_dir: Option<PathBuf>,
     /// Only let whitelisted names in.
@@ -51,6 +58,9 @@ impl Default for ServerOptions {
             quiet: false,
             round_seconds: 600.0,
             intermission_seconds: 10.0,
+            players_per_target: None,
+            targets: None,
+            target_seconds: 90.0,
             state_dir: None,
             whitelist: false,
             op_all: false,
@@ -71,14 +81,21 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     let mut rules = GameRules::new(opts.time_scale, opts.tick_hz.clamp(10, 240));
     rules.escape_radius = sc.escape_radius();
     let hz = rules.tick_hz as f64;
+    let ticks = |s: f64| if s.is_finite() && s > 0.0 { (s * hz).round() as u64 } else { 0 };
+    rules.target_ticks = ticks(opts.target_seconds) as u32;
+    let target_plan = match (opts.players_per_target, opts.targets) {
+        (Some(_), Some(_)) => return Err("the number of targets is set either per players or as a whole, not both".into()),
+        (None, Some(count)) => TargetPlan::Fixed(count),
+        (each, None) => TargetPlan::PerPlayers(each.unwrap_or(2).max(1)),
+    };
     let mut authority = Authority::new(sc, rules, opts.seed);
+    authority.target_plan = target_plan;
     authority.state = match &opts.state_dir {
         Some(dir) => ServerState::open(dir, opts.whitelist)?,
         None => ServerState::in_memory(),
     };
     authority.state.whitelist_enabled = opts.whitelist;
     authority.op_all = opts.op_all;
-    let ticks = |s: f64| if s.is_finite() && s > 0.0 { (s * hz).round() as u64 } else { 0 };
     authority.set_rounds(ticks(opts.round_seconds), ticks(opts.intermission_seconds).max(1), Some((opts.preset.clone(), opts.params.clone())));
     authority.enable_objective();
     Ok(authority)
@@ -207,7 +224,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             report_at = now + Duration::from_secs(10);
             let s = authority.stats;
             eprintln!(
-                "[status] tick={} players={} bodies={} step avg={:.2}ms max={:.2}ms | cmds={} late={} resyncs={} | target: {} captured, {} merged, {} vanished, {} left play{}",
+                "[status] tick={} players={} bodies={} step avg={:.2}ms max={:.2}ms | cmds={} late={} resyncs={} | targets: {} captured, {} timed out, {} merged, {} vanished, {} left play{}",
                 authority.tick(),
                 authority.player_count(),
                 authority.massive.alive_count(),
@@ -217,6 +234,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
                 s.late_cmds,
                 s.resyncs,
                 s.captures,
+                s.target_expired,
                 s.target_merged,
                 s.target_gone,
                 s.target_ineligible,

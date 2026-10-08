@@ -26,7 +26,7 @@ pub use ephemeris::{BodyProps, EphProducer, EphRing, EphRow};
 pub use massive::{Body, MassiveSnapshot, MassiveState, MassiveView, MergeEvent, SystemFrame};
 pub use particle::{Particle, Scratch};
 pub use rules::GameRules;
-pub use ship::{InputTimeline, ShipInput, ShipState};
+pub use ship::{InputTimeline, Magazine, ShipInput, ShipState};
 
 /// Global simulation step index. State "at tick T" is the state before step T is integrated.
 pub type Tick = u64;

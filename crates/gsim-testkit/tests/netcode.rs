@@ -189,8 +189,8 @@ fn holding_an_orbit_captures_the_target() {
     let b = sim.add_client("bob", Link::new(25.0, 5.0, 0.0));
     sim.run_with(1.0, idle);
     let (pa, pb) = (sim.player_id(a).unwrap(), sim.player_id(b).unwrap());
-    assert_eq!(sim.server.target(), Some(0));
-    assert_eq!(sim.clients[a].session.world.as_ref().unwrap().target, Some(0));
+    assert_eq!(sim.server.targets(), [0]);
+    assert!(sim.clients[a].session.world.as_ref().unwrap().is_target(0));
     // The spawn orbit is far outside the allowed band: nobody scores by doing nothing.
     sim.run_with(11.0, idle);
     assert_eq!(sim.server.captures(pa), Some(0));
@@ -201,8 +201,8 @@ fn holding_an_orbit_captures_the_target() {
     let v = (rules.g * 2.0e30 / r).sqrt();
     sim.server.place_ship(pa, ShipState::new(Particle { x: r, y: 0.0, vx: 0.0, vy: v }, &rules));
     sim.run_with(5.0, idle);
-    let held = sim.clients[b].session.world.as_ref().unwrap().holds.get(&pa).copied().unwrap_or(0);
-    assert!(held > 200 && held < rules.hold_ticks, "progress is visible to others: {held}");
+    let (slot, held) = sim.clients[b].session.world.as_ref().unwrap().holds.get(&pa).copied().unwrap_or((9, 0));
+    assert!(slot == 0 && held > 200 && held < rules.hold_ticks, "progress is visible to others: {held} on {slot}");
     assert_eq!(sim.server.captures(pa), Some(0));
     sim.run_with(6.0, idle);
     assert_eq!(sim.server.captures(pa), Some(1));
@@ -245,7 +245,7 @@ fn round_ends_and_a_new_world_starts() {
         assert_eq!(w.round, 2);
         assert_eq!(w.next_round_tick, None);
         assert_eq!(w.eph.get(w.head - 1).unwrap().x.len(), 60, "client switched to the new world");
-        assert!(w.target.is_some());
+        assert!(!w.objectives.is_empty());
         let s = c.session.stats;
         // A new round is not a resync, and the new world is hash-checked like the old one.
         assert_eq!((s.hash_mismatches, s.resyncs), (0, 0), "{s:?}");
@@ -271,9 +271,9 @@ fn objective_follows_a_target_that_merges() {
     sim.run_with(1.5, idle);
     assert!(!sim.server.massive.alive[1], "the lighter body was absorbed");
     assert!(sim.server.massive.alive[2]);
-    assert_eq!(sim.server.target(), Some(2), "objective moved to the merged body, not elsewhere");
+    assert_eq!(sim.server.targets(), [2], "objective moved to the merged body, not elsewhere");
     let w = sim.clients[0].session.world.as_ref().unwrap();
-    assert_eq!(w.target, Some(2));
+    assert!(w.is_target(2) && w.objectives.len() == 1);
 }
 
 #[test]
@@ -294,7 +294,8 @@ fn targets_are_picked_near_the_players() {
         // Park the only ship next to slot 4 (angle 90 degrees).
         sim.server.place_ship(pa, ShipState::new(Particle { x: 0.0, y: 2.05e11, vx: 0.0, vy: 0.0 }, &rules));
         sim.server.enable_objective();
-        let target = sim.server.target().expect("a target is chosen while a ship is flying");
+        sim.run_with(0.1, idle);
+        let target = *sim.server.targets().first().expect("a target is chosen while a ship is flying");
         assert!((3..=5).contains(&target), "target {target} should be one of the three bodies nearest the ship");
     }
 }
@@ -308,7 +309,7 @@ fn rounds_wait_for_players() {
     // An empty server does not burn through rounds.
     sim.run_with(10.0, idle);
     assert_eq!(sim.server.round(), 0);
-    assert_eq!(sim.server.target(), None, "no target until somebody is flying");
+    assert!(sim.server.targets().is_empty(), "no target until somebody is flying");
 
     let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
     sim.run_with(1.0, idle);
@@ -316,7 +317,7 @@ fn rounds_wait_for_players() {
     let w = sim.clients[a].session.world.as_ref().unwrap();
     let left = w.round_end_tick.unwrap() - sim.server.tick();
     assert!(left > hz && left <= 3 * hz, "the clock started at the join, {left} ticks left");
-    assert!(sim.server.target().is_some());
+    assert_eq!(sim.server.targets().len(), 1);
 
     // Everyone leaves: the round runs out, and no new one starts.
     sim.disconnect(a);
@@ -374,6 +375,205 @@ fn target_survives_a_fast_swing_past_a_neighbour() {
     sim.server.set_target(2);
     sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
     sim.run_with(12.0, idle);
-    assert_eq!(sim.server.target(), Some(2), "{:?}", sim.server.stats);
+    assert_eq!(sim.server.targets(), [2], "{:?}", sim.server.stats);
     assert_eq!(sim.server.stats.target_ineligible, 0);
+}
+
+fn firing(_: usize, _: f64) -> Controls {
+    Controls { angle: 0, thrust: 0, fire: Some((0, 8000.0)) }
+}
+
+/// The shells a client believes it has, at the server's tick.
+fn shells_seen(sim: &Sim, client: usize) -> u32 {
+    let w = sim.clients[client].session.world.as_ref().unwrap();
+    w.me().unwrap().magazine.at(sim.server.tick(), &w.rules)
+}
+
+#[test]
+fn shells_run_out_and_come_back() {
+    let mut sim = Sim::new(quiet_scenario(), 60);
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    let pa = sim.player_id(a).unwrap();
+    let max = sim.server.rules.shell_max;
+    assert_eq!((max, sim.server.shells_left(pa)), (10, Some(10)));
+
+    // Holding the trigger: still one a second, until there are none.
+    sim.run_with(4.5, firing);
+    assert_eq!(sim.server.shells_left(pa), Some(5));
+    assert_eq!(shells_seen(&sim, a), 5);
+    sim.run_with(5.0, firing);
+    assert_eq!(sim.server.shells_left(pa), Some(0));
+    // The last one left about 0.4 s ago. Nothing for four seconds, then one every two.
+    sim.run_with(5.0, idle);
+    assert_eq!(sim.server.shells_left(pa), Some(0));
+    sim.run_with(1.5, idle);
+    assert_eq!(sim.server.shells_left(pa), Some(1));
+    assert_eq!(shells_seen(&sim, a), 1);
+    sim.run_with(4.0, idle);
+    assert_eq!(sim.server.shells_left(pa), Some(3));
+    sim.run_with(20.0, idle);
+    assert_eq!(sim.server.shells_left(pa), Some(max), "never more than the full stock");
+
+    // Every shot makes the rest wait again.
+    sim.run_with(0.3, firing);
+    assert_eq!(sim.server.shells_left(pa), Some(max - 1));
+    sim.run_with(5.0, idle);
+    assert_eq!(sim.server.shells_left(pa), Some(max - 1));
+    sim.run_with(1.5, idle);
+    assert_eq!(sim.server.shells_left(pa), Some(max));
+    assert_eq!(shells_seen(&sim, a), max);
+}
+
+#[test]
+fn an_empty_ship_fires_as_soon_as_a_shell_is_back() {
+    let mut sim = Sim::new(quiet_scenario(), 61);
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    let pa = sim.player_id(a).unwrap();
+    // Ten in the first ten seconds, then one every six (the wait and one shell's worth).
+    sim.run_with(30.0, firing);
+    let fired = sim.server.stats.shells_fired;
+    assert!((12..=14).contains(&fired), "{fired} shells in 30 s of holding the trigger");
+    assert_eq!(sim.server.shells_left(pa), Some(0));
+}
+
+#[test]
+fn a_new_ship_has_all_its_shells() {
+    let mut sim = Sim::new(quiet_scenario(), 62);
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    let pa = sim.player_id(a).unwrap();
+    let rules = sim.server.rules.clone();
+    sim.run_with(4.5, firing);
+    assert_eq!(sim.server.shells_left(pa), Some(5));
+    // Straight into the star, and back a few seconds later.
+    sim.server.place_ship(pa, ShipState::new(Particle { x: 6.0e9, y: 0.0, vx: -2.0e5, vy: 0.0 }, &rules));
+    sim.run_with(1.0, firing);
+    assert_eq!(sim.server.score(pa), Some((0, 1)));
+    sim.run_with(3.5, idle);
+    assert!(sim.server.ship(pa).is_some(), "respawned");
+    assert_eq!(sim.server.shells_left(pa), Some(rules.shell_max));
+    assert_eq!(shells_seen(&sim, a), rules.shell_max);
+}
+
+/// A star with a ring of twelve equal planets; slot k+1 sits at angle k * 30 degrees.
+fn ring_world() -> gsim_server::Scenario {
+    let mut sc = quiet_scenario();
+    for k in 0..12 {
+        let a = k as f64 * std::f64::consts::TAU / 12.0;
+        sc.bodies.push(gsim_core::Body { x: 2.0e11 * a.cos(), y: 2.0e11 * a.sin(), vx: 0.0, vy: 0.0, mass: 3.0e25, radius: 1.0e7 });
+    }
+    sc
+}
+
+/// Put a ship on a small circular orbit around a body.
+fn park_around(sim: &mut Sim, player: gsim_proto::PlayerId, slot: usize) {
+    let (m, rules) = (&sim.server.massive, sim.server.rules.clone());
+    let r = 5.0 * m.radius[slot];
+    let v = (rules.g * m.mass[slot] / r).sqrt();
+    let p = Particle { x: m.x[slot] + r, y: m.y[slot], vx: m.vx[slot], vy: m.vy[slot] + v };
+    sim.server.place_ship(player, ShipState::new(p, &rules));
+}
+
+#[test]
+fn a_target_moves_on_when_its_time_is_up_unless_somebody_orbits_it() {
+    let mut sim = Sim::new(ring_world(), 70);
+    let hz = sim.server.rules.tick_hz;
+    sim.server.rules.target_ticks = 5 * hz;
+    // Long enough that nothing is captured here.
+    sim.server.rules.hold_ticks = 60 * hz;
+    sim.server.enable_objective();
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(2.0, idle);
+    let pa = sim.player_id(a).unwrap();
+    let first = sim.server.targets()[0];
+    let left = sim.server.target_left(first).unwrap();
+    assert!(left > 3 * hz && left < 5 * hz, "the time is running: {left} ticks left");
+    let seen = |sim: &Sim| sim.clients[a].session.world.as_ref().unwrap().objectives.clone();
+    assert!(seen(&sim)[0].slot == first && seen(&sim)[0].left.abs_diff(left) <= 10, "{:?}", seen(&sim));
+
+    sim.run_with(4.0, idle);
+    let second = sim.server.targets()[0];
+    assert_ne!(second, first, "another body takes over");
+    assert_eq!(sim.server.stats.target_expired, 1);
+    assert_eq!(seen(&sim)[0].slot, second);
+    let said = format!("New target: {}", sim.clients[a].session.world.as_ref().unwrap().body_name(second));
+    assert!(sim.clients[a].session.chat.iter().any(|l| l.text == said), "{:?}", sim.clients[a].session.chat);
+
+    // On an orbit around it: the time stands still for as long as that lasts.
+    park_around(&mut sim, pa, second as usize);
+    sim.run_with(0.5, idle);
+    let left = sim.server.target_left(second).unwrap();
+    sim.run_with(8.0, idle);
+    assert_eq!(sim.server.targets(), [second]);
+    assert_eq!(sim.server.target_left(second), Some(left));
+    assert_eq!(seen(&sim)[0].left, left);
+    assert_eq!(sim.clients[a].session.world.as_ref().unwrap().holds.get(&pa).map(|h| h.0), Some(second));
+
+    // Away again: it runs out like any other.
+    let rules = sim.server.rules.clone();
+    sim.server.place_ship(pa, ShipState::new(Particle { x: 0.0, y: 3.0e11, vx: 0.0, vy: 0.0 }, &rules));
+    sim.run_with(5.5, idle);
+    assert_ne!(sim.server.targets(), [second]);
+    assert_eq!(sim.server.stats.target_expired, 2);
+    assert_eq!(sim.server.stats.captures, 0);
+    assert_eq!(sim.clients[a].session.stats.hash_mismatches, 0);
+}
+
+#[test]
+fn the_number_of_targets_follows_the_players_or_is_fixed() {
+    use gsim_server::authority::TargetPlan;
+    let mut sim = Sim::new(ring_world(), 80);
+    // Time does not get in the way here.
+    sim.server.rules.target_ticks = 0;
+    sim.server.enable_objective();
+    let check = |sim: &Sim, want: usize, why: &str| {
+        let mut slots = sim.server.targets();
+        assert_eq!(slots.len(), want, "{why}");
+        for c in sim.clients.iter().filter(|c| c.connected) {
+            let seen: Vec<u32> = c.session.world.as_ref().unwrap().objectives.iter().map(|o| o.slot).collect();
+            assert_eq!(seen, slots, "{why}");
+        }
+        slots.sort();
+        slots.dedup();
+        assert_eq!(slots.len(), want, "all different: {why}");
+    };
+    // One for every two players by default, and never none.
+    let link = Link::new(20.0, 0.0, 0.0);
+    let ann = sim.add_client("ann", link.clone());
+    sim.run_with(1.0, idle);
+    check(&sim, 1, "one player");
+    let names = ["bob", "cat", "dan", "eve"];
+    let others: Vec<usize> = names.iter().map(|n| sim.add_client(n, link.clone())).collect();
+    sim.run_with(1.0, idle);
+    check(&sim, 2, "five players");
+    sim.disconnect(others[3]);
+    sim.disconnect(others[2]);
+    sim.run_with(0.5, idle);
+    check(&sim, 1, "three players");
+
+    sim.server.target_plan = TargetPlan::PerPlayers(1);
+    sim.run_with(0.5, idle);
+    check(&sim, 3, "one each");
+    sim.server.target_plan = TargetPlan::Fixed(6);
+    sim.run_with(0.5, idle);
+    check(&sim, 6, "six whoever is there");
+    sim.disconnect(ann);
+    sim.run_with(0.5, idle);
+    check(&sim, 6, "six whoever is there");
+    sim.server.target_plan = TargetPlan::Fixed(2);
+    sim.run_with(0.5, idle);
+    check(&sim, 2, "two");
+}
+
+#[test]
+fn the_two_ways_of_counting_targets_do_not_mix() {
+    use gsim_server::authority::TargetPlan;
+    use gsim_server::net::{build_authority, ServerOptions};
+    let opts = |per: Option<u32>, total: Option<u32>| ServerOptions { players_per_target: per, targets: total, ..ServerOptions::default() };
+    assert_eq!(build_authority(&opts(None, None)).unwrap().target_plan, TargetPlan::PerPlayers(2));
+    assert_eq!(build_authority(&opts(Some(3), None)).unwrap().target_plan, TargetPlan::PerPlayers(3));
+    assert_eq!(build_authority(&opts(None, Some(4))).unwrap().target_plan, TargetPlan::Fixed(4));
+    assert!(build_authority(&opts(Some(3), Some(4))).is_err());
 }

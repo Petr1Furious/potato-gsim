@@ -158,7 +158,7 @@ impl Authority {
     fn find_body(&self, word: &str) -> Result<u32, String> {
         let w = word.to_lowercase();
         let slot = if w == "@t" {
-            self.target
+            self.objectives.first().map(|o| o.slot)
         } else if let Some((slot, _)) = self.names.iter().find(|(_, n)| n.to_lowercase() == w) {
             Some(*slot)
         } else {
@@ -187,7 +187,7 @@ impl Authority {
         let playing = self.next_round_tick.is_none();
         if let Some(p) = self.players.get_mut(&id) {
             p.ship = None;
-            p.hold = 0;
+            p.hold = None;
             p.deaths += playing as u32;
             p.respawn_tick = Some(respawn_tick);
         }
@@ -391,7 +391,7 @@ impl Authority {
             }
             "timescale" => {
                 let scale = args.first().and_then(|s| s.parse::<f64>().ok()).filter(|x| (1.0..=1.0e7).contains(x)).ok_or("")?;
-                self.rules = GameRules { escape_radius: self.rules.escape_radius, ..GameRules::new(scale, self.rules.tick_hz) };
+                self.rules = GameRules { escape_radius: self.rules.escape_radius, target_ticks: self.rules.target_ticks, ..GameRules::new(scale, self.rules.tick_hz) };
                 self.start_round();
                 self.announce(format!("{} set the time scale to x{scale}", self.name_of(me)));
                 Ok(None)
@@ -399,7 +399,17 @@ impl Authority {
             "target" => {
                 let slot = self.find_body(args.first().ok_or("")?)?;
                 self.set_target(slot);
-                done(format!("The target is now {}", self.body_name(slot)))
+                done(format!("{} is now a target", self.body_name(slot)))
+            }
+            "targets" => {
+                let n = args.get(1).and_then(|s| s.parse::<u32>().ok()).filter(|n| (1..=64).contains(n)).ok_or("")?;
+                let (plan, what) = match args[0].as_str() {
+                    "count" => (TargetPlan::Fixed(n), format!("{n}")),
+                    "per" => (TargetPlan::PerPlayers(n), format!("one for every {n} players")),
+                    _ => return Err(String::new()),
+                };
+                self.target_plan = plan;
+                done(format!("Set the number of targets to {what}"))
             }
             "fuel" => {
                 let who = self.select_or_me(args.first(), me)?;

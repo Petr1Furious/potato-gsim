@@ -18,4 +18,6 @@ services:
       GSIM_SET: ""              # preset parameters, e.g. "count=400, spread=80Gm" (gsim-server --list-presets)
       GSIM_TIME_SCALE: "86400"
       GSIM_ROUND_SECONDS: "600"   # 0 = endless
+      GSIM_TARGET_SECONDS: "90"   # a target nobody captures moves on after this long; 0 = never
+      GSIM_PLAYERS_PER_TARGET: "2"   # one target for every 2 players; or GSIM_TARGETS for a fixed number (not both)
       GSIM_WHITELIST: "false"     # true = only names in data/whitelist.txt may join

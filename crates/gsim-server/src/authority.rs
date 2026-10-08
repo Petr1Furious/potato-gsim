@@ -7,7 +7,7 @@ use crate::state::ServerState;
 use gsim_core::objective::orbit_status;
 use gsim_core::particle::{step_particle, swept_min_dist2};
 use gsim_core::ship::step_ship;
-use gsim_core::{math, selftest, GameRules, InputTimeline, MassiveState, Particle, Scratch, ShipState, SystemFrame, Tick};
+use gsim_core::{math, selftest, GameRules, InputTimeline, Magazine, MassiveState, MergeEvent, Particle, Scratch, ShipState, SystemFrame, Tick};
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::IpAddr;
@@ -37,10 +37,11 @@ struct Player {
     kills: u32,
     deaths: u32,
     captures: u32,
-    /// Consecutive ticks on a qualifying orbit around the objective.
-    hold: u32,
+    /// The objective it is on a qualifying orbit around, and for how many ticks in a row.
+    hold: Option<(u32, u32)>,
     respawn_tick: Option<Tick>,
     next_fire_tick: Tick,
+    magazine: Magazine,
     last_seq: u32,
     last_cmd_tick: Tick,
     fires: VecDeque<(Tick, u16, f32)>,
@@ -72,11 +73,23 @@ pub struct Stats {
     pub late_cmds: u64,
     pub cmds: u64,
     pub resyncs: u64,
-    /// Why the objective moved: its body merged into another, vanished, or stopped qualifying.
+    /// Why objectives moved: the body merged into another, vanished, stopped qualifying, or
+    /// its time ran out.
     pub target_merged: u64,
     pub target_gone: u64,
     pub target_ineligible: u64,
+    pub target_expired: u64,
     pub captures: u64,
+    pub shells_fired: u64,
+}
+
+/// How many objectives there are at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetPlan {
+    /// One for every so many players, and at least one.
+    PerPlayers(u32),
+    /// This many, however many players there are.
+    Fixed(u32),
 }
 
 pub struct Authority {
@@ -110,15 +123,15 @@ pub struct Authority {
     intermission_ticks: Tick,
     round_end_tick: Option<Tick>,
     next_round_tick: Option<Tick>,
-    target: Option<u32>,
+    /// The bodies to orbit for points.
+    objectives: Vec<Objective>,
+    pub target_plan: TargetPlan,
     progress_sent: bool,
     /// Seed for the next generated world, when an operator chose one.
     next_seed: Option<u64>,
     /// Everyone is an operator (solo play).
     pub op_all: bool,
     objective_enabled: bool,
-    /// A target should be chosen as soon as a ship is flying.
-    target_pending: bool,
 }
 
 impl Authority {
@@ -131,12 +144,12 @@ impl Authority {
             intermission_ticks: 0,
             round_end_tick: None,
             next_round_tick: None,
-            target: None,
+            objectives: Vec::new(),
+            target_plan: TargetPlan::PerPlayers(2),
             progress_sent: false,
             next_seed: None,
             op_all: false,
             objective_enabled: false,
-            target_pending: false,
             massive: MassiveState::from_bodies(&scenario.bodies),
             rules,
             stats: Stats::default(),
@@ -320,9 +333,10 @@ impl Authority {
                 kills: 0,
                 deaths: 0,
                 captures: 0,
-                hold: 0,
+                hold: None,
                 respawn_tick: Some(self.tick() + 1),
                 next_fire_tick: 0,
+                magazine: Magazine::full(self.tick(), &self.rules),
                 last_seq: 0,
                 last_cmd_tick: 0,
                 fires: VecDeque::new(),
@@ -347,7 +361,7 @@ impl Authority {
             round: self.round,
             round_end_tick: self.round_end_tick,
             next_round_tick: self.next_round_tick,
-            target: self.target,
+            objectives: self.objectives.clone(),
             rules: self.rules.clone(),
             massive: self.massive.snapshot(),
             names: self.names.clone(),
@@ -367,6 +381,7 @@ impl Authority {
                         inputs: tl.changes(),
                         respawn_tick: p.respawn_tick,
                         next_fire_tick: p.next_fire_tick,
+                        magazine: p.magazine,
                     }
                 })
                 .collect(),
@@ -432,10 +447,11 @@ impl Authority {
             cvx /= w;
             cvy /= w;
         }
-        // With an objective, spawn in a ring around it: near enough to be in the game at
+        // With objectives, spawn in a ring around one of them: near enough to be in the game at
         // once, far enough (several times the scoring band) that respawning is never a
         // shortcut to the target. Otherwise anywhere in the scenario's spawn annulus.
-        let near = self.target.filter(|t| m.alive[*t as usize]).map(|t| {
+        let nth = if self.objectives.len() > 1 { (self.rng.u64() % self.objectives.len() as u64) as usize } else { 0 };
+        let near = self.objectives.get(nth).map(|o| o.slot).filter(|t| m.alive[*t as usize]).map(|t| {
             let j = t as usize;
             let lo = (0.12 * self.spawn_r.1).max(4.0 * self.rules.orbit_max_apo_radii * m.radius[j]);
             (m.x[j], m.y[j], lo, 2.0 * lo)
@@ -498,6 +514,8 @@ impl Authority {
             let p = self.players.get_mut(&id).unwrap();
             p.ship = Some(state);
             p.respawn_tick = None;
+            // A new ship comes fully armed, as it comes fully fuelled.
+            p.magazine = Magazine::full(t, &rules);
             self.event(Event::ShipSpawn { tick: t, player: id, state });
         }
 
@@ -507,7 +525,7 @@ impl Authority {
             while p.fires.front().is_some_and(|f| f.0 <= t) {
                 let (_, angle, speed) = p.fires.pop_front().unwrap();
                 let Some(ship) = p.ship else { continue };
-                if t < p.next_fire_tick {
+                if t < p.next_fire_tick || !p.magazine.fire(t, &rules) {
                     continue;
                 }
                 p.next_fire_tick = t + rules.shell_cooldown_ticks as Tick;
@@ -527,6 +545,7 @@ impl Authority {
         for mut s in spawned {
             s.id = self.next_shell_id;
             self.next_shell_id += 1;
+            self.stats.shells_fired += 1;
             self.event(Event::ShellSpawn { tick: t, id: s.id, owner: s.owner, p: s.p });
             self.shells.push(s);
         }
@@ -592,7 +611,7 @@ impl Authority {
             if let Some(p) = self.players.get_mut(&victim) {
                 p.ship = None;
                 p.deaths += playing_now as u32;
-                p.hold = 0;
+                p.hold = None;
                 p.respawn_tick = Some(respawn_tick);
             }
             if let Some(k) = killer.filter(|k| *k != victim && playing_now) {
@@ -603,61 +622,10 @@ impl Authority {
             self.event(Event::ShipDied { tick: next, player: victim, killer, body, respawn_tick });
         }
 
-        // --- objective and rounds ---
+        // --- objectives and rounds ---
         let playing = self.next_round_tick.is_none();
-        if self.target_pending && playing {
-            self.pick_target(next, true);
-        }
-        // The objective follows its body into whatever absorbed it.
-        let merged_into = self.target.and_then(|old| merges.iter().find(|e| e.absorbed.contains(&old))).and_then(|e| e.survivor);
-        if let Some(survivor) = merged_into {
-            self.target = Some(survivor);
-            self.stats.target_merged += 1;
-            self.event(Event::Objective { tick: next, target: Some(survivor) });
-        }
-        // Re-pick if the target is gone (annihilated or escaped), or (checked once a second) is
-        // drifting out of play.
-        let lost = self.target.is_some_and(|s| {
-            let j = s as usize;
-            !self.massive.alive[j]
-                || (next % rules.tick_hz as Tick == 0 && {
-                    let view = self.massive.kinematics();
-                    let out = !self.target_eligible(&SystemFrame::of(&view), j, 0.5, false);
-                    self.stats.target_ineligible += out as u64;
-                    out
-                })
-        });
-        if lost {
-            self.stats.target_gone += self.target.is_some_and(|s| !self.massive.alive[s as usize]) as u64;
-            self.pick_target(next, true);
-        }
-        if let (true, Some(slot)) = (playing, self.target) {
-            let j = slot as usize;
-            let m = &self.massive;
-            let body = Particle { x: m.x[j], y: m.y[j], vx: m.vx[j], vy: m.vy[j] };
-            let (mass, radius) = (m.mass[j], m.radius[j]);
-            let mut winner = None;
-            for p in self.players.values_mut() {
-                let ok = p.ship.is_some_and(|s| orbit_status(&s.p, &body, mass, radius, &rules).ok);
-                p.hold = if ok { p.hold + 1 } else { 0 };
-                if p.hold >= rules.hold_ticks && winner.is_none() {
-                    winner = Some(p.id);
-                }
-            }
-            if let Some(id) = winner {
-                if let Some(p) = self.players.get_mut(&id) {
-                    p.captures += 1;
-                }
-                self.stats.captures += 1;
-                self.event(Event::Captured { tick: next, player: id, target: slot });
-                self.pick_target(next, true);
-            }
-            let any = self.players.values().any(|p| p.hold > 0);
-            if next % 10 == 0 && (any || self.progress_sent) {
-                let holds = self.players.values().filter(|p| p.hold > 0).map(|p| (p.id, p.hold)).collect();
-                self.send(Target::All, ServerMsg::Progress { holds });
-                self.progress_sent = any;
-            }
+        if self.objective_enabled {
+            self.tend_objectives(next, &merges, playing);
         }
         if playing && self.round_end_tick.is_some_and(|e| next >= e) {
             let next_round_tick = next + self.intermission_ticks.max(1);
@@ -701,8 +669,18 @@ impl Authority {
         self.players.get(&player).map(|p| p.captures)
     }
 
-    pub fn target(&self) -> Option<u32> {
-        self.target
+    /// The bodies that are objectives right now.
+    pub fn targets(&self) -> Vec<u32> {
+        self.objectives.iter().map(|o| o.slot).collect()
+    }
+
+    /// Ticks the objective on this body has left.
+    pub fn target_left(&self, slot: u32) -> Option<u32> {
+        self.objectives.iter().find(|o| o.slot == slot).map(|o| o.left)
+    }
+
+    pub fn shells_left(&self, player: PlayerId) -> Option<u32> {
+        self.players.get(&player).map(|p| p.magazine.at(self.tick(), &self.rules))
     }
 
     pub fn round(&self) -> u32 {
@@ -720,9 +698,11 @@ impl Authority {
     /// Place a player's ship (announced to everyone as a fresh spawn at the current tick).
     pub fn place_ship(&mut self, player: PlayerId, state: ShipState) {
         let tick = self.tick();
+        let magazine = Magazine::full(tick, &self.rules);
         if let Some(p) = self.players.get_mut(&player) {
             p.ship = Some(state);
             p.respawn_tick = None;
+            p.magazine = magazine;
             self.event(Event::ShipSpawn { tick, player, state });
         }
     }
@@ -744,47 +724,158 @@ impl Authority {
         }
     }
 
-    /// Turn the objective on (it starts off so that bare test worlds stay quiet).
+    /// Turn the objectives on (they start off so that bare test worlds stay quiet).
     pub fn enable_objective(&mut self) {
         self.objective_enabled = true;
-        let tick = self.tick();
-        self.pick_target(tick, true);
     }
 
-    /// Move the objective to a heavy body near the players; stars are skipped when anything
-    /// else exists.
-    fn pick_target(&mut self, tick: Tick, announce: bool) {
-        for p in self.players.values_mut() {
-            p.hold = 0;
+    /// How many objectives there should be right now.
+    fn targets_wanted(&self) -> usize {
+        match self.target_plan {
+            TargetPlan::PerPlayers(each) => (self.players.len() / each.max(1) as usize).max(1),
+            TargetPlan::Fixed(count) => count as usize,
         }
+    }
+
+    /// Once a tick: objectives follow merged bodies; they give way when their body is lost,
+    /// when somebody captures them and when their time runs out; and there are kept as many
+    /// of them as are wanted.
+    fn tend_objectives(&mut self, tick: Tick, merges: &[MergeEvent], playing: bool) {
+        let rules = self.rules.clone();
+        let before = self.targets();
+        // Given up this tick: not to be chosen again at once.
+        let mut dropped: Vec<u32> = Vec::new();
+
+        // An objective follows its body into whatever absorbed it, and takes with it the
+        // time anybody has held.
+        for k in 0..self.objectives.len() {
+            let old = self.objectives[k].slot;
+            let Some(survivor) = merges.iter().find(|e| e.absorbed.contains(&old)).and_then(|e| e.survivor) else { continue };
+            self.objectives[k].slot = survivor;
+            self.stats.target_merged += 1;
+            for p in self.players.values_mut() {
+                p.hold = p.hold.map(|(slot, held)| (if slot == old { survivor } else { slot }, held));
+            }
+        }
+        // Gone (annihilated or escaped), or (checked once a second) drifting out of play, or
+        // the same body as another objective after a merge.
+        let check = tick % rules.tick_hz as Tick == 0;
+        let frame = SystemFrame::of(&self.massive.kinematics());
+        for k in (0..self.objectives.len()).rev() {
+            let slot = self.objectives[k].slot;
+            let gone = !self.massive.alive[slot as usize];
+            let out = !gone && check && !self.target_eligible(&frame, slot as usize, 0.5, false);
+            let twice = self.objectives[..k].iter().any(|o| o.slot == slot);
+            if gone || out || twice {
+                self.stats.target_gone += gone as u64;
+                self.stats.target_ineligible += out as u64;
+                self.objectives.remove(k);
+                dropped.push(slot);
+            }
+        }
+
+        if playing {
+            // Who is on a qualifying orbit around which objective, and for how long by now.
+            let bodies: Vec<(u32, Particle, f64, f64)> = {
+                let m = &self.massive;
+                self.objectives.iter().map(|o| o.slot as usize).map(|j| (j as u32, Particle { x: m.x[j], y: m.y[j], vx: m.vx[j], vy: m.vy[j] }, m.mass[j], m.radius[j])).collect()
+            };
+            let mut captured: Vec<(PlayerId, u32)> = Vec::new();
+            for p in self.players.values_mut() {
+                let around = |slot: u32| {
+                    let body = bodies.iter().find(|b| b.0 == slot);
+                    p.ship.zip(body).is_some_and(|(ship, b)| orbit_status(&ship.p, &b.1, b.2, b.3, &rules).ok)
+                };
+                // A ship close enough to two at once stays with the one it was holding.
+                let on = p.hold.map(|h| h.0).filter(|slot| around(*slot)).or_else(|| bodies.iter().map(|b| b.0).find(|slot| around(*slot)));
+                p.hold = on.map(|slot| (slot, p.hold.filter(|h| h.0 == slot).map_or(1, |h| h.1 + 1)));
+                if let Some((slot, held)) = p.hold {
+                    if held >= rules.hold_ticks && !captured.iter().any(|c| c.1 == slot) {
+                        captured.push((p.id, slot));
+                    }
+                }
+            }
+            for (id, slot) in captured {
+                if let Some(p) = self.players.get_mut(&id) {
+                    p.captures += 1;
+                }
+                self.stats.captures += 1;
+                self.event(Event::Captured { tick, player: id, target: slot });
+                self.objectives.retain(|o| o.slot != slot);
+                dropped.push(slot);
+            }
+            // Time runs out for an objective, except while somebody is circling it.
+            if rules.target_ticks > 0 {
+                let held: Vec<u32> = self.players.values().filter_map(|p| p.hold.map(|h| h.0)).collect();
+                for o in self.objectives.iter_mut().filter(|o| !held.contains(&o.slot)) {
+                    o.left = o.left.saturating_sub(1);
+                }
+                for o in self.objectives.iter().filter(|o| o.left == 0) {
+                    self.stats.target_expired += 1;
+                    dropped.push(o.slot);
+                }
+                self.objectives.retain(|o| o.left > 0);
+            }
+        }
+        // Nobody holds what is no longer an objective.
+        let slots = self.targets();
+        for p in self.players.values_mut() {
+            p.hold = p.hold.filter(|h| slots.contains(&h.0));
+        }
+
+        // As many as are wanted: too many lose the one with the least time left that nobody
+        // is circling, too few get another body (once somebody is flying to choose it by).
+        let wanted = self.targets_wanted();
+        while self.objectives.len() > wanted {
+            let held: Vec<u32> = self.players.values().filter_map(|p| p.hold.map(|h| h.0)).collect();
+            let free = (0..self.objectives.len()).filter(|k| !held.contains(&self.objectives[*k].slot)).min_by_key(|k| self.objectives[*k].left);
+            self.objectives.remove(free.unwrap_or(self.objectives.len() - 1));
+        }
+        while playing && self.objectives.len() < wanted {
+            let Some(slot) = self.choose_target(&dropped) else { break };
+            self.objectives.push(Objective { slot, left: rules.target_ticks });
+        }
+
+        if self.targets() != before {
+            let objectives = self.objectives.clone();
+            self.event(Event::Objectives { tick, objectives });
+        }
+        // How things stand, a few times a second (and once more when there is nothing left).
+        if playing && tick % 10 == 0 && (!self.objectives.is_empty() || self.progress_sent) {
+            let holds = self.players.values().filter_map(|p| p.hold.map(|(slot, held)| (p.id, slot, held))).collect();
+            let objectives = self.objectives.clone();
+            self.send(Target::All, ServerMsg::Progress { objectives, holds });
+            self.progress_sent = !self.objectives.is_empty();
+        }
+    }
+
+    /// A heavy body near the players that is not an objective already (and not one of
+    /// `avoid`, if there is anything else); stars are skipped when anything else exists.
+    /// `None` while nobody is flying: there is nobody to choose it for.
+    fn choose_target(&mut self, avoid: &[u32]) -> Option<u32> {
         // Where the players are: the next target should be within reach of them.
         let ships: Vec<Particle> = self.players.values().filter_map(|p| p.ship.map(|s| s.p)).collect();
         if ships.is_empty() {
-            // Nobody is flying right now; choose once somebody is.
-            if announce && self.target.is_some() {
-                self.event(Event::Objective { tick, target: None });
-            }
-            self.target = None;
-            self.target_pending = true;
-            return;
+            return None;
         }
         let n = ships.len() as f64;
         let (cx, cy) = (ships.iter().map(|s| s.x).sum::<f64>() / n, ships.iter().map(|s| s.y).sum::<f64>() / n);
+        let taken = self.targets();
         // Only bodies that are part of the system: inside the core region and not on their way out.
         // (slot, mass, squared distance from the players)
         let mut cands: Vec<(u32, f64, f64)> = {
             let view = self.massive.kinematics();
             let frame = SystemFrame::of(&view);
             (0..view.x.len())
-                .filter(|&j| self.target_eligible(&frame, j, 0.35, true))
+                .filter(|&j| !taken.contains(&(j as u32)) && self.target_eligible(&frame, j, 0.35, true))
                 .map(|j| (j as u32, view.mass[j], (view.x[j] - cx) * (view.x[j] - cx) + (view.y[j] - cy) * (view.y[j] - cy)))
                 .collect()
         };
         if cands.iter().any(|c| c.1 < 1.0e29) {
             cands.retain(|c| c.1 < 1.0e29);
         }
-        if cands.len() > 1 {
-            cands.retain(|c| Some(c.0) != self.target);
+        if cands.iter().any(|c| !avoid.contains(&c.0)) {
+            cands.retain(|c| !avoid.contains(&c.0));
         }
         // The heavier half: their orbits are roomy enough to fly.
         cands.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -793,12 +884,7 @@ impl Authority {
         // Then one of the few closest to the players, so it is not always the very nearest.
         cands.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.cmp(&b.0)));
         cands.truncate(3);
-        let target = if cands.is_empty() { None } else { Some(cands[(self.rng.u64() % cands.len() as u64) as usize].0) };
-        if announce && (target.is_some() || self.target.is_some()) {
-            self.event(Event::Objective { tick, target });
-        }
-        self.target = target;
-        self.target_pending = false;
+        (!cands.is_empty()).then(|| cands[(self.rng.u64() % cands.len() as u64) as usize].0)
     }
 
     /// Replace the world, reset scores and hand everyone a fresh snapshot.
@@ -820,14 +906,13 @@ impl Authority {
         self.round += 1;
         self.next_round_tick = None;
         self.round_end_tick = (self.round_ticks > 0).then(|| tick + self.round_ticks);
-        self.target = None;
-        self.target_pending = self.objective_enabled;
+        self.objectives.clear();
         for p in self.players.values_mut() {
             p.ship = None;
             p.kills = 0;
             p.deaths = 0;
             p.captures = 0;
-            p.hold = 0;
+            p.hold = None;
             p.respawn_tick = Some(tick);
             p.fires.clear();
         }
@@ -869,12 +954,22 @@ impl Authority {
 }
 
 impl Authority {
-    /// Force the objective onto a body (tests).
+    /// Make a body an objective. It takes the place of the one with the least time left,
+    /// unless there is room for one more.
     pub fn set_target(&mut self, slot: u32) {
-        let tick = self.tick();
         self.objective_enabled = true;
-        self.target_pending = false;
-        self.target = Some(slot);
-        self.event(Event::Objective { tick, target: Some(slot) });
+        if self.objectives.iter().any(|o| o.slot == slot) {
+            return;
+        }
+        if self.objectives.len() >= self.targets_wanted().max(1) {
+            let soonest = (0..self.objectives.len()).min_by_key(|k| self.objectives[*k].left).unwrap_or(0);
+            let gone = self.objectives.remove(soonest).slot;
+            for p in self.players.values_mut() {
+                p.hold = p.hold.filter(|h| h.0 != gone);
+            }
+        }
+        self.objectives.push(Objective { slot, left: self.rules.target_ticks });
+        let (tick, objectives) = (self.tick(), self.objectives.clone());
+        self.event(Event::Objectives { tick, objectives });
     }
 }

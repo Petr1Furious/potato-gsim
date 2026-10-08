@@ -333,7 +333,7 @@ mod tests {
 
         // Command names: listed as soon as the slash is typed, narrowed while typing.
         assert_eq!(an("/").suggestions.len(), command::COMMANDS.len());
-        assert_eq!(an("/t").suggestions, ["/target", "/timescale", "/tp"]);
+        assert_eq!(an("/t").suggestions, ["/target", "/targets", "/timescale", "/tp"]);
         assert_eq!(analyze("/", &guest, false).suggestions, ["/help", "/list", "/msg", "/r", "/respawn"]);
         assert_eq!(an("/t").start, 0);
         // Accepting inserts the word and nothing else.

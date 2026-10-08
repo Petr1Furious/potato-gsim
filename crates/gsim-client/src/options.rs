@@ -138,11 +138,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
 /// title above and a row of buttons below.
 pub fn scrolled(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let room = (ui.ctx().screen_rect().height() - 130.0).max(120.0);
-    egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
-        // Keep clear of the scroll bar, which is drawn over the right edge.
-        let width = ui.available_width() - 14.0;
-        ui.set_width(width);
-        ui.set_max_width(width);
-        body(ui);
-    });
+    // A bar with a lane of its own: the floating kind is drawn over the right end of the rows.
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+    egui::ScrollArea::vertical().max_height(room).show(ui, body);
 }

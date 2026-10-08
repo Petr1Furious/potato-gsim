@@ -5,7 +5,7 @@ use crate::eph::Eph;
 use crate::session::Stats;
 use gsim_core::particle::step_particle;
 use gsim_core::ship::step_ship;
-use gsim_core::{math, EphRow, GameRules, InputTimeline, Particle, Scratch, ShipState, Tick};
+use gsim_core::{math, EphRow, GameRules, InputTimeline, Magazine, Particle, Scratch, ShipState, Tick};
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -133,6 +133,7 @@ pub struct PlayerRep {
     pub ship: Option<Track<ShipState>>,
     pub respawn_tick: Option<Tick>,
     pub next_fire_tick: Tick,
+    pub magazine: Magazine,
 }
 
 pub struct ShellRep {
@@ -173,10 +174,11 @@ pub struct World {
     pub round_end_tick: Option<Tick>,
     /// Set between rounds.
     pub next_round_tick: Option<Tick>,
-    /// Body to orbit for points.
-    pub target: Option<u32>,
-    /// Ticks each player has held the objective orbit (from the server, a few times a second).
-    pub holds: BTreeMap<PlayerId, u32>,
+    /// The bodies to orbit for points, with the time each has left as last heard.
+    pub objectives: Vec<Objective>,
+    /// The objective each player is on a qualifying orbit around, and for how many ticks (from
+    /// the server, a few times a second).
+    pub holds: BTreeMap<PlayerId, (u32, u32)>,
     scratch: Scratch,
 }
 
@@ -196,6 +198,7 @@ impl World {
                     ship: p.ship.map(|s| Track::new(tick, s)),
                     respawn_tick: p.respawn_tick,
                     next_fire_tick: p.next_fire_tick,
+                    magazine: p.magazine,
                 };
                 (p.id, rep)
             })
@@ -220,7 +223,7 @@ impl World {
             round: w.round,
             round_end_tick: w.round_end_tick,
             next_round_tick: w.next_round_tick,
-            target: w.target,
+            objectives: w.objectives.clone(),
             holds: BTreeMap::new(),
         }
     }
@@ -235,6 +238,10 @@ impl World {
 
     pub fn player_name(&self, id: PlayerId) -> &str {
         self.players.get(&id).map_or("?", |p| p.name.as_str())
+    }
+
+    pub fn is_target(&self, slot: u32) -> bool {
+        self.objectives.iter().any(|o| o.slot == slot)
     }
 
     pub fn body_name(&self, slot: u32) -> String {
@@ -263,6 +270,7 @@ impl World {
                     ship: None,
                     respawn_tick: None,
                     next_fire_tick: 0,
+                    magazine: Magazine::full(self.head, &self.rules),
                 });
             }
             Event::PlayerLeft { id } => {
@@ -274,6 +282,8 @@ impl World {
                 if let Some(p) = self.players.get_mut(&player) {
                     p.ship = Some(Track::new(tick, state));
                     p.respawn_tick = None;
+                    // A new ship comes fully armed.
+                    p.magazine = Magazine::full(tick, &self.rules);
                 }
             }
             Event::Input { player, tick, input } => {
@@ -295,6 +305,7 @@ impl World {
                 self.shells.insert(id, ShellRep { owner, spawn_tick: tick, track: Track::new(tick, p) });
                 if let Some(pl) = self.players.get_mut(&owner) {
                     pl.next_fire_tick = tick + self.rules.shell_cooldown_ticks as Tick;
+                    pl.magazine.fire(tick, &self.rules);
                 }
             }
             Event::ShellGone { tick, id, exploded } => {
@@ -340,12 +351,15 @@ impl World {
                 self.round_end_tick = round_end_tick;
                 self.next_round_tick = None;
             }
-            Event::Objective { tick, target } => {
-                self.target = target;
-                self.holds.clear();
-                if let Some(t) = target {
-                    self.say(tick, format!("New target: {}", self.body_name(t)));
+            Event::Objectives { tick, objectives } => {
+                for o in &objectives {
+                    if !self.is_target(o.slot) {
+                        self.say(tick, format!("New target: {}", self.body_name(o.slot)));
+                    }
                 }
+                self.objectives = objectives;
+                let slots: Vec<u32> = self.objectives.iter().map(|o| o.slot).collect();
+                self.holds.retain(|_, hold| slots.contains(&hold.0));
             }
             Event::Captured { tick, player, target } => {
                 self.say(tick, format!("{} captured {}", self.player_name(player), self.body_name(target)));

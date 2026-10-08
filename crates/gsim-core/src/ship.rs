@@ -27,6 +27,51 @@ impl ShipState {
     }
 }
 
+/// A ship's stock of shells. Each shot takes one; once the guns have been quiet for a
+/// while they come back one at a time, as delta-v does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Magazine {
+    /// Shells left right after the last shot (or when it was filled).
+    pub left: u32,
+    /// The tick of that shot.
+    pub since: Tick,
+}
+
+impl Magazine {
+    pub fn full(tick: Tick, rules: &GameRules) -> Self {
+        Self { left: rules.shell_max, since: tick }
+    }
+
+    /// Ticks towards shells coming back at `tick`: none until the delay is over.
+    fn restoring(&self, tick: Tick, rules: &GameRules) -> Tick {
+        tick.saturating_sub(self.since).saturating_sub(rules.shell_regen_delay_ticks as Tick)
+    }
+
+    /// Shells that can be fired at `tick`.
+    pub fn at(&self, tick: Tick, rules: &GameRules) -> u32 {
+        let back = self.restoring(tick, rules) / rules.shell_regen_ticks.max(1) as Tick;
+        (self.left as Tick + back).min(rules.shell_max as Tick) as u32
+    }
+
+    /// How far along the next shell is, 0 to 1 (0 while none is on its way).
+    pub fn next(&self, tick: Tick, rules: &GameRules) -> f32 {
+        let every = rules.shell_regen_ticks.max(1) as Tick;
+        if self.at(tick, rules) >= rules.shell_max {
+            return 0.0;
+        }
+        (self.restoring(tick, rules) % every) as f32 / every as f32
+    }
+
+    /// Take a shell at `tick`. False, and nothing changes, if there is none.
+    pub fn fire(&mut self, tick: Tick, rules: &GameRules) -> bool {
+        let have = self.at(tick, rules);
+        if have > 0 {
+            *self = Self { left: have - 1, since: tick };
+        }
+        have > 0
+    }
+}
+
 /// Advance a ship one tick under `input`. Fuel bookkeeping is pure integer arithmetic.
 /// Returns the slot of the body the ship crashed into, if any.
 pub fn step_ship(
@@ -95,5 +140,33 @@ impl InputTimeline {
         let current = self.at(tick);
         self.changes = self.changes.split_off(&tick);
         self.changes.entry(tick).or_insert(current);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shells_come_back_after_a_quiet_spell() {
+        let rules = GameRules::new(86400.0, 60);
+        let secs = |s: f64| (s * 60.0) as Tick;
+        let mut m = Magazine::full(0, &rules);
+        assert_eq!(m.at(secs(100.0), &rules), 10);
+        for shot in 0..10 {
+            assert!(m.fire(secs(shot as f64), &rules));
+        }
+        // Empty since the shot at 9 s: four seconds of nothing, then one every two.
+        assert!(!m.fire(secs(9.5), &rules));
+        for (after, shells) in [(3.9, 0), (5.9, 0), (6.0, 1), (7.9, 1), (8.0, 2), (23.9, 9), (24.0, 10), (500.0, 10)] {
+            assert_eq!(m.at(secs(9.0 + after), &rules), shells, "{after} s after the last shot");
+        }
+        assert_eq!(m.next(secs(9.0 + 3.0), &rules), 0.0);
+        assert_eq!(m.next(secs(9.0 + 5.0), &rules), 0.5);
+        assert_eq!(m.next(secs(9.0 + 60.0), &rules), 0.0);
+        // A shot in between starts the wait over.
+        assert!(m.fire(secs(9.0 + 7.0), &rules));
+        assert_eq!(m.at(secs(9.0 + 12.9), &rules), 0);
+        assert_eq!(m.at(secs(9.0 + 13.0), &rules), 1);
     }
 }

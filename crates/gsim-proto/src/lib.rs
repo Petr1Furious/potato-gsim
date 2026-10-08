@@ -1,11 +1,11 @@
 //! Wire protocol. The server never streams positions: it sends a snapshot once, then only
 //! tick-stamped inputs and events. Clients reproduce everything else themselves.
 
-use gsim_core::{GameRules, MassiveSnapshot, Particle, ShipInput, ShipState, Tick};
+use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipState, Tick};
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -68,6 +68,15 @@ pub struct PlayerInfo {
     pub inputs: Vec<(Tick, ShipInput)>,
     pub respawn_tick: Option<Tick>,
     pub next_fire_tick: Tick,
+    pub magazine: Magazine,
+}
+
+/// A body to orbit for points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Objective {
+    pub slot: u32,
+    /// Ticks before it moves on to another body (see `GameRules::target_ticks`).
+    pub left: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -88,8 +97,8 @@ pub struct Welcome {
     pub round_end_tick: Option<Tick>,
     /// Set between rounds: the tick at which the next world starts.
     pub next_round_tick: Option<Tick>,
-    /// Body slot to orbit for points.
-    pub target: Option<u32>,
+    /// The bodies to orbit for points.
+    pub objectives: Vec<Objective>,
     pub rules: GameRules,
     pub massive: MassiveSnapshot,
     pub names: Vec<(u32, String)>,
@@ -111,8 +120,8 @@ pub enum Event {
     Score { player: PlayerId, kills: u32, deaths: u32, captures: u32 },
     /// The round now ends at this tick (`None`: never).
     RoundClock { round_end_tick: Option<Tick> },
-    /// The objective moved to another body (or there is none).
-    Objective { tick: Tick, target: Option<u32> },
+    /// The bodies to orbit for points are now these.
+    Objectives { tick: Tick, objectives: Vec<Objective> },
     /// `player` held an orbit around `target` long enough.
     Captured { tick: Tick, player: PlayerId, target: u32 },
     /// Scores are final; a new world starts at `next_round_tick`.
@@ -139,8 +148,9 @@ pub enum ServerMsg {
     Mark { player: PlayerId, x: f64, y: f64 },
     /// Reliable: whether the receiver may use operator commands.
     Operator(bool),
-    /// Unreliable, a few times a second: ticks each player has held the objective orbit.
-    Progress { holds: Vec<(PlayerId, u32)> },
+    /// Unreliable, a few times a second: how long each objective has left, and who has held
+    /// a qualifying orbit around which body for how many ticks.
+    Progress { objectives: Vec<Objective>, holds: Vec<(PlayerId, u32, u32)> },
     /// Unreliable safety net: authoritative ship state at the start of `tick`.
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }

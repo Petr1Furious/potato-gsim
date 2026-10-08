@@ -37,6 +37,11 @@ pub struct GameRules {
     pub shell_speed_min: f64,
     pub shell_speed_max: f64,
     pub shell_cooldown_ticks: u32,
+    /// A ship carries at most this many shells. Once it has not fired for
+    /// `shell_regen_delay_ticks`, one comes back every `shell_regen_ticks`.
+    pub shell_max: u32,
+    pub shell_regen_delay_ticks: u32,
+    pub shell_regen_ticks: u32,
     pub shell_lifetime_ticks: u32,
     /// A shell cannot explode before this many ticks after launch (wind-up, applies to everyone).
     pub shell_arm_ticks: u32,
@@ -56,6 +61,9 @@ pub struct GameRules {
     pub orbit_min_peri_radii: f64,
     pub orbit_max_apo_radii: f64,
     pub capture_points: u32,
+    /// A target moves on to another body after this many ticks (0 = never). The count stands
+    /// still while a ship is on a qualifying orbit around it.
+    pub target_ticks: u32,
 }
 
 impl GameRules {
@@ -86,6 +94,9 @@ impl GameRules {
             shell_speed_min: 1000.0,
             shell_speed_max: 8000.0,
             shell_cooldown_ticks: secs(1.0),
+            shell_max: 10,
+            shell_regen_delay_ticks: secs(4.0),
+            shell_regen_ticks: secs(2.0),
             shell_lifetime_ticks: secs(10.0),
             shell_arm_ticks: secs(0.5),
             shell_blast_radius: 2.0e7,
@@ -99,6 +110,7 @@ impl GameRules {
             orbit_min_peri_radii: 1.5,
             orbit_max_apo_radii: 60.0,
             capture_points: 3,
+            target_ticks: secs(90.0),
         }
     }
 
