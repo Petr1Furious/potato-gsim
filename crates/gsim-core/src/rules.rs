@@ -60,7 +60,10 @@ pub struct GameRules {
     /// Periapsis must clear the surface by this many body radii, apoapsis must stay within.
     pub orbit_min_peri_radii: f64,
     pub orbit_max_apo_radii: f64,
+    /// A round's score: captures and kills add, deaths take away.
     pub capture_points: u32,
+    pub kill_points: u32,
+    pub death_points: u32,
     /// A target moves on to another body after this many ticks (0 = never). The count stands
     /// still while a ship is on a qualifying orbit around it.
     pub target_ticks: u32,
@@ -100,7 +103,7 @@ impl GameRules {
             shell_lifetime_ticks: secs(10.0),
             shell_arm_ticks: secs(0.5),
             shell_blast_radius: 2.0e7,
-            respawn_ticks: secs(3.0),
+            respawn_ticks: secs(5.0),
             input_delay_ticks: secs(0.1),
             max_input_lead_ticks: secs(2.0),
             hash_interval_ticks: hz,
@@ -109,9 +112,15 @@ impl GameRules {
             orbit_max_ecc: 0.5,
             orbit_min_peri_radii: 1.5,
             orbit_max_apo_radii: 60.0,
-            capture_points: 3,
+            capture_points: 5,
+            kill_points: 2,
+            death_points: 1,
             target_ticks: secs(90.0),
         }
+    }
+
+    pub fn score(&self, kills: u32, deaths: u32, captures: u32) -> i64 {
+        (self.kill_points * kills + self.capture_points * captures) as i64 - (self.death_points * deaths) as i64
     }
 
     pub fn time_scale(&self) -> f64 {

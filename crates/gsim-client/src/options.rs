@@ -88,6 +88,12 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     );
     if exact {
         style::section(ui, "FLYING");
+        ui.horizontal(|ui| {
+            ui.color_edit_button_srgb(&mut settings.ship_color);
+            ui.label("ship colour");
+        })
+        .response
+        .on_hover_text("The colour of your ship, its name and its shells, for you and for everyone else on a server.");
         ui.add(egui::Slider::new(&mut settings.burn_preview, 0.5..=20.0).suffix(" km/s").text("burn preview")).on_hover_text(
             "While you thrust, a yellow line shows where the ship would go if you kept thrusting like this. \
              It assumes the burn stops once it has spent this much delta-v, and that the ship coasts from there.",
@@ -116,6 +122,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
         style::key_row(ui, "Chat, command", "T, /");
         style::key_row(ui, "Point at the map", "G");
+        style::key_row(ui, "Self-destruct (hold)", "BACKSPACE");
     }
     if large {
         if world == World::Any {

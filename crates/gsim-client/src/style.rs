@@ -16,7 +16,6 @@ pub const EMBER: Color = Color::new(1.0, 0.47, 0.35, 1.0);
 pub const GOOD: Color = Color::new(0.45, 0.95, 0.60, 1.0);
 pub const TEXT: Color = Color::new(0.84, 0.88, 0.94, 1.0);
 pub const DIM: Color = Color::new(0.50, 0.56, 0.66, 1.0);
-pub const OWN_SHIP: Color = Color::new(1.0, 0.88, 0.59, 1.0);
 pub const OTHER_SHIP: Color = Color::new(0.51, 0.78, 1.0, 1.0);
 
 thread_local! {
@@ -25,6 +24,10 @@ thread_local! {
 
 pub fn alpha(c: Color, a: f32) -> Color {
     Color::new(c.r, c.g, c.b, c.a * a)
+}
+
+pub fn rgb(c: [u8; 3]) -> Color {
+    Color::from_rgba(c[0], c[1], c[2], 255)
 }
 
 pub fn c32(c: Color) -> egui::Color32 {

@@ -118,6 +118,12 @@ pub struct Game {
     _solo: Option<Solo>,
     view: View,
     settings_dirty: bool,
+    /// The ship colour the server knows about.
+    color_sent: [u8; 3],
+    /// Since when the self-destruct key has been held (`None` again once it has fired,
+    /// until the key is let go).
+    destruct: Option<f64>,
+    destruct_done: bool,
     view_ready: bool,
     zoomed_for_ship: bool,
     had_ship: bool,
@@ -162,11 +168,14 @@ pub(crate) const PICK_RADIUS_PX: f32 = 26.0;
 pub(crate) const TURN_RATE: f64 = 2.85;
 /// Font size of labels drawn in the world, before marker scaling.
 pub(crate) const LABEL: f32 = 12.0;
+/// Seconds the self-destruct key has to be held.
+const DESTRUCT_HOLD: f64 = 1.5;
 
 impl Game {
     pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32) -> Result<Self, String> {
         let cfg = SessionConfig {
             name: settings.name.clone(),
+            color: settings.ship_color,
             identity: settings.identity(),
             threaded_eph: true,
             // Tick rate is only known after joining; 60 Hz is the server default.
@@ -178,6 +187,9 @@ impl Game {
             _solo: solo,
             view: View { cx: 0.0, cy: 0.0, mpp: 1.0e9 },
             settings_dirty: false,
+            color_sent: settings.ship_color,
+            destruct: None,
+            destruct_done: false,
             view_ready: false,
             zoomed_for_ship: false,
             had_ship: false,
@@ -344,6 +356,18 @@ impl Game {
                 let (angle, speed) = self.shell_aim(&ship, (mwx, mwy));
                 controls.fire = Some((angle, speed as f32));
             }
+        }
+        // Held long enough, the self-destruct key gives the ship up, once per press.
+        let held = keys && is_key_down(KeyCode::Backspace) && self.net.session.world.as_ref().is_some_and(|w| w.my_ship().is_some());
+        self.destruct_done &= is_key_down(KeyCode::Backspace);
+        self.destruct = if held && !self.destruct_done { self.destruct.or(Some(get_time())) } else { None };
+        if self.destruct.is_some_and(|t| get_time() - t >= DESTRUCT_HOLD) {
+            self.net.session.send_chat("/respawn");
+            (self.destruct, self.destruct_done) = (None, true);
+        }
+        if settings.ship_color != self.color_sent && !is_mouse_button_down(MouseButton::Left) {
+            self.color_sent = settings.ship_color;
+            self.net.session.set_color(self.color_sent);
         }
 
         self.net.update(controls);
@@ -830,9 +854,9 @@ impl Game {
         let t0 = tick_f.floor() as Tick;
         if !settings.trails {
             let span = (2.5 * world.rules.tick_hz as f64) as Tick;
-            for (id, p) in &world.players {
+            for p in world.players.values() {
                 let Some(track) = p.ship.as_ref() else { continue };
-                let color = if *id == world.my_id { style::OWN_SHIP } else { style::OTHER_SHIP };
+                let color = style::rgb(p.color);
                 let newest = t0.min(track.end());
                 let oldest = newest.saturating_sub(span).max(track.base);
                 let mut prev: Option<(f32, f32)> = None;
@@ -874,7 +898,7 @@ impl Game {
             // Our own heading is shown instantly; the simulation follows a few ticks later.
             let facing = if mine { self.heading } else { math::angle_to_radians(input.angle) };
             let fuel = p.ship.as_ref().map_or(0, |t| t.last().fuel);
-            let color = if mine { style::OWN_SHIP } else { style::OTHER_SHIP };
+            let color = style::rgb(p.color);
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
             if !mine {
                 labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Pilot);
@@ -975,10 +999,10 @@ impl Game {
         let reloading = fire_ready as f64 > tick_f;
         let shells_max = world.rules.shell_max;
         let (shells, next_shell) = me.map_or((0, 0.0), |m| (m.magazine.at(tick_f as Tick, &world.rules), m.magazine.next(tick_f as Tick, &world.rules)));
-        let mut scores: Vec<(String, u32, u32, u32, u32, bool)> = world
+        let mut scores: Vec<(String, i64, u32, u32, u32, bool, Color)> = world
             .players
             .iter()
-            .map(|(id, p)| (p.name.clone(), p.score(&world.rules), p.kills, p.deaths, p.captures, *id == world.my_id))
+            .map(|(id, p)| (p.name.clone(), p.score(&world.rules), p.kills, p.deaths, p.captures, *id == world.my_id, style::rgb(p.color)))
             .collect();
         scores.sort_by(|a, b| b.1.cmp(&a.1).then(a.3.cmp(&b.3)));
         let secs = |t: Tick| (t as f64 - tick_f).max(0.0) / world.rules.tick_hz as f64;
@@ -987,11 +1011,12 @@ impl Game {
         let hold_goal = world.rules.hold_ticks as f32;
         let on_target = |h: &(u32, u32)| objective.is_some_and(|t| t.slot == h.0);
         let my_hold = world.holds.get(&world.my_id).filter(|h| on_target(h)).map_or(0, |h| h.1) as f32 / hold_goal;
-        let rivals: Vec<(String, f32)> = world
+        let destruct = self.destruct.map(|t| ((get_time() - t) / DESTRUCT_HOLD) as f32);
+        let rivals: Vec<(String, f32, Color)> = world
             .holds
             .iter()
             .filter(|(id, h)| **id != world.my_id && on_target(h))
-            .map(|(id, h)| (world.player_name(*id).to_string(), h.1 as f32 / hold_goal))
+            .map(|(id, h)| (world.player_name(*id).to_string(), h.1 as f32 / hold_goal, style::rgb(world.players[id].color)))
             .collect();
         let target_name = objective.map(|t| world.body_name(t.slot));
         // For each target: the time left, that as a share of the whole, and whether somebody
@@ -1122,8 +1147,8 @@ impl Game {
                             time(ui, if t.2 { "TIME · HELD" } else { "TIME" }, t);
                         }
                         style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
-                        for (rival, frac) in &rivals {
-                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, style::OTHER_SHIP);
+                        for (rival, frac, colour) in &rivals {
+                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, *colour);
                         }
                         if !others.is_empty() {
                             style::section(ui, "OTHER TARGETS");
@@ -1147,10 +1172,10 @@ impl Game {
                             style::caption(ui, head);
                         }
                         ui.end_row();
-                        for (name, score, k, d, caps, mine) in &scores {
-                            let colour = if *mine { style::c32(style::OWN_SHIP) } else { style::c32(style::TEXT) };
-                            ui.label(RichText::new(name).color(colour));
-                            ui.label(RichText::new(score.to_string()).color(colour).strong());
+                        for (name, score, k, d, caps, mine, colour) in &scores {
+                            let name = RichText::new(name).color(style::c32(*colour));
+                            ui.label(if *mine { name.underline() } else { name });
+                            ui.label(RichText::new(score.to_string()).color(style::c32(style::TEXT)).strong());
                             for n in [caps, k, d] {
                                 ui.label(RichText::new(n.to_string()).color(dim));
                             }
@@ -1186,6 +1211,26 @@ impl Game {
                     }
                 });
             });
+
+            // Centre: the self-destruct key filling its ring.
+            if let Some(frac) = destruct {
+                Area::new(Id::new("destruct")).anchor(Align2::CENTER_CENTER, [0.0, 90.0]).interactable(false).show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
+                        let (c, r) = (rect.center(), 19.0);
+                        ui.painter().circle_stroke(c, r, egui::Stroke::new(4.0, egui::Color32::from_rgb(24, 32, 46)));
+                        // Clockwise from the top.
+                        let arc: Vec<egui::Pos2> = (0..=48)
+                            .map(|k| k as f32 / 48.0 * frac.clamp(0.0, 1.0) * std::f32::consts::TAU)
+                            .map(|a| c + r * egui::vec2(a.sin(), -a.cos()))
+                            .collect();
+                        ui.painter().add(egui::Shape::line(arc, egui::Stroke::new(4.0, bad)));
+                        let left = (1.0 - frac).max(0.0) as f64 * DESTRUCT_HOLD;
+                        ui.painter().text(c, Align2::CENTER_CENTER, format!("{left:.1}"), egui::FontId::proportional(13.0), bad);
+                        ui.label(RichText::new("SELF-DESTRUCT").small().color(bad).extra_letter_spacing(2.0));
+                    });
+                });
+            }
 
             chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
             if menu {

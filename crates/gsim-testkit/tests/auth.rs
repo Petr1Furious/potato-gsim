@@ -64,7 +64,7 @@ fn a_forged_signature_is_refused() {
     let (claimed, actual) = (Identity::generate(), Identity::generate());
     let conn = 777;
     sim.server.connected(conn, None);
-    let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, golden: gsim_core::selftest::GOLDEN, name: "mallory".into(), key: claimed.public() };
+    let hello = ClientMsg::Hello { protocol: PROTOCOL_VERSION, golden: gsim_core::selftest::GOLDEN, name: "mallory".into(), key: claimed.public(), color: [0; 3] };
     sim.server.handle(conn, hello, 0.0);
     let nonce = sim
         .server

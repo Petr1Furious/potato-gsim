@@ -31,6 +31,7 @@ pub struct Outgoing {
 struct Player {
     id: PlayerId,
     name: String,
+    color: [u8; 3],
     ship: Option<ShipState>,
     /// Belongs to the player, not the ship: held controls survive a respawn.
     timeline: InputTimeline,
@@ -57,6 +58,7 @@ struct Player {
 struct PendingJoin {
     name: String,
     key: [u8; 32],
+    color: [u8; 3],
     nonce: [u8; 32],
 }
 
@@ -245,7 +247,14 @@ impl Authority {
             ClientMsg::Ping { client_time } => {
                 self.send(Target::One(conn), ServerMsg::Pong { client_time, server_tick: tick_frac });
             }
-            ClientMsg::Hello { protocol, golden, name, key } => self.hello(conn, protocol, golden, name, key),
+            ClientMsg::Hello { protocol, golden, name, key, color } => self.hello(conn, protocol, golden, name, key, color),
+            ClientMsg::Color(color) => {
+                if let Some(p) = self.by_conn.get(&conn).and_then(|id| self.players.get_mut(id)) {
+                    p.color = color;
+                    let id = p.id;
+                    self.event(Event::PlayerColor { id, color });
+                }
+            }
             ClientMsg::Auth { signature } => self.auth(conn, signature),
             ClientMsg::Chat { text } => self.chat(conn, text),
             ClientMsg::Mark { x, y } => self.mark(conn, x, y),
@@ -268,7 +277,7 @@ impl Authority {
     }
 
     /// Step one of joining: basic checks, then challenge the announced key.
-    fn hello(&mut self, conn: ConnId, protocol: u32, golden: u64, name: String, key: [u8; 32]) {
+    fn hello(&mut self, conn: ConnId, protocol: u32, golden: u64, name: String, key: [u8; 32], color: [u8; 3]) {
         if self.by_conn.contains_key(&conn) {
             return;
         }
@@ -292,13 +301,13 @@ impl Authority {
             return self.reject(conn, reason);
         }
         let nonce = identity::random_bytes();
-        self.pending.insert(conn, PendingJoin { name, key, nonce });
+        self.pending.insert(conn, PendingJoin { name, key, color, nonce });
         self.send(Target::One(conn), ServerMsg::Challenge { nonce });
     }
 
     /// Step two: the signature proves the key; the name is then theirs for good.
     fn auth(&mut self, conn: ConnId, signature: Vec<u8>) {
-        let Some(PendingJoin { name, key, nonce }) = self.pending.remove(&conn) else { return };
+        let Some(PendingJoin { name, key, color, nonce }) = self.pending.remove(&conn) else { return };
         if !identity::verify(&key, &nonce, &name, &signature) {
             return self.reject(conn, "identity check failed".to_string());
         }
@@ -322,12 +331,13 @@ impl Authority {
         self.next_player_id += 1;
         // Everyone already here learns about the newcomer; the newcomer learns everything
         // (itself included) from the snapshot.
-        self.event(Event::PlayerJoined { id, name: name.clone() });
+        self.event(Event::PlayerJoined { id, name: name.clone(), color });
         self.players.insert(
             id,
             Player {
                 id,
                 name,
+                color,
                 ship: None,
                 timeline: InputTimeline::new(),
                 kills: 0,
@@ -374,6 +384,7 @@ impl Authority {
                     PlayerInfo {
                         id: p.id,
                         name: p.name.clone(),
+                        color: p.color,
                         kills: p.kills,
                         deaths: p.deaths,
                         captures: p.captures,

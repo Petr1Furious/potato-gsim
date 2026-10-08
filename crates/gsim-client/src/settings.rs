@@ -33,6 +33,8 @@ pub struct Settings {
     pub preset: String,
     pub mouse_aim: bool,
     pub fullscreen: bool,
+    /// The colour of our ship, as other players see it too.
+    pub ship_color: [u8; 3],
     /// Multiplier on top of the automatic, window-height-proportional UI size.
     pub ui_scale: f32,
     /// Zoom steps per unit of mouse-wheel delta.
@@ -61,7 +63,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ui_scale: 1.2, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, camera: Camera::Selection, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ship_color: random_color(), ui_scale: 1.2, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, camera: Camera::Selection, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -88,7 +90,7 @@ impl Settings {
 impl Settings {
     pub fn load() -> Self {
         let mut s = Self::default();
-        let Some(text) = path().and_then(|p| std::fs::read_to_string(p).ok()) else { return s };
+        let text = path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
@@ -98,6 +100,7 @@ impl Settings {
                 "preset" if !v.is_empty() => s.preset = v.to_string(),
                 "mouse_aim" => s.mouse_aim = v != "0",
                 "fullscreen" => s.fullscreen = v == "1",
+                "ship_color" => s.ship_color = u32::from_str_radix(v, 16).map_or(s.ship_color, |c| [(c >> 16) as u8, (c >> 8) as u8, c as u8]),
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
                 "burn_preview" => s.burn_preview = v.parse().unwrap_or(s.burn_preview).clamp(0.1, 100.0),
@@ -130,6 +133,10 @@ impl Settings {
                 }
             }
         }
+        if !text.lines().any(|l| l.starts_with("ship_color=")) {
+            // The colour picked at random the first time stays.
+            s.save();
+        }
         s
     }
 
@@ -154,6 +161,7 @@ impl Settings {
             text.push_str(&format!("{key}={}\n", on as u8));
         }
         text.push_str(&format!("color={}\n", self.color.name()));
+        text.push_str(&format!("ship_color={}\n", gsim_proto::identity::to_hex(&self.ship_color)));
         text.push_str(&format!("camera={}\n", self.camera.name()));
         for (world, params) in &self.params {
             for (key, value) in params {
@@ -165,6 +173,22 @@ impl Settings {
         }
         let _ = std::fs::write(p, text);
     }
+}
+
+/// A bright colour of any hue.
+fn random_color() -> [u8; 3] {
+    let hue = gsim_proto::identity::random_bytes()[0] as f32 / 256.0 * 6.0;
+    // One channel full, one at the floor, one in between.
+    let (lo, mid) = (90.0, 90.0 + 165.0 * (1.0 - (hue % 2.0 - 1.0).abs()));
+    let (r, g, b) = match hue as u32 {
+        0 => (255.0, mid, lo),
+        1 => (mid, 255.0, lo),
+        2 => (lo, 255.0, mid),
+        3 => (lo, mid, 255.0),
+        4 => (mid, lo, 255.0),
+        _ => (255.0, lo, mid),
+    };
+    [r as u8, g as u8, b as u8]
 }
 
 /// macOS reports scroll deltas in points (tens per gesture frame); elsewhere one wheel

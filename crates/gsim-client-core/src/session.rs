@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     pub name: String,
+    /// The colour our ship is drawn in.
+    pub color: [u8; 3],
     /// The key that proves who we are; the server ties our name to it.
     pub identity: Identity,
     /// Compute the ephemeris on a worker thread (GUI) or inline (tests, bots).
@@ -22,7 +24,7 @@ pub struct SessionConfig {
 
 impl SessionConfig {
     pub fn headless(name: &str) -> Self {
-        Self { name: name.into(), identity: Identity::insecure_from_label(name), threaded_eph: false, lookahead_ticks: 8, inline_budget: 4000 }
+        Self { name: name.into(), color: [255, 255, 255], identity: Identity::insecure_from_label(name), threaded_eph: false, lookahead_ticks: 8, inline_budget: 4000 }
     }
 }
 
@@ -84,6 +86,7 @@ impl Session {
             golden: selftest::compute(),
             name: clean_name(&cfg.name),
             key: cfg.identity.public(),
+            color: cfg.color,
         };
         Self {
             cfg,
@@ -357,6 +360,11 @@ impl Session {
         if !text.is_empty() {
             self.out.push(ClientMsg::Chat { text });
         }
+    }
+
+    /// Have our ship drawn in another colour.
+    pub fn set_color(&mut self, color: [u8; 3]) {
+        self.out.push(ClientMsg::Color(color));
     }
 
     /// Point at a spot on the map for everyone.

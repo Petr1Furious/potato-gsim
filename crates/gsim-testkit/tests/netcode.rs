@@ -142,7 +142,7 @@ fn shell_destroys_target_and_victim_respawns() {
         assert!(w.players[&pb].respawn_tick.is_some());
         assert!(c.session.chat.iter().any(|l| l.text == "ann destroyed bob"), "{:?}", c.session.chat);
     }
-    sim.run_with(3.0, idle);
+    sim.run_with(5.0, idle);
     assert!(sim.server.ship(pb).is_some(), "victim respawned");
     assert_eq!(sim.server.shell_count(), 0);
     sim.ships_agree().unwrap();
@@ -210,7 +210,7 @@ fn holding_an_orbit_captures_the_target() {
     for c in &sim.clients {
         let w = c.session.world.as_ref().unwrap();
         assert_eq!(w.players[&pa].captures, 1);
-        assert_eq!(w.players[&pa].score(&w.rules), rules.capture_points);
+        assert_eq!(w.players[&pa].score(&w.rules), rules.capture_points as i64);
         assert!(c.session.chat.iter().any(|l| l.text == "ann captured Star"), "{:?}", c.session.chat);
     }
     sim.ships_agree().unwrap();
@@ -354,7 +354,7 @@ fn ships_spawn_near_the_target_but_not_on_top_of_it() {
         assert!(d < 0.6e11, "life {life}: {d:e} m is nowhere near the target");
         // Die (crash into the star) and come back.
         sim.server.place_ship(pa, ShipState::new(Particle { x: 6.0e9, y: 0.0, vx: -2.0e5, vy: 0.0 }, &rules));
-        sim.run_with(4.5, idle);
+        sim.run_with(6.5, idle);
     }
     sim.ships_agree().unwrap();
 }
@@ -451,7 +451,7 @@ fn a_new_ship_has_all_its_shells() {
     sim.server.place_ship(pa, ShipState::new(Particle { x: 6.0e9, y: 0.0, vx: -2.0e5, vy: 0.0 }, &rules));
     sim.run_with(1.0, firing);
     assert_eq!(sim.server.score(pa), Some((0, 1)));
-    sim.run_with(3.5, idle);
+    sim.run_with(5.5, idle);
     assert!(sim.server.ship(pa).is_some(), "respawned");
     assert_eq!(sim.server.shells_left(pa), Some(rules.shell_max));
     assert_eq!(shells_seen(&sim, a), rules.shell_max);
@@ -576,4 +576,44 @@ fn the_two_ways_of_counting_targets_do_not_mix() {
     assert_eq!(build_authority(&opts(Some(3), None)).unwrap().target_plan, TargetPlan::PerPlayers(3));
     assert_eq!(build_authority(&opts(None, Some(4))).unwrap().target_plan, TargetPlan::Fixed(4));
     assert!(build_authority(&opts(Some(3), Some(4))).is_err());
+}
+
+#[test]
+fn deaths_cost_a_point_and_scores_can_go_below_zero() {
+    let rules = gsim_core::GameRules::new(86400.0, 60);
+    assert_eq!(rules.score(1, 0, 0), 2);
+    assert_eq!(rules.score(0, 0, 1), 5);
+    assert_eq!(rules.score(3, 4, 2), 3 * 2 + 2 * 5 - 4);
+    assert_eq!(rules.respawn_ticks, 5 * 60);
+
+    let mut sim = Sim::new(quiet_scenario(), 90);
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    let pa = sim.player_id(a).unwrap();
+    sim.clients[a].session.send_chat("/respawn");
+    sim.run_with(4.5, idle);
+    assert!(sim.server.ship(pa).is_none(), "not back before five seconds");
+    let w = sim.clients[a].session.world.as_ref().unwrap();
+    assert_eq!(w.players[&pa].score(&w.rules), -1);
+    sim.run_with(1.0, idle);
+    assert!(sim.server.ship(pa).is_some());
+}
+
+#[test]
+fn everyone_sees_a_ships_colour_and_its_changes() {
+    let mut sim = Sim::new(quiet_scenario(), 91);
+    let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    let b = sim.add_client("bob", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    let pa = sim.player_id(a).unwrap();
+    let seen = |sim: &Sim, c: usize| sim.clients[c].session.world.as_ref().unwrap().players[&pa].color;
+    // What the join announced, to those already there and to those who came later.
+    assert_eq!((seen(&sim, a), seen(&sim, b)), ([255, 255, 255], [255, 255, 255]));
+    sim.clients[a].session.set_color([10, 200, 30]);
+    sim.run_with(0.5, idle);
+    assert_eq!((seen(&sim, a), seen(&sim, b)), ([10, 200, 30], [10, 200, 30]));
+    let c = sim.add_client("cat", Link::new(20.0, 0.0, 0.0));
+    sim.run_with(1.0, idle);
+    assert_eq!(seen(&sim, c), [10, 200, 30]);
 }

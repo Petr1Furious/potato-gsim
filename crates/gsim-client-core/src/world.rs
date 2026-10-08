@@ -126,6 +126,7 @@ fn sample<S: Copy>(track: &Track<S>, tick_f: f64, p: impl Fn(&S) -> Particle, dt
 
 pub struct PlayerRep {
     pub name: String,
+    pub color: [u8; 3],
     pub kills: u32,
     pub deaths: u32,
     pub captures: u32,
@@ -191,6 +192,7 @@ impl World {
             .map(|p| {
                 let rep = PlayerRep {
                     name: p.name.clone(),
+                    color: p.color,
                     kills: p.kills,
                     deaths: p.deaths,
                     captures: p.captures,
@@ -259,10 +261,11 @@ impl World {
     /// replay of the affected entity only) or in our future.
     pub fn apply_event(&mut self, e: Event, stats: &mut Stats) {
         match e {
-            Event::PlayerJoined { id, name } => {
+            Event::PlayerJoined { id, name, color } => {
                 self.say(self.head, format!("{name} joined the game"));
                 self.players.entry(id).or_insert(PlayerRep {
                     name,
+                    color,
                     kills: 0,
                     deaths: 0,
                     captures: 0,
@@ -272,6 +275,11 @@ impl World {
                     next_fire_tick: 0,
                     magazine: Magazine::full(self.head, &self.rules),
                 });
+            }
+            Event::PlayerColor { id, color } => {
+                if let Some(p) = self.players.get_mut(&id) {
+                    p.color = color;
+                }
             }
             Event::PlayerLeft { id } => {
                 if let Some(p) = self.players.remove(&id) {
@@ -464,7 +472,7 @@ impl World {
 }
 
 impl PlayerRep {
-    pub fn score(&self, rules: &GameRules) -> u32 {
-        self.kills + rules.capture_points * self.captures
+    pub fn score(&self, rules: &GameRules) -> i64 {
+        rules.score(self.kills, self.deaths, self.captures)
     }
 }

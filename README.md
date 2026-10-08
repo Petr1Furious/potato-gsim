@@ -57,10 +57,10 @@ You fly a ship with a 20 km/s delta-v budget (it refills after a few seconds of 
 through a system of moving, merging bodies (try the `disc` or `solar` presets for orbital
 speeds several times that budget). Score by:
 
-- **Holding an orbit** around a marked target body for 10 s (+3): eccentricity at most 0.5,
+- **Holding an orbit** around a marked target body for 10 s (+5): eccentricity at most 0.5,
   lowest point at least 1.5 body radii, highest point within 60. The top-left panel shows
   which condition is failing. The target then moves to another body.
-- **Destroying other ships** with shells (+1). A ship carries 10 and fires at most one a
+- **Destroying other ships** with shells (+2). Every death costs a point, and a new ship takes 5 s. A ship carries 10 and fires at most one a
   second; after 4 s without firing, one comes back every 2 s.
 
 A target nobody captures moves to another body after 90 s (`GSIM_TARGET_SECONDS`, 0 = never).
@@ -70,6 +70,7 @@ on a qualifying orbit around it. There is one target for every two players
 
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
+Ships are drawn in their pilots' colours: random at first, chosen in the settings.
 Bodies flung out of the system for good fade out and are removed, and are never targets.
 
 ## Players, bans and the whitelist
@@ -141,6 +142,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
+| Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 
 Colour shows mass: dim slate for the lightest bodies, through ice blue and pale sand to amber

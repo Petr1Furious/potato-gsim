@@ -160,7 +160,7 @@ fn cheats_and_scores() {
     say(&mut sim, a, "/score bob 4 2");
     assert_eq!(sim.server.score(pb), Some((4, 0)));
     let w = sim.clients[a].session.world.as_ref().unwrap();
-    assert_eq!(w.players[&pb].score(&w.rules), 4 + 2 * rules.capture_points);
+    assert_eq!(w.players[&pb].score(&w.rules), rules.score(4, 0, 2));
 
     say(&mut sim, a, "/kill bob");
     assert!(sim.server.ship(pb).is_none());

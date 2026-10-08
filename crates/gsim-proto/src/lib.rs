@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -40,7 +40,7 @@ pub struct Cmd {
 pub enum ClientMsg {
     /// Reliable. `golden` proves the client's floating point matches (see `gsim_core::selftest`);
     /// `key` is the player's public identity key, which the server then challenges.
-    Hello { protocol: u32, golden: u64, name: String, key: [u8; 32] },
+    Hello { protocol: u32, golden: u64, name: String, key: [u8; 32], color: [u8; 3] },
     /// Reliable: signature over the server's challenge (see [`identity`]).
     Auth { signature: Vec<u8> },
     /// Unreliable; carries every command not yet acknowledged, oldest first.
@@ -49,6 +49,8 @@ pub enum ClientMsg {
     Ping { client_time: f64 },
     /// Reliable: a chat line; a leading `/` makes it a command (see [`command`]).
     Chat { text: String },
+    /// Reliable: draw my ship in this colour from now on.
+    Color([u8; 3]),
     /// Reliable: show everyone a marker at this point on the map.
     Mark { x: f64, y: f64 },
     /// Reliable: my massive-tier hash disagreed, send a fresh snapshot.
@@ -59,6 +61,7 @@ pub enum ClientMsg {
 pub struct PlayerInfo {
     pub id: PlayerId,
     pub name: String,
+    pub color: [u8; 3],
     pub kills: u32,
     pub deaths: u32,
     /// Objectives captured this round.
@@ -109,7 +112,8 @@ pub struct Welcome {
 /// Reliable, ordered, tick-stamped facts. A `tick` is the first tick at which the fact holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    PlayerJoined { id: PlayerId, name: String },
+    PlayerJoined { id: PlayerId, name: String, color: [u8; 3] },
+    PlayerColor { id: PlayerId, color: [u8; 3] },
     PlayerLeft { id: PlayerId },
     ShipSpawn { tick: Tick, player: PlayerId, state: ShipState },
     Input { player: PlayerId, tick: Tick, input: ShipInput },
