@@ -891,6 +891,12 @@ impl Game {
             let Some(ship) = world.ship_at(*id, tick_f) else { continue };
             let s = view.to_screen(ship.x, ship.y);
             if !view.on_screen(s, 40.0 * ui) {
+                // Other pilots out of view: an arrow on the edge, as for targets.
+                if let Some(me) = own.filter(|_| *id != world.my_id) {
+                    let at = edge_arrow(s, style::rgb(p.color), 0.75 * ui);
+                    let d = ((ship.x - me.x).powi(2) + (ship.y - me.y).powi(2)).sqrt();
+                    labels.push(format!("{} {}", p.name, fmt::distance(d)), at.0, at.1, LABEL * ui, style::rgb(p.color), Rank::Pilot);
+                }
                 continue;
             }
             let mine = *id == world.my_id;
@@ -936,16 +942,10 @@ impl Game {
                 labels.push(label, s.0, s.1 - ring - 5.0 * ui, LABEL * ui, gold, Rank::Target);
             } else {
                 // Off screen: an arrow on the edge pointing at it.
-                let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
-                let (dx, dy) = (s.0 - cx, s.1 - cy);
-                let k = ((cx - 24.0 * ui) / dx.abs().max(1e-3)).min((cy - 24.0 * ui) / dy.abs().max(1e-3));
-                let (ex, ey) = (cx + dx * k, cy + dy * k);
-                let a = dy.atan2(dx);
-                let tip = |fwd: f32, side: f32| vec2(ex + a.cos() * fwd - a.sin() * side, ey + a.sin() * fwd + a.cos() * side);
-                draw_triangle(tip(10.0 * ui, 0.0), tip(-6.0 * ui, 7.0 * ui), tip(-6.0 * ui, -7.0 * ui), gold);
+                let at = edge_arrow(s, gold, ui);
                 if let Some(ship) = own {
                     let d = ((b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)).sqrt();
-                    labels.push(fmt::distance(d), ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui, LABEL * ui, gold, Rank::Target);
+                    labels.push(fmt::distance(d), at.0, at.1, LABEL * ui, gold, Rank::Target);
                 }
             }
             if let Some(ship) = own.filter(|_| objective.is_some_and(|t| t.slot == slot)) {
@@ -1011,6 +1011,7 @@ impl Game {
         let hold_goal = world.rules.hold_ticks as f32;
         let on_target = |h: &(u32, u32)| objective.is_some_and(|t| t.slot == h.0);
         let my_hold = world.holds.get(&world.my_id).filter(|h| on_target(h)).map_or(0, |h| h.1) as f32 / hold_goal;
+        let respawn_secs = (world.rules.respawn_ticks as f64 / world.rules.tick_hz as f64).max(1e-3);
         let destruct = self.destruct.map(|t| ((get_time() - t) / DESTRUCT_HOLD) as f32);
         let rivals: Vec<(String, f32, Color)> = world
             .holds
@@ -1201,33 +1202,36 @@ impl Game {
                         }
                         None => {
                             style::caption(ui, "SHIP LOST");
-                            ui.label(RichText::new(match respawn_in {
-                                Some(s) => format!("respawn in {s:.1} s"),
-                                None => "waiting for a ship".into(),
-                            })
-                            .heading()
-                            .color(bad));
+                            if respawn_in.is_none() {
+                                ui.label(RichText::new("waiting for a ship").heading().color(bad));
+                            }
                         }
                     }
                 });
             });
 
-            // Centre: the self-destruct key filling its ring.
-            if let Some(frac) = destruct {
-                Area::new(Id::new("destruct")).anchor(Align2::CENTER_CENTER, [0.0, 90.0]).interactable(false).show(ctx, |ui| {
+            // Centre: a ring that fills while the self-destruct key is held, or until the
+            // new ship arrives. (what it says, how full it is, seconds left)
+            let countdown = match (destruct, respawn_in) {
+                (Some(frac), _) => Some(("SELF-DESTRUCT", frac, (1.0 - frac as f64) * DESTRUCT_HOLD)),
+                (None, Some(left)) => Some(("RESPAWN", 1.0 - (left / respawn_secs) as f32, left)),
+                _ => None,
+            };
+            if let Some((what, frac, left)) = countdown {
+                Area::new(Id::new("countdown")).anchor(Align2::CENTER_CENTER, [0.0, 100.0]).interactable(false).show(ctx, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.vertical_centered(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
-                        let (c, r) = (rect.center(), 19.0);
-                        ui.painter().circle_stroke(c, r, egui::Stroke::new(4.0, egui::Color32::from_rgb(24, 32, 46)));
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(66.0, 66.0), egui::Sense::hover());
+                        let (c, r) = (rect.center(), 28.0);
+                        ui.painter().circle_stroke(c, r, egui::Stroke::new(5.0, egui::Color32::from_rgb(24, 32, 46)));
                         // Clockwise from the top.
-                        let arc: Vec<egui::Pos2> = (0..=48)
-                            .map(|k| k as f32 / 48.0 * frac.clamp(0.0, 1.0) * std::f32::consts::TAU)
+                        let arc: Vec<egui::Pos2> = (0..=64)
+                            .map(|k| k as f32 / 64.0 * frac.clamp(0.0, 1.0) * std::f32::consts::TAU)
                             .map(|a| c + r * egui::vec2(a.sin(), -a.cos()))
                             .collect();
-                        ui.painter().add(egui::Shape::line(arc, egui::Stroke::new(4.0, bad)));
-                        let left = (1.0 - frac).max(0.0) as f64 * DESTRUCT_HOLD;
-                        ui.painter().text(c, Align2::CENTER_CENTER, format!("{left:.1}"), egui::FontId::proportional(13.0), bad);
-                        ui.label(RichText::new("SELF-DESTRUCT").small().color(bad).extra_letter_spacing(2.0));
+                        ui.painter().add(egui::Shape::line(arc, egui::Stroke::new(5.0, bad)));
+                        ui.painter().text(c, Align2::CENTER_CENTER, format!("{:.1}", left.max(0.0)), egui::FontId::proportional(19.0), bad);
+                        ui.label(RichText::new(what).color(bad).strong().extra_letter_spacing(2.5));
                     });
                 });
             }
@@ -1502,6 +1506,19 @@ fn draw_trails(
 
 /// A small dart with swept wings, a canopy and an engine plume. `s` is the screen position,
 /// `facing` the heading in radians (screen space, y down).
+/// An arrow on the edge of the screen towards the off-screen point `s`. Returns where a
+/// label for it goes.
+fn edge_arrow(s: (f32, f32), color: Color, ui: f32) -> (f32, f32) {
+    let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
+    let (dx, dy) = (s.0 - cx, s.1 - cy);
+    let k = ((cx - 24.0 * ui) / dx.abs().max(1e-3)).min((cy - 24.0 * ui) / dy.abs().max(1e-3));
+    let (ex, ey) = (cx + dx * k, cy + dy * k);
+    let a = dy.atan2(dx);
+    let tip = |fwd: f32, side: f32| vec2(ex + a.cos() * fwd - a.sin() * side, ey + a.sin() * fwd + a.cos() * side);
+    draw_triangle(tip(10.0 * ui, 0.0), tip(-6.0 * ui, 7.0 * ui), tip(-6.0 * ui, -7.0 * ui), color);
+    (ex - a.cos() * 34.0 * ui, ey - a.sin() * 34.0 * ui + 4.0 * ui)
+}
+
 pub(crate) fn draw_ship(s: (f32, f32), facing: f32, color: Color, burning: bool, ui: f32) {
     let size = 6.0 * ui;
     let (c, n) = (facing.cos(), facing.sin());
@@ -1530,6 +1547,9 @@ pub(crate) fn draw_ship(s: (f32, f32), facing: f32, color: Color, burning: bool,
     draw_triangle(at(1.2, 0.0), at(0.2, 0.2), at(0.2, -0.2), Color::new(0.55, 0.85, 1.0, 1.0));
     // Engine nozzle.
     draw_triangle(at(-0.9, 0.3), at(-0.9, -0.3), at(-0.55, 0.0), Color::new(0.1, 0.12, 0.16, 1.0));
+    // Where the ship really is: the point shells have to reach.
+    style::disc(s.0, s.1, 2.8 * ui, Color::new(0.0, 0.0, 0.0, 0.9));
+    style::disc(s.0, s.1, 1.7 * ui, WHITE);
 }
 
 
