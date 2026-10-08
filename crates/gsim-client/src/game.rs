@@ -893,9 +893,9 @@ impl Game {
             if !view.on_screen(s, 40.0 * ui) {
                 // Other pilots out of view: an arrow on the edge, as for targets.
                 if let Some(me) = own.filter(|_| *id != world.my_id) {
-                    let at = edge_arrow(s, style::rgb(p.color), 0.75 * ui);
+                    let at = edge_arrow(s, style::rgb(p.color), ui);
                     let d = ((ship.x - me.x).powi(2) + (ship.y - me.y).powi(2)).sqrt();
-                    labels.push(format!("{} {}", p.name, fmt::distance(d)), at.0, at.1, LABEL * ui, style::rgb(p.color), Rank::Pilot);
+                    labels.block(vec![p.name.clone(), fmt::distance(d)], at.0, at.1 - 8.0 * ui, LABEL * ui, style::rgb(p.color), Rank::Pilot);
                 }
                 continue;
             }
