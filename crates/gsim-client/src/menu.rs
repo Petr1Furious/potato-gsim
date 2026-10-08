@@ -176,7 +176,7 @@ impl SinglePlayer {
             ui.allocate_ui_with_layout(egui::vec2(640.0, 400.0), egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                 ui.vertical(|ui| {
                     ui.set_width(170.0);
-                    for (large, heading) in [(true, "LARGE SCALE"), (false, "EXACT")] {
+                    for (large, heading) in [(true, "SANDBOX"), (false, "EXACT")] {
                         style::section(ui, heading);
                         for w in worlds.iter().filter(|w| w.large == large) {
                             ui.selectable_value(&mut settings.preset, w.name.to_string(), w.name).on_hover_text(w.about);

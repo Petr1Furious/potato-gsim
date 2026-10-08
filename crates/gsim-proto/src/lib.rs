@@ -159,6 +159,13 @@ pub enum ServerMsg {
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }
 
+/// A ship colour that stands out from the dark sky: one that is too dark is lightened.
+pub fn visible_color(c: [u8; 3]) -> [u8; 3] {
+    let luma = (30 * c[0] as u32 + 59 * c[1] as u32 + 11 * c[2] as u32) / 100;
+    let lift = 90u32.saturating_sub(luma) as u8;
+    c.map(|v| v.saturating_add(lift))
+}
+
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
     postcard::to_allocvec(msg).expect("message serialisation cannot fail")
 }

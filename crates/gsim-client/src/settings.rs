@@ -100,7 +100,7 @@ impl Settings {
                 "preset" if !v.is_empty() => s.preset = v.to_string(),
                 "mouse_aim" => s.mouse_aim = v != "0",
                 "fullscreen" => s.fullscreen = v == "1",
-                "ship_color" => s.ship_color = u32::from_str_radix(v, 16).map_or(s.ship_color, |c| [(c >> 16) as u8, (c >> 8) as u8, c as u8]),
+                "ship_color" => s.ship_color = u32::from_str_radix(v, 16).map_or(s.ship_color, |c| gsim_proto::visible_color([(c >> 16) as u8, (c >> 8) as u8, c as u8])),
                 "ui_scale" => s.ui_scale = v.parse().unwrap_or(s.ui_scale).clamp(0.6, 2.5),
                 "zoom_speed" => s.zoom_speed = v.parse().unwrap_or(s.zoom_speed).clamp(0.002, 3.0),
                 "burn_preview" => s.burn_preview = v.parse().unwrap_or(s.burn_preview).clamp(0.1, 100.0),

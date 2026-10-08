@@ -8,7 +8,7 @@
 
 use crate::engine::{Bodies, Merge, Mode, ORBIT_FRACTION};
 use crate::sim::Sim;
-use std::collections::VecDeque;
+
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::AtomicBool;
@@ -20,6 +20,8 @@ pub enum Command {
     /// Simulated seconds per real second; 0 pauses.
     Pace(f64),
     Theta(f32),
+    /// Whether bodies leaving the world for good fade out and are dropped.
+    DropLeavers(bool),
     /// How many threads the simulation may use from now on.
     Threads(usize),
     Watch(Vec<u32>),
@@ -30,8 +32,7 @@ pub enum Command {
     Edit { id: u32, mass: f64, radius: f64, vx: f64, vy: f64 },
     Save(PathBuf),
     Load(PathBuf),
-    /// Go back to the latest checkpoint.
-    Rewind,
+
 }
 
 /// Maps wall-clock time to simulated time between two steps.
@@ -65,8 +66,7 @@ pub struct Stats {
     pub error: Option<f32>,
     pub level: &'static str,
     pub mode: &'static str,
-    /// Checkpoints that can be gone back to.
-    pub checkpoints: usize,
+
 }
 
 #[derive(Clone, Copy)]
@@ -113,8 +113,7 @@ const HEAVIEST: usize = 12;
 /// Real seconds a body found leaving the world takes to fade away.
 const FADE_SECONDS: f64 = 5.0;
 const LONGEST_STEP: f64 = 0.1;
-const CHECKPOINT_EVERY: Duration = Duration::from_secs(15);
-const CHECKPOINT_BYTES: usize = 400 << 20;
+
 
 impl Runner {
     /// `threads` is how many the simulation may use (see [`Command::Threads`]); `pace` the
@@ -217,8 +216,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
     let mut window = Window::new();
     let mut shown = Shown::default();
     let mut last_error = None;
-    let mut checkpoints: VecDeque<Bodies> = VecDeque::new();
-    let (mut last_checkpoint, mut last_heaviest, mut last_error_at) = (Instant::now(), Instant::now() - Duration::from_secs(1), Instant::now());
+    let (mut last_heaviest, mut last_error_at) = (Instant::now() - Duration::from_secs(1), Instant::now());
     let mut notice = None;
     // Before the first step, find out how long a step the world as it starts can take.
     sim.engine.dt_hint = pace * step_s;
@@ -230,6 +228,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
                 Ok(Command::Pace(p)) if p > 0.0 && p.is_finite() => (pace, paused) = (p, false),
                 Ok(Command::Pace(_)) => paused = true,
                 Ok(Command::Theta(t)) => sim.engine.theta = t.clamp(0.2, 1.5),
+                Ok(Command::DropLeavers(on)) => sim.engine.drop_leavers = on,
                 Ok(Command::Threads(n)) => {
                     if n.max(1) != workers.current_num_threads() {
                         workers = pool(n);
@@ -264,20 +263,13 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
                             notice = Some(match loaded {
                                 Ok(bodies) => {
                                     sim.replace(bodies);
-                                    checkpoints.clear();
+
                                     format!("Loaded {}", path.file_stem().unwrap_or_default().to_string_lossy())
                                 }
                                 Err(e) => format!("Could not load: {e}"),
                             });
                         }
-                        Command::Rewind => match checkpoints.pop_back() {
-                            Some(bodies) => {
-                                sim.replace(bodies);
-                                notice = Some("Went back to the last checkpoint".into());
-                            }
-                            None => notice = Some("There is no checkpoint to go back to yet".into()),
-                        },
-                        Command::Pace(_) | Command::Theta(_) | Command::Threads(_) | Command::Watch(_) => {}
+                        Command::Pace(_) | Command::Theta(_) | Command::DropLeavers(_) | Command::Threads(_) | Command::Watch(_) => {}
                     });
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -297,7 +289,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             p.clock = Clock { time: sim.time, at: now, rate: 0.0 };
             (p.time, p.pace, p.theta, p.watch) = (sim.time, 0.0, sim.engine.theta, sim.watch.clone());
             p.stats.bodies = sim.bodies.read().unwrap().len();
-            p.stats.checkpoints = checkpoints.len();
+
             if let Some(h) = heaviest {
                 p.heaviest = h;
             }
@@ -307,16 +299,6 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             drop(p);
             std::thread::sleep(Duration::from_millis(4));
             continue;
-        }
-        if now.duration_since(last_checkpoint) > CHECKPOINT_EVERY {
-            last_checkpoint = now;
-            let copy = sim.bodies.read().unwrap().clone();
-            // As many as fit a fixed budget of memory, eight at most.
-            let keep = (CHECKPOINT_BYTES / (copy.len().max(1) * 54)).clamp(1, 8);
-            checkpoints.push_back(copy);
-            while checkpoints.len() > keep {
-                checkpoints.pop_front();
-            }
         }
 
         // How long a step this one should be to hold the pace, and how long it may be.
@@ -388,7 +370,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             error: last_error,
             level: sim.engine.level().name(),
             mode: sim.engine.mode.name(),
-            checkpoints: checkpoints.len(),
+
         };
         if let Some(h) = heaviest {
             p.heaviest = h;

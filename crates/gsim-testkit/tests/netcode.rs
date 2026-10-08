@@ -616,4 +616,10 @@ fn everyone_sees_a_ships_colour_and_its_changes() {
     let c = sim.add_client("cat", Link::new(20.0, 0.0, 0.0));
     sim.run_with(1.0, idle);
     assert_eq!(seen(&sim, c), [10, 200, 30]);
+    // Nobody flies an invisible ship.
+    sim.clients[a].session.set_color([0, 0, 0]);
+    sim.run_with(0.5, idle);
+    assert_eq!(seen(&sim, b), [90, 90, 90]);
+    assert_eq!(gsim_proto::visible_color([0, 0, 255]), [62, 62, 255]);
+    assert_eq!(gsim_proto::visible_color([255, 120, 0]), [255, 120, 0]);
 }

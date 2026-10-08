@@ -313,7 +313,13 @@ async fn run(args: Args, mut settings: Settings) {
                             // fields it uses.
                             let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([ui.available_width(), 32.0], egui::Button::new(text)).clicked();
                             style::section(ui, "PILOT");
-                            ui.add(egui::TextEdit::singleline(&mut settings.name).desired_width(f32::INFINITY).hint_text("name"));
+                            ui.horizontal(|ui| {
+                                // The colour button keeps its size; the name takes the rest.
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    options::ship_color(ui, &mut settings).on_hover_text("The colour of your ship.");
+                                    ui.add(egui::TextEdit::singleline(&mut settings.name).desired_width(f32::INFINITY).hint_text("name"));
+                                });
+                            });
                             style::section(ui, "MULTIPLAYER");
                             ui.add(egui::TextEdit::singleline(&mut settings.server).desired_width(f32::INFINITY).hint_text("server address"));
                             ui.add_space(2.0);
@@ -349,7 +355,8 @@ async fn run(args: Args, mut settings: Settings) {
                                 updater::Status::Failed(e) => e.clone(),
                             };
                             ui.add_space(6.0);
-                            ui.horizontal(|ui| {
+                            // Wrapped: an error can be much longer than the menu is wide.
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(egui::RichText::new(note).small().color(style::c32(style::DIM)));
                                 if updater.can_check() && ui.small_button("check for updates").clicked() {
                                     updater.check();

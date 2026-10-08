@@ -323,7 +323,7 @@ fn the_runner_pauses_edits_and_goes_back() {
     let mut star = Bodies::default();
     star.push(9.0e11, 0.0, 0.0, 0.0, 2.0e30, 7.0e8, 0);
     runner.send(Command::Add(Box::new(star)));
-    runner.send(Command::Rewind);
+
     let dir = std::env::temp_dir().join(format!("gsim-swarm-test-{}", std::process::id()));
     runner.send(Command::Save(dir.join("world.gsw")));
     std::thread::sleep(Duration::from_millis(200));

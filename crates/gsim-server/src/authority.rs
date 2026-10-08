@@ -250,6 +250,7 @@ impl Authority {
             ClientMsg::Hello { protocol, golden, name, key, color } => self.hello(conn, protocol, golden, name, key, color),
             ClientMsg::Color(color) => {
                 if let Some(p) = self.by_conn.get(&conn).and_then(|id| self.players.get_mut(id)) {
+                    let color = gsim_proto::visible_color(color);
                     p.color = color;
                     let id = p.id;
                     self.event(Event::PlayerColor { id, color });
@@ -301,7 +302,7 @@ impl Authority {
             return self.reject(conn, reason);
         }
         let nonce = identity::random_bytes();
-        self.pending.insert(conn, PendingJoin { name, key, color, nonce });
+        self.pending.insert(conn, PendingJoin { name, key, color: gsim_proto::visible_color(color), nonce });
         self.send(Target::One(conn), ServerMsg::Challenge { nonce });
     }
 

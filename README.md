@@ -182,15 +182,15 @@ ones `--set` and `/preset` take) and a seed. There are two kinds:
 
 - **Exact** worlds are the multiplayer presets, run by a server inside the client: rounds,
   the orbit objective, shells, every command.
-- **Large scale** worlds (`empty`, `galaxy`, `collision`, `cloud`) are run by a separate engine,
+- **Sandbox** worlds (`empty`, `galaxy`, `collision`, `cloud`) are run by a separate engine,
   `gsim-swarm`, that trades exactness for size: hundreds of thousands of bodies. There is no
   ship: you watch through a free camera (drag or WASD, wheel or Q/E, click a body to follow
   it) and change the world with the tools on keys 1 to 6: place and throw a body, spray
   many, drop a whole galaxy, cloud or ring, erase, shatter. The selected body's mass, size
   and velocity can be edited. Space pauses; holding `<` or `>` changes how much time one
   second is worth. `X` makes light linger so orbits draw themselves, `C` switches what
-  colour shows. Worlds can be saved and loaded from the Esc menu, which also goes back to
-  the last automatic checkpoint.
+  colour shows. Worlds can be saved and loaded from the Esc menu, where saves can
+  also be deleted.
 
 How the large-scale engine works: there is no fixed step rate. It steps as fast as it can,
 and each step covers "pace x how long steps have been taking", so the world keeps its pace

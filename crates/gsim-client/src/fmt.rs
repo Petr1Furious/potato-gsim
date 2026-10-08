@@ -7,7 +7,7 @@ fn scaled(v: f64, units: &[(f64, &str)]) -> String {
 }
 
 pub fn distance(m: f64) -> String {
-    scaled(m, &[(1.0, "m"), (1e3, "km"), (1e6, "Mm"), (1e9, "Gm"), (1e12, "Tm")])
+    scaled(m, &[(1e-3, "mm"), (1.0, "m"), (1e3, "km"), (1e6, "Mm"), (1e9, "Gm"), (1e12, "Tm")])
 }
 
 pub fn speed(mps: f64) -> String {

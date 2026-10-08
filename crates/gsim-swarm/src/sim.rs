@@ -138,7 +138,7 @@ impl Sim {
     pub fn edit(&mut self, id: u32, mass: f64, radius: f64, vx: f64, vy: f64) -> bool {
         self.change(|b| {
             let Some(i) = b.locate(id) else { return false };
-            (b.m[i], b.r[i], b.vx[i], b.vy[i]) = (mass.max(1.0) as f32, radius.max(1.0) as f32, vx, vy);
+            (b.m[i], b.r[i], b.vx[i], b.vy[i]) = (mass.max(f32::MIN_POSITIVE as f64) as f32, radius.max(0.0) as f32, vx, vy);
             true
         })
     }

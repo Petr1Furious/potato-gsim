@@ -168,6 +168,8 @@ pub(crate) const PICK_RADIUS_PX: f32 = 26.0;
 pub(crate) const TURN_RATE: f64 = 2.85;
 /// Font size of labels drawn in the world, before marker scaling.
 pub(crate) const LABEL: f32 = 12.0;
+/// The closest the view zooms in, in metres per pixel.
+pub(crate) const MIN_MPP: f64 = 1.0e-6;
 /// Seconds the self-destruct key has to be held.
 const DESTRUCT_HOLD: f64 = 1.5;
 
@@ -530,7 +532,7 @@ impl Game {
             self.view.cx = target_pos.0 + self.offset.0;
             self.view.cy = target_pos.1 + self.offset.1;
             let before = self.view.to_world(mouse.0, mouse.1);
-            self.view.mpp = (self.view.mpp * 1.1f64.powf(-step as f64)).clamp(0.05, 1.0e12);
+            self.view.mpp = (self.view.mpp * 1.1f64.powf(-step as f64)).clamp(MIN_MPP, 1.0e12);
             self.view.cx = target_pos.0 + self.offset.0;
             self.view.cy = target_pos.1 + self.offset.1;
             let after = self.view.to_world(mouse.0, mouse.1);
@@ -1370,7 +1372,7 @@ impl Auto {
             return;
         }
         let middle = (0.5 * (seen.min.0 + seen.max.0), 0.5 * (seen.min.1 + seen.max.1));
-        let goal = ((w / sw).max(h / sh) / AUTO_FILL).clamp(0.05, 1.0e12);
+        let goal = ((w / sw).max(h / sh) / AUTO_FILL).clamp(MIN_MPP, 1.0e12);
         let k = 1.0 - (-AUTO_RATE * dt).exp();
         // The scale eases over, and the centre goes as far of its way as the scale has gone of
         // its own: that is a zoom about one fixed point, in which every edge of the view moves
@@ -1423,7 +1425,7 @@ pub(crate) fn frame_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f
     // Each of them half way from the middle to the edge on the tighter axis: clear of the
     // panels in the corners, and with room for the ship to move.
     let needed = (dx.abs() / (0.5 * screen_width() as f64)).max(dy.abs() / (0.5 * screen_height() as f64));
-    view.mpp = needed.clamp(0.05, 1.0e12);
+    view.mpp = needed.clamp(MIN_MPP, 1.0e12);
 }
 
 pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {

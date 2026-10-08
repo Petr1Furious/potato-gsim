@@ -55,7 +55,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     style::toggle(ui, &mut settings.details, details, "F3").on_hover_text("Numbers for the curious: frame rate, step times, and how well this client is keeping in step.");
     if large {
         style::toggle(ui, &mut settings.long_exposure, "Long exposure", "X")
-            .on_hover_text("In large-scale worlds, light lingers for a few seconds and fades: orbits draw themselves as streaks. Moving the view starts it afresh.");
+            .on_hover_text("In sandbox worlds, light lingers for a few seconds and fades: orbits draw themselves as streaks. Moving the view starts it afresh.");
     }
     ui.horizontal(|ui| {
         ui.label("Colour shows");
@@ -68,7 +68,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_hint(ui, "C");
     })
     .response
-    .on_hover_text("What the colour of small bodies tells: their mass, how fast they move, or (in large-scale worlds) which galaxy or cloud they started in.");
+    .on_hover_text("What the colour of small bodies tells: their mass, how fast they move, or (in sandbox worlds) which galaxy or cloud they started in.");
 
     style::section(ui, "INTERFACE");
     ui.horizontal(|ui| {
@@ -89,11 +89,11 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     if exact {
         style::section(ui, "FLYING");
         ui.horizontal(|ui| {
-            ui.color_edit_button_srgb(&mut settings.ship_color);
+            ship_color(ui, settings);
             ui.label("ship colour");
         })
         .response
-        .on_hover_text("The colour of your ship, its name and its shells, for you and for everyone else on a server.");
+        .on_hover_text("The colour of your ship, its name and its shells, for you and for everyone else on a server. Colours too dark to see against the sky are lightened.");
         ui.add(egui::Slider::new(&mut settings.burn_preview, 0.5..=20.0).suffix(" km/s").text("burn preview")).on_hover_text(
             "While you thrust, a yellow line shows where the ship would go if you kept thrusting like this. \
              It assumes the burn stops once it has spent this much delta-v, and that the ship coasts from there.",
@@ -107,7 +107,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     ui.checkbox(&mut settings.gpu, "GPU drawing").on_hover_text(
         "On: the graphics card draws the glowing picture of the small bodies, at the screen's full \
          resolution, and the processor threads that would have drawn it go to the simulation (which in \
-         large-scale worlds means more bodies at full speed). Off: those threads draw it. If the card \
+         sandbox worlds means more bodies at full speed). Off: those threads draw it. If the card \
          cannot do it, the game says so and switches this off.",
     );
 
@@ -126,7 +126,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     }
     if large {
         if world == World::Any {
-            style::caption(ui, "LARGE-SCALE WORLDS");
+            style::caption(ui, "SANDBOX WORLDS");
         }
         style::key_row(ui, "Move the view", "DRAG, W A S D");
         style::key_row(ui, "Zoom", "WHEEL, Q / E");
@@ -139,6 +139,13 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     style::key_row(ui, "Fullscreen", "F11");
     style::section(ui, "MASS");
     style::mass_legend(ui);
+}
+
+/// The button that opens the picker for the ship's colour.
+pub fn ship_color(ui: &mut egui::Ui, settings: &mut Settings) -> egui::Response {
+    let button = ui.color_edit_button_srgb(&mut settings.ship_color);
+    settings.ship_color = gsim_proto::visible_color(settings.ship_color);
+    button
 }
 
 /// A menu body that scrolls when the window is too short for it, leaving room for the

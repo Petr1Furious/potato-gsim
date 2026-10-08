@@ -111,6 +111,8 @@ const PREVIEW_SECONDS: f64 = 4.0;
 pub struct Sandbox {
     runner: Runner,
     scenario: String,
+    /// Bodies leaving the world for good fade out and are dropped.
+    drop_leavers: bool,
     view: View,
     view_ready: bool,
     zoom_pending: f32,
@@ -175,11 +177,12 @@ fn list_saves() -> Vec<String> {
     names
 }
 
-/// A state on a circular orbit through `(x, y)` around `centre`, counter-clockwise.
-fn circling(centre: &Picked, x: f64, y: f64) -> (f64, f64) {
+/// A state on a circular orbit through `(x, y)` around `centre`: counter-clockwise, or
+/// whichever way round `towards` (a direction from that point) leans.
+fn circling(centre: &Picked, x: f64, y: f64, towards: (f64, f64)) -> (f64, f64) {
     let (rx, ry) = (x - centre.x, y - centre.y);
     let d = (rx * rx + ry * ry).sqrt().max(1.0);
-    let v = (G * centre.mass / d).sqrt();
+    let v = (G * centre.mass / d).sqrt() * if rx * towards.1 - ry * towards.0 < 0.0 { -1.0 } else { 1.0 };
     (centre.vx - v * ry / d, centre.vy + v * rx / d)
 }
 
@@ -228,9 +231,14 @@ impl Sandbox {
         let sim = gsim_swarm::Sim::new(setup);
         let mut density = Density::new();
         density.set_gpu(settings.gpu);
+        // An empty world is for building in: nothing put there goes away by itself.
+        let drop_leavers = scenario != "empty";
+        let runner = Runner::start(sim, pace, crate::density::simulation_threads(settings.gpu));
+        runner.send(Command::DropLeavers(drop_leavers));
         Self {
-            runner: Runner::start(sim, pace, crate::density::simulation_threads(settings.gpu)),
+            runner,
             scenario,
+            drop_leavers,
             view: View { cx: 0.0, cy: 0.0, mpp: 3.0e8 },
             view_ready: false,
             zoom_pending: 0.0,
@@ -322,7 +330,7 @@ impl Sandbox {
         if let Some(text) = notice {
             // A world was saved or swapped: the list on disk, or what is selected, may be stale.
             self.saves = list_saves();
-            if text.starts_with("Loaded") || text.starts_with("Went back") {
+            if text.starts_with("Loaded") {
                 self.select(None);
                 self.density.clear_trail();
             }
@@ -452,7 +460,7 @@ impl Sandbox {
                 self.view.cx = target_pos.0 + self.offset.0;
                 self.view.cy = target_pos.1 + self.offset.1;
                 let before = self.view.to_world(mouse.0, mouse.1);
-                self.view.mpp = (self.view.mpp * 1.1f64.powf(-step as f64)).clamp(0.05, 1.0e13);
+                self.view.mpp = (self.view.mpp * 1.1f64.powf(-step as f64)).clamp(crate::game::MIN_MPP, 1.0e13);
                 let after = self.view.to_world(mouse.0, mouse.1);
                 self.offset.0 += before.0 - after.0;
                 self.offset.1 += before.1 - after.1;
@@ -562,10 +570,11 @@ impl Sandbox {
             _ => {}
         }
         // A new body's velocity: the drag is where it will be a second from now, in the frame
-        // of whatever the camera follows; with Shift, a circular orbit around what pulls hardest.
+        // of whatever the camera follows; with Shift, a circular orbit around what pulls hardest,
+        // going round the way the drag points.
         let throw = |from: (f64, f64)| -> (f64, f64) {
             match anchor(&seen.heaviest, picked, from.0, from.1).filter(|_| shift) {
-                Some(centre) => circling(&centre, from.0, from.1),
+                Some(centre) => circling(&centre, from.0, from.1, (mx - from.0, my - from.1)),
                 None => (frame_v.0 + (mx - from.0) / pace, frame_v.1 + (my - from.1) / pace),
             }
         };
@@ -642,7 +651,7 @@ impl Sandbox {
                         let (r, a) = (brush_px as f64 * view.mpp * self.random().sqrt(), self.random() * std::f64::consts::TAU);
                         let at = (mx + r * a.cos(), my + r * a.sin());
                         // Moving with the picture, or with Shift each on its own orbit.
-                        let v = anchor(&seen.heaviest, picked, at.0, at.1).filter(|_| shift).map_or(frame_v, |c| circling(&c, at.0, at.1));
+                        let v = anchor(&seen.heaviest, picked, at.0, at.1).filter(|_| shift).map_or(frame_v, |c| circling(&c, at.0, at.1, (0.0, 0.0)));
                         new.push(at.0, at.1, v.0, v.1, self.kit.mass, radius_from_mass(self.kit.mass, self.kit.density), 3);
                     }
                     if !new.is_empty() {
@@ -733,6 +742,8 @@ impl Sandbox {
         let mut tool = self.tool;
         let kit = &mut self.kit;
         let (save_name, saves) = (&mut self.save_name, &self.saves);
+        let mut delete: Option<String> = None;
+        let mut new_leavers = self.drop_leavers;
         let selected = self.selected;
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
@@ -817,7 +828,7 @@ impl Sandbox {
                         Tool::Place => {
                             mass(ui, &mut kit.mass, "mass");
                             density(ui, &mut kit.density);
-                            hint(ui, "Click to place, drag to throw. Shift: on a circular orbit.");
+                            hint(ui, "Click to place, drag to throw. Shift: on a circular orbit, going round the way you drag.");
                         }
                         Tool::Spray => {
                             mass(ui, &mut kit.mass, "mass of each");
@@ -836,7 +847,7 @@ impl Sandbox {
                             mass(ui, &mut kit.bulk, "mass in all");
                             density(ui, &mut kit.density);
                             ui.add(egui::Slider::new(&mut kit.brush, 5.0..=300.0).clamping(free).text("size"));
-                            hint(ui, if kit.structure == Structure::Ring { "Click anywhere: it goes around the selected body." } else { "Click to drop, drag to throw. Shift: on a circular orbit." });
+                            hint(ui, if kit.structure == Structure::Ring { "Click anywhere: it goes around the selected body." } else { "Click to drop, drag to throw. Shift: on a circular orbit, going round the way you drag." });
                         }
                         Tool::Erase => {
                             ui.add(egui::Slider::new(&mut kit.brush, 5.0..=300.0).clamping(free).text("brush"));
@@ -850,9 +861,9 @@ impl Sandbox {
                     }
                     // Whatever was typed, the tools are handed something they can use.
                     let positive = |v: f64, least: f64, most: f64| if v.is_finite() { v.clamp(least, most) } else { least };
-                    kit.mass = positive(kit.mass, 1.0, 1.0e36);
-                    kit.bulk = positive(kit.bulk, 1.0, 1.0e36);
-                    kit.density = positive(kit.density, 1.0e-3, 1.0e18);
+                    kit.mass = positive(kit.mass, 0.0, 1.0e36);
+                    kit.bulk = positive(kit.bulk, 0.0, 1.0e36);
+                    kit.density = positive(kit.density, 1.0e-30, 1.0e30);
                     kit.count = positive(kit.count, 1.0, 2.0e6).round();
                     kit.pieces = positive(kit.pieces, 2.0, 1.0e5).round();
                     kit.violence = positive(kit.violence, 0.0, 1.0e3);
@@ -877,9 +888,13 @@ impl Sandbox {
                         let (mut mass, mut radius, mut speed, mut heading) = (p.mass, p.radius, was.0, was.1);
                         // Only what the player moves counts as a change: a slider may round or
                         // clamp what it is shown.
-                        let mut changed = ui.add(egui::Slider::new(&mut mass, 1.0e15..=1.0e32).logarithmic(true).custom_formatter(|v, _| fmt::mass(v)).text("mass")).changed();
-                        changed |= ui.add(egui::Slider::new(&mut radius, 1.0e3..=1.0e10).logarithmic(true).custom_formatter(|v, _| fmt::distance(v)).text("radius")).changed();
-                        changed |= ui.add(egui::Slider::new(&mut speed, 0.0..=1.0e6).logarithmic(true).smallest_positive(1.0).custom_formatter(|v, _| fmt::speed(v)).text("speed")).changed();
+                        // As with the tools, the ranges are only what the sliders cover.
+                        let free = egui::SliderClamping::Never;
+                        // A body with no mass at all is kept as one with the least there can be.
+                        let kg = |v: f64, _| if v <= f32::MIN_POSITIVE as f64 { "0 kg".to_string() } else { fmt::mass(v) };
+                        let mut changed = ui.add(egui::Slider::new(&mut mass, 1.0e15..=1.0e32).logarithmic(true).clamping(free).custom_formatter(kg).text("mass")).changed();
+                        changed |= ui.add(egui::Slider::new(&mut radius, 1.0e3..=1.0e10).logarithmic(true).clamping(free).custom_formatter(|v, _| fmt::distance(v)).text("radius")).changed();
+                        changed |= ui.add(egui::Slider::new(&mut speed, 0.0..=1.0e6).logarithmic(true).clamping(free).smallest_positive(1.0).custom_formatter(|v, _| fmt::speed(v)).text("speed")).changed();
                         changed |= ui.add(egui::Slider::new(&mut heading, -180.0..=180.0).suffix("°").text("heading")).changed();
                         ui.horizontal(|ui| {
                             if ui.button("Stop").clicked() {
@@ -906,6 +921,9 @@ impl Sandbox {
                             "How readily distant groups of bodies are treated as one lump when there are too many to sum pair by pair: \
                              smaller is more accurate and slower.",
                         );
+                        ui.checkbox(&mut new_leavers, "Escaping bodies disappear").on_hover_text(
+                            "On: a body that has left the crowd for good (moving outwards, too fast to ever be pulled back) fades out and is removed. Off: nothing is ever removed.",
+                        );
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(save_name).desired_width(150.0).hint_text("name"));
                             let name: String = save_name.chars().filter(|c| c.is_alphanumeric() || "-_ ".contains(*c)).collect();
@@ -918,13 +936,11 @@ impl Sandbox {
                                 if let (true, Some(dir)) = (ui.small_button("load").clicked(), worlds_dir()) {
                                     commands.push(Command::Load(dir.join(format!("{name}.gsw"))));
                                 }
+                                if ui.small_button("delete").clicked() {
+                                    delete = Some(name.clone());
+                                }
                                 ui.label(RichText::new(name).color(dim));
                             });
-                        }
-                        let back = format!("Back to the last checkpoint ({} kept)", stats.checkpoints);
-                        let hover = "The world is remembered every fifteen seconds while it runs; this returns to the latest of those moments.";
-                        if ui.add_enabled(stats.checkpoints > 0, egui::Button::new(back)).on_hover_text(hover).clicked() {
-                            commands.push(Command::Rewind);
                         }
                         crate::options::show(ui, &mut options, crate::options::World::Large);
                     });
@@ -948,6 +964,10 @@ impl Sandbox {
         egui_macroquad::draw();
 
         self.tool = tool;
+        if let (Some(name), Some(dir)) = (delete, worlds_dir()) {
+            let _ = std::fs::remove_file(dir.join(format!("{name}.gsw")));
+            self.saves = list_saves();
+        }
         if commands.iter().any(|c| matches!(c, Command::Remove(_))) {
             self.select(None);
         }
@@ -956,6 +976,10 @@ impl Sandbox {
         }
         if let Some(pace) = new_speed {
             self.set_pace(pace);
+        }
+        if new_leavers != self.drop_leavers {
+            self.drop_leavers = new_leavers;
+            self.runner.send(Command::DropLeavers(new_leavers));
         }
         if new_theta != theta {
             self.runner.send(Command::Theta(new_theta));

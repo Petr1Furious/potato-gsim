@@ -63,7 +63,8 @@ impl Bodies {
         self.vy.push(vy);
         self.ax.push(0.0);
         self.ay.push(0.0);
-        self.m.push(mass as f32);
+        // Zero marks a body that is gone: one with no mass has the least there can be.
+        self.m.push(mass.max(f32::MIN_POSITIVE as f64) as f32);
         self.r.push(radius as f32);
         self.group.push(group);
         self.fade.push(0.0);
@@ -437,6 +438,8 @@ pub struct Engine {
     pub softening: f64,
     /// How much of its fade a leaving body goes through in one step.
     pub fade_step: f32,
+    /// Whether bodies leaving for good are faded out and dropped at all.
+    pub drop_leavers: bool,
     census: Census,
     /// Steps until the census is taken again.
     census_due: u32,
@@ -492,6 +495,7 @@ impl Engine {
             g,
             softening,
             fade_step: 1.0 / 64.0,
+            drop_leavers: true,
             census: Census::default(),
             census_due: 0,
             fading: 0,
@@ -997,6 +1001,14 @@ impl Engine {
     pub fn leave(&mut self, b: &mut Bodies) {
         self.stats.removed = 0;
         let n = b.len();
+        if !self.drop_leavers {
+            // Those already on their way out stay after all.
+            if std::mem::take(&mut self.fading) > 0 {
+                b.fade.fill(0.0);
+            }
+            self.census_due = 0;
+            return;
+        }
         if n < 2 {
             return;
         }
