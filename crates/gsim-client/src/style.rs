@@ -113,6 +113,31 @@ fn sides(r: f32) -> u8 {
     (16.0 + 0.5 * r).clamp(20.0, 255.0) as u8
 }
 
+/// A ring around `s` from the radius `from` to `to`, its colour running through `colors`
+/// (evenly spaced between the two radii) without steps. Drawn once, however large: layers of
+/// see-through discs would cost a screenful each when zoomed in.
+fn gradient(s: (f32, f32), from: f32, to: f32, colors: &[Color]) {
+    let around = sides(to) as usize;
+    let rim = |level: usize| {
+        let radius = from + (to - from) * level as f32 / (colors.len() - 1) as f32;
+        (0..around).map(move |k| {
+            let a = k as f32 / around as f32 * std::f32::consts::TAU;
+            macroquad::models::Vertex::new(s.0 + a.cos() * radius, s.1 + a.sin() * radius, 0.0, 0.0, 0.0, colors[level])
+        })
+    };
+    // One band at a time: there is a limit to how much goes to the card in one piece.
+    for level in 0..colors.len() - 1 {
+        let vertices: Vec<_> = rim(level).chain(rim(level + 1)).collect();
+        let mut indices = Vec::with_capacity(around * 6);
+        for k in 0..around {
+            let (a, b) = (k as u16, ((k + 1) % around) as u16);
+            let (c, d) = (a + around as u16, b + around as u16);
+            indices.extend([a, b, c, b, d, c]);
+        }
+        macroquad::models::draw_mesh(&macroquad::models::Mesh { vertices, indices, texture: None });
+    }
+}
+
 pub fn disc(x: f32, y: f32, r: f32, color: Color) {
     draw_poly(x, y, sides(r), r, 0.0, color);
 }
@@ -131,32 +156,87 @@ fn ramp(stops: &[Color], t: f32) -> Color {
     mix(stops[i], stops[i + 1], x - i as f32)
 }
 
-pub fn is_star(mass: f64) -> bool {
-    mass > 1.0e29
+/// What a body is, going by its mass alone (the ranges are the real ones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Too light to pull itself round: asteroids, small moons.
+    Lump,
+    /// Up to two Earths.
+    Rocky,
+    /// Uranus, Neptune.
+    IceGiant,
+    /// Up to thirteen Jupiters.
+    GasGiant,
+    /// Too light to shine as a star does, up to 0.075 Suns.
+    BrownDwarf,
+    Star,
 }
 
-/// Colour tells mass (size barely does: radius grows with the cube root). Light bodies are
-/// dim slate, through ice blue and pale sand to amber and ember for the heaviest; stars are
-/// white-hot. Negative masses run from dusky violet to hot pink.
+/// Each kind with its name and the mass (kg) it starts at.
+pub const KINDS: [(Kind, &str, f64); 6] = [
+    (Kind::Lump, "small body", 0.0),
+    (Kind::Rocky, "rocky world", 1.0e20),
+    (Kind::IceGiant, "ice giant", 1.2e25),
+    (Kind::GasGiant, "gas giant", 3.0e26),
+    (Kind::BrownDwarf, "brown dwarf", 2.5e28),
+    (Kind::Star, "star", 1.5e29),
+];
+
+pub fn kind(mass: f64) -> Kind {
+    KINDS.iter().rev().find(|k| mass.abs() >= k.2).map_or(Kind::Lump, |k| k.0)
+}
+
+pub fn is_star(mass: f64) -> bool {
+    kind(mass) == Kind::Star
+}
+
+/// Colour tells mass, and with it what a body is: grey and tan for rock, pale blue for ice
+/// giants, sand and rust for gas giants, a dull dark red for brown dwarfs, and stars from red
+/// through orange, yellow and white to blue-white, as real ones are. It changes smoothly all
+/// the way, so that no two bodies nearly alike look unlike. Negative masses run from dusky
+/// violet to hot pink.
 pub fn mass_color(mass: f64) -> Color {
-    const POSITIVE: [Color; 5] = [
-        Color::new(0.38, 0.44, 0.54, 1.0),
-        Color::new(0.50, 0.74, 0.90, 1.0),
-        Color::new(0.93, 0.90, 0.78, 1.0),
-        Color::new(0.98, 0.70, 0.36, 1.0),
-        Color::new(0.95, 0.40, 0.28, 1.0),
+    // (log10 of the mass in kg, colour)
+    // Each kind has colours of its own from its lightest to its heaviest, and one runs into
+    // the next over a fifth of a power of ten.
+    const POSITIVE: [(f32, Color); 15] = [
+        (19.0, Color::new(0.42, 0.40, 0.40, 1.0)),
+        (19.9, Color::new(0.48, 0.46, 0.45, 1.0)),
+        (20.1, Color::new(0.52, 0.52, 0.56, 1.0)),
+        (24.95, Color::new(0.82, 0.72, 0.56, 1.0)),
+        (25.2, Color::new(0.66, 0.88, 0.90, 1.0)),
+        (26.4, Color::new(0.42, 0.62, 0.96, 1.0)),
+        (26.6, Color::new(0.94, 0.86, 0.66, 1.0)),
+        (28.3, Color::new(0.84, 0.52, 0.32, 1.0)),
+        (28.5, Color::new(0.50, 0.24, 0.30, 1.0)),
+        (29.15, Color::new(0.76, 0.27, 0.22, 1.0)),
+        (29.5, Color::new(1.0, 0.44, 0.28, 1.0)),
+        (30.0, Color::new(1.0, 0.72, 0.44, 1.0)),
+        (30.3, Color::new(1.0, 0.94, 0.74, 1.0)),
+        (30.65, Color::new(1.0, 1.0, 0.96, 1.0)),
+        (31.2, Color::new(0.70, 0.80, 1.0, 1.0)),
     ];
     const NEGATIVE: [Color; 3] = [Color::new(0.42, 0.30, 0.58, 1.0), Color::new(0.78, 0.38, 0.86, 1.0), Color::new(1.0, 0.40, 0.80, 1.0)];
-    if is_star(mass) {
-        return Color::new(1.0, 0.95, 0.78, 1.0);
-    }
-    // 1e21 kg .. 1e27 kg on a log scale.
-    let t = ((mass.abs().max(1.0).log10() - 21.0) / 6.0) as f32;
+    let log = mass.abs().max(1.0).log10() as f32;
     if mass < 0.0 {
-        ramp(&NEGATIVE, t)
-    } else {
-        ramp(&POSITIVE, t)
+        return ramp(&NEGATIVE, (log - 21.0) / 6.0);
     }
+    let next = POSITIVE.iter().position(|stop| stop.0 > log).unwrap_or(POSITIVE.len() - 1).max(1);
+    let (a, b) = (POSITIVE[next - 1], POSITIVE[next]);
+    mix(a.1, b.1, ((log - a.0) / (b.0 - a.0)).clamp(0.0, 1.0))
+}
+
+/// How much a body shines by itself, 0 to 1: nothing lighter than a brown dwarf does, a
+/// brown dwarf the more the heavier it is (up to a third), and stars on from there.
+pub fn shine(mass: f64) -> f32 {
+    let log = mass.max(1.0).log10() as f32;
+    let (dwarf, star) = (KINDS[4].2.log10() as f32, KINDS[5].2.log10() as f32);
+    if log < star { 0.33 * ((log - dwarf) / (star - dwarf)).max(0.0) } else { 0.33 + 0.67 * ((log - star) / 1.8).min(1.0) }
+}
+
+/// Where a body sits between the lightest and the heaviest there are, 0 to 1.
+pub fn heft(mass: f64) -> f32 {
+    ((mass.abs().max(1.0).log10() as f32 - 20.0) / 10.5).clamp(0.0, 1.0)
 }
 
 /// Cheap per-body pseudo-random number in `0..1` (stable from frame to frame).
@@ -168,52 +248,135 @@ fn hash01(slot: u32, salt: u32) -> f32 {
     (h & 0xFFFF) as f32 / 65536.0
 }
 
-/// A body at screen position `s` with on-screen radius `r`. Far away it is a dot; closer it
-/// gains shading, a rim and a few surface features.
-pub fn body(s: (f32, f32), r: f32, mass: f64, slot: u32, fade: f32, ui: f32) {
+/// Bands across a disc, as on a giant planet: strips from pole to pole, each one of a few
+/// bands that a body keeps from frame to frame, darker or lighter than what is under them.
+fn bands(s: (f32, f32), r: f32, slot: u32, strength: f32, tint: impl Fn(f32) -> Color) {
+    let strips = (r * 0.8).clamp(12.0, 64.0) as usize;
+    let count = 5 + (hash01(slot, 40) * 6.0) as u32;
+    let thick = 2.0 * r / strips as f32;
+    for k in 0..strips {
+        let y = -r + thick * (k as f32 + 0.5);
+        // Bands narrow towards the poles, as seen on a sphere.
+        let latitude = (y / r).asin() / std::f32::consts::FRAC_PI_2;
+        let band = ((latitude * 0.5 + 0.5) * count as f32) as u32;
+        let depth = strength * (0.35 + 0.65 * hash01(slot, 41 + band));
+        // Just inside the edge, so the strips' square ends do not show.
+        let half = (r * r - y * y).max(0.0).sqrt() * 0.97;
+        let mut color = tint(if band % 2 == 0 { 0.6 } else { 1.3 });
+        color.a *= depth;
+        draw_rectangle(s.0 - half, s.1 + y - 0.5 * thick, 2.0 * half, thick, color);
+    }
+}
+
+/// A body at screen position `s` with on-screen radius `r`. Far away it is a dot, larger
+/// and, for those that shine, with more of a glow the heavier it is; closer it is drawn as
+/// what its mass makes it (see [`Kind`]). `light` points from the body to whatever lights it.
+pub fn body(s: (f32, f32), r: f32, mass: f64, slot: u32, fade: f32, ui: f32, light: (f32, f32)) {
     let base = mass_color(mass);
     let shade = |k: f32, a: f32| Color::new((base.r * k).min(1.0), (base.g * k).min(1.0), (base.b * k).min(1.0), a * fade);
+    let (shine, heft) = (if mass > 0.0 { shine(mass) } else { 0.0 }, heft(mass));
     if r < 1.3 * ui {
-        // Heavier dots are a touch bigger and brighter, so mass reads even when zoomed out.
-        let t = ((mass.abs().max(1.0).log10() - 21.0) / 6.0).clamp(0.0, 1.0) as f32;
-        let dot = if is_star(mass) { 2.2 } else { 0.9 + 0.7 * t };
-        draw_poly(s.0, s.1, 10, dot * ui, 0.0, shade(1.0, 0.75 + 0.25 * t));
+        let dot = (0.9 + 1.5 * heft) * ui;
+        if shine > 0.0 {
+            for k in 0..5 {
+                disc(s.0, s.1, dot * (1.0 + (0.6 + 2.4 * shine) * (1.0 - k as f32 / 5.0).powi(2)), shade(1.0, 0.03 + 0.05 * shine));
+            }
+        }
+        draw_poly(s.0, s.1, 10, dot, 0.0, shade(1.0, 0.75 + 0.25 * heft));
         return;
     }
     let r = r.min(1.0e5);
-    if is_star(mass) {
-        // Corona.
-        let glow = |a: f32| Color::new(1.0, 0.72, 0.30, a * fade);
-        disc(s.0, s.1, r * 1.9 + 6.0 * ui, glow(0.07));
-        disc(s.0, s.1, r * 1.35 + 3.0 * ui, glow(0.14));
-        disc(s.0, s.1, r, shade(0.92, 1.0));
-        disc(s.0, s.1, r * 0.82, shade(1.08, 1.0));
+    // Towards the light, by a fraction of the radius.
+    let lit = |k: f32| (s.0 + light.0 * r * k, s.1 + light.1 * r * k);
+    if shine > 0.0 {
+        // Brown dwarfs and stars are one family: the heavier, the wider and stronger the glow
+        // around them and the brighter the middle, while the dark bands of a brown dwarf fade
+        // away over the lightest stars.
+        let star = ((shine - 0.33) / 0.15).clamp(0.0, 1.0);
+        // The light around it, falling off away from the body.
+        let reach = r * (0.25 + 0.9 * shine) + 8.0 * shine * ui;
+        let strength = 0.35 + 0.5 * shine;
+        let falling: [Color; 7] = std::array::from_fn(|k| shade(1.0, strength * (1.0 - k as f32 / 6.0).powf(2.5)));
+        gradient(s, r * 0.98, r + reach, &falling);
+        // The body: brightest in the middle, darker at the limb.
+        let limb = |t: f32| shade(0.62 + 0.3 * star + (0.3 + 0.2 * star) * (1.0 - t), 1.0);
+        gradient(s, 0.0, r, &[limb(0.0), limb(0.25), limb(0.6), limb(1.0)]);
+        if r >= 5.0 * ui && star < 1.0 {
+            bands(s, r * 0.98, slot, 0.5 * (1.0 - star), |k| shade(0.45 * k, 1.0));
+        }
         return;
     }
     if r < 5.0 * ui {
         disc(s.0, s.1, r, shade(1.0, 1.0));
         return;
     }
-    // A lit sphere: dark limb, brighter towards an off-centre highlight.
-    let lit = |k: f32| (s.0 - r * k, s.1 - r * k);
-    disc(s.0, s.1, r, shade(0.62, 1.0));
-    let (x, y) = lit(0.07);
-    disc(x, y, r * 0.90, shade(0.82, 1.0));
-    let (x, y) = lit(0.14);
-    disc(x, y, r * 0.74, shade(1.0, 1.0));
-    if r > 14.0 * ui {
-        // Surface marks, the same every frame for a given body.
-        let marks = 3 + (hash01(slot, 0) * 3.0) as u32;
-        for k in 0..marks {
-            let a = hash01(slot, 1 + 3 * k) * std::f32::consts::TAU;
-            let d = (0.1 + 0.5 * hash01(slot, 2 + 3 * k)) * r;
-            let size = (0.06 + 0.12 * hash01(slot, 3 + 3 * k)) * r;
-            disc(s.0 + a.cos() * d, s.1 + a.sin() * d, size, shade(0.55, 0.45));
+    let kind = if mass < 0.0 { Kind::Rocky } else { kind(mass) };
+    if kind == Kind::Lump {
+        // Not round: a fan of wedges of uneven reach, and a lighter one inside it towards the light.
+        let corners = 9;
+        let reach = |k: usize, scale: f32, centre: (f32, f32)| {
+            let a = k as f32 / corners as f32 * std::f32::consts::TAU + hash01(slot, 5) * 6.0;
+            let d = r * scale * (0.68 + 0.42 * hash01(slot, 20 + (k % corners) as u32));
+            vec2(centre.0 + a.cos() * d, centre.1 + a.sin() * d)
+        };
+        for (scale, centre, color) in [(1.0, s, shade(0.6, 1.0)), (0.8, lit(0.1), shade(0.85, 1.0)), (0.55, lit(0.22), shade(1.05, 1.0))] {
+            for k in 0..corners {
+                draw_triangle(vec2(centre.0, centre.1), reach(k, scale, centre), reach(k + 1, scale, centre), color);
+            }
         }
-        let (x, y) = lit(0.28);
-        disc(x, y, r * 0.32, shade(1.25, 0.25));
+        return;
+    }
+    // A lit sphere: dark limb, brighter towards the side the light comes from.
+    disc(s.0, s.1, r, shade(0.55, 1.0));
+    let (x, y) = lit(0.10);
+    disc(x, y, r * 0.88, shade(0.80, 1.0));
+    let (x, y) = lit(0.20);
+    disc(x, y, r * 0.72, shade(1.0, 1.0));
+    match kind {
+        Kind::IceGiant => bands(s, r, slot, 0.16, |k| shade(k, 1.0)),
+        Kind::GasGiant => {
+            bands(s, r, slot, 0.42, |k| shade(k, 1.0));
+            if r > 14.0 * ui && hash01(slot, 60) < 0.6 {
+                // A storm: a flattened spot at some latitude.
+                let (a, d) = (hash01(slot, 61) * std::f32::consts::TAU, 0.25 + 0.3 * hash01(slot, 62));
+                let (x, y) = (s.0 + a.cos() * d * r, s.1 + a.sin() * d * r * 0.7);
+                draw_ellipse(x, y, 0.16 * r, 0.09 * r, 0.0, shade(1.35, 0.55));
+            }
+        }
+        _ if r > 14.0 * ui => {
+            // Rock: craters and darker plains, the same every frame for a given body.
+            let marks = 4 + (hash01(slot, 0) * 5.0) as u32;
+            for k in 0..marks {
+                let a = hash01(slot, 1 + 3 * k) * std::f32::consts::TAU;
+                let d = (0.1 + 0.6 * hash01(slot, 2 + 3 * k)) * r;
+                let size = (0.05 + 0.14 * hash01(slot, 3 + 3 * k)) * r;
+                let at = (s.0 + a.cos() * d, s.1 + a.sin() * d);
+                // Dark, with the floor lit on the side away from the light.
+                disc(at.0, at.1, size, shade(0.45, 0.5));
+                disc(at.0 - light.0 * size * 0.25, at.1 - light.1 * size * 0.25, size * 0.6, shade(0.8, 0.25));
+            }
+        }
+        _ => {}
+    }
+    if r > 14.0 * ui {
+        let (x, y) = lit(0.38);
+        disc(x, y, r * 0.3, shade(1.3, 0.2));
     }
     ring(s.0, s.1, r, ui, shade(1.25, 0.35));
+}
+
+/// The way light falls when nothing in particular lights a body: from the upper left.
+pub const NO_LIGHT: (f32, f32) = (-0.707, -0.707);
+
+/// Which way the light comes from for a body at `s`, with a star at `star` (both on screen).
+pub fn light_from(s: (f32, f32), star: Option<(f32, f32)>) -> (f32, f32) {
+    match star.map(|at| (at.0 - s.0, at.1 - s.1)) {
+        Some((dx, dy)) if dx * dx + dy * dy > 1.0 => {
+            let d = (dx * dx + dy * dy).sqrt();
+            (dx / d, dy / d)
+        }
+        _ => NO_LIGHT,
+    }
 }
 
 /// Scale bar: a ruler of a round length. Returns nothing; draws centred on `x`.
@@ -296,39 +459,35 @@ pub fn key_row(ui: &mut egui::Ui, what: &str, key: &str) {
     });
 }
 
-/// The colour-to-mass key: a strip of the ramp with a few labelled masses under it.
+/// The key to how bodies are drawn: each kind with its colours and the masses it covers.
 pub fn mass_legend(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
-    let painter = ui.painter();
-    // Positive ramp over most of the strip, then a star swatch and the negative ramp.
-    let steps = 48;
-    let ramp_w = rect.width() * 0.62;
-    for i in 0..steps {
-        let t = i as f64 / (steps - 1) as f64;
-        let x = rect.left() + ramp_w * i as f32 / steps as f32;
-        let cell = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + ramp_w / steps as f32 + 0.5, rect.bottom()));
-        painter.rect_filled(cell, 0.0, c32(mass_color(10f64.powf(21.0 + 6.0 * t))));
-    }
-    let star = egui::Rect::from_min_max(egui::pos2(rect.left() + rect.width() * 0.66, rect.top()), egui::pos2(rect.left() + rect.width() * 0.74, rect.bottom()));
-    painter.rect_filled(star, 0.0, c32(mass_color(2.0e30)));
-    let neg_left = rect.left() + rect.width() * 0.78;
-    let neg_w = rect.right() - neg_left;
-    for i in 0..16 {
-        let t = i as f64 / 15.0;
-        let x = neg_left + neg_w * i as f32 / 16.0;
-        let cell = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + neg_w / 16.0 + 0.5, rect.bottom()));
-        painter.rect_filled(cell, 0.0, c32(mass_color(-(10f64.powf(21.0 + 6.0 * t)))));
-    }
-    let font = egui::FontId::new(11.0, egui::FontFamily::Proportional);
-    let label = |x: f32, align: egui::Align2, text: &str| {
-        painter.text(egui::pos2(x, rect.bottom() + 3.0), align, text, font.clone(), c32(DIM));
+    let row = |ui: &mut egui::Ui, name: &str, range: String, color: &dyn Fn(f32) -> Color| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(44.0, 9.0), egui::Sense::hover());
+            for i in 0..22 {
+                let x = rect.left() + rect.width() * i as f32 / 22.0;
+                let cell = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + rect.width() / 22.0 + 0.5, rect.bottom()));
+                ui.painter().rect_filled(cell, 0.0, c32(color(i as f32 / 21.0)));
+            }
+            ui.label(egui::RichText::new(name).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(range).small().color(c32(DIM)));
+            });
+        });
     };
-    label(rect.left(), egui::Align2::LEFT_TOP, "1e21 kg");
-    label(rect.left() + ramp_w * 0.5, egui::Align2::CENTER_TOP, "1e24");
-    label(rect.left() + ramp_w, egui::Align2::RIGHT_TOP, "1e27");
-    label(star.center().x, egui::Align2::CENTER_TOP, "star");
-    label(rect.right(), egui::Align2::RIGHT_TOP, "negative");
-    ui.add_space(16.0);
+    let short = |kg: f64| format!("{kg:.1e}").replace(".0e", "e");
+    for (k, (_, name, from)) in KINDS.iter().enumerate() {
+        // The lightest and the heaviest kinds have no end: shown over a few powers of ten.
+        let (lo, hi) = (from.max(1.0e18).log10(), KINDS.get(k + 1).map_or(31.2, |next| next.2.log10()));
+        let range = match (k, KINDS.get(k + 1)) {
+            (0, Some(next)) => format!("under {} kg", short(next.2)),
+            (_, Some(next)) => format!("{} to {} kg", short(*from), short(next.2)),
+            (_, None) => format!("over {} kg", short(*from)),
+        };
+        row(ui, name, range, &|t| mass_color(10f64.powf(lo + (hi - lo) * t as f64)));
+    }
+    row(ui, "negative mass", String::new(), &|t| mass_color(-(10f64.powf(21.0 + 6.0 * t as f64))));
+    ui.add_space(4.0);
 }
 
 // --- map labels ------------------------------------------------------------------------------

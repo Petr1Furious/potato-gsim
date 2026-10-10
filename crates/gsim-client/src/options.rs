@@ -138,7 +138,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Delete the selected body", "DEL");
     }
     style::key_row(ui, "Fullscreen", "F11");
-    style::section(ui, "MASS");
+    style::section(ui, "BODIES");
     style::mass_legend(ui);
 }
 

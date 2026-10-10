@@ -219,7 +219,7 @@ impl Game {
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
             density: {
                 let mut density = Density::new();
-                density.sparse = true;
+                density.crowd = 0.0;
                 density
             },
             flashes: Vec::new(),
@@ -709,6 +709,11 @@ impl Game {
         let row_view = row.view();
         let frame = SystemFrame::of(&row_view);
         let escape_radius = world.rules.escape_radius;
+        // Planets are lit by the heaviest star there is.
+        let star = (0..row.x.len() as u32)
+            .filter(|j| alive(*j) && style::is_star(row.props.mass[*j as usize]))
+            .max_by(|a, b| row.props.mass[*a as usize].total_cmp(&row.props.mass[*b as usize]))
+            .map(|j| view.to_screen(body(j).x, body(j).y));
         for j in 0..row.x.len() as u32 {
             if !alive(j) {
                 continue;
@@ -728,7 +733,7 @@ impl Game {
                 1.0
             };
             if mass < 0.0 || shaped[j as usize] {
-                style::body(s, r_px, mass, j, fade, ui);
+                style::body(s, r_px, mass, j, fade, ui, style::light_from(s, star));
             }
             if let Some(name) = world.names.get(&j).filter(|_| settings.body_names && self.selected != Some(j)) {
                 let size = LABEL * ui;

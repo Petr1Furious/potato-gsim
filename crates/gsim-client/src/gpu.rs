@@ -13,37 +13,66 @@ use macroquad::miniquad::{
 };
 use macroquad::prelude::*;
 
-/// One body: position in buffer pixels, then its light (colour times brightness).
-pub type Vertex = [f32; 5];
+/// One body: position in buffer pixels, its light (colour times brightness), how many of
+/// those pixels it is across, and how much of its light glows (times the pixels it lights).
+pub type Vertex = [f32; 7];
 
 const POINT_VERTEX: &str = r#"#version 100
 attribute vec2 pos;
 attribute vec3 light;
+attribute vec2 shape;
 uniform highp vec4 view;
 uniform highp vec4 target;
 varying highp vec3 c;
 varying highp vec2 centre;
+varying highp float across;
 void main() {
     gl_Position = vec4(pos.x * view.x - 1.0, pos.y * view.y - 1.0, 0.0, 1.0);
-    gl_PointSize = view.z;
-    c = light;
+    if (target.z > 0.5) {
+        // The small image, for the glow: two pixels, shared out below.
+        gl_PointSize = 2.0;
+        c = light * max(shape.y, 0.0);
+        across = 0.0;
+    } else if (shape.y < 0.0) {
+        // Light around a body that shines: falls off smoothly (a negative width says so).
+        across = -shape.x * view.z;
+        gl_PointSize = shape.x * view.z;
+        c = light;
+    } else if (shape.x <= 1.0) {
+        // One cell of the grid, whole.
+        gl_PointSize = view.z;
+        c = light;
+        across = 0.0;
+    } else {
+        // A disc with a soft edge, and room for that edge.
+        across = shape.x * view.z;
+        gl_PointSize = ceil(across) + 1.0;
+        c = light;
+    }
     centre = pos * view.xy * 0.5 * target.xy;
 }"#;
 
 /// With `target.z` set, a point two pixels across shares its light between the pixels it
-/// touches by how near their centres are to its own (times `target.w`, the pixels it lights in
-/// the full-size image): it then moves smoothly across a coarse
-/// image instead of jumping from pixel to pixel.
+/// touches by how near their centres are to its own: it then moves smoothly across a coarse
+/// image instead of jumping from pixel to pixel. Otherwise a point more than a cell across
+/// is a disc `across` pixels wide whose edge fades over one pixel, or (negative `across`)
+/// light that falls off smoothly from the middle to nothing at that width.
 const POINT_FRAGMENT: &str = r#"#version 100
 precision highp float;
 uniform highp vec4 target;
 varying highp vec3 c;
 varying highp vec2 centre;
+varying highp float across;
 void main() {
     float share = 1.0;
     if (target.z > 0.5) {
         vec2 off = abs(gl_FragCoord.xy - centre);
-        share = target.w * max(0.0, 1.0 - off.x) * max(0.0, 1.0 - off.y);
+        share = max(0.0, 1.0 - off.x) * max(0.0, 1.0 - off.y);
+    } else if (across > 0.0) {
+        share = clamp(0.5 * across - length(gl_FragCoord.xy - centre) + 0.5, 0.0, 1.0);
+    } else if (across < 0.0) {
+        float d = min(1.0, -2.0 * length(gl_FragCoord.xy - centre) / across);
+        share = exp(-5.0 * d * d) * (1.0 - d * d);
     }
     gl_FragColor = vec4(c * share, 1.0);
 }"#;
@@ -180,7 +209,7 @@ impl Gpu {
         let point_shader = shader(ctx, POINT_VERTEX, POINT_FRAGMENT, &[], &["view", "target"])?;
         let points = ctx.new_pipeline(
             &[BufferLayout { stride: std::mem::size_of::<Vertex>() as i32, ..Default::default() }],
-            &[VertexAttribute::new("pos", VertexFormat::Float2), VertexAttribute::new("light", VertexFormat::Float3)],
+            &[VertexAttribute::new("pos", VertexFormat::Float2), VertexAttribute::new("light", VertexFormat::Float3), VertexAttribute::new("shape", VertexFormat::Float2)],
             point_shader,
             PipelineParams { primitive_type: PrimitiveType::Points, color_blend: Some(additive), alpha_blend: Some(additive), ..Default::default() },
         );
@@ -283,12 +312,12 @@ impl Gpu {
     }
 
     /// Draw `vertices` (positions on a `buffer` sized grid whose cells are `dot` physical
-    /// pixels) as squares `span` cells across, stretched over `dest` on screen. The glow comes from an image one `block`-th
+    /// pixels), stretched over `dest` on screen. The glow comes from an image one `block`-th
     /// the size of the grid; `exposure` and `glow` scale the two before tone mapping. With
     /// `linger`, light also stays behind: each frame what was there is multiplied by the
     /// first number, and it is shown with the second as its strength.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, span: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, linger: Option<(f32, f32)>, background: Color) {
+    pub fn draw(&mut self, vertices: &[Vertex], buffer: (usize, usize), dot: u32, block: usize, dest: (f32, f32), exposure: f32, glow: f32, linger: Option<(f32, f32)>, background: Color) {
         let ctx = context();
         let (w, h) = ((buffer.0 as u32 * dot).clamp(16, 16_384), (buffer.1 as u32 * dot).clamp(16, 16_384));
         // The small image is a whole number of blocks, so it reaches a little past the edge.
@@ -307,11 +336,11 @@ impl Gpu {
         // The same points twice: full size, and as single pixels of the small image, where
         // each pixel then holds the light of a whole block of the large one.
         // In the small image a body is spread over the pixels around it (see the shader).
-        for (target, size, grid, soft) in [(image, (dot * span) as f32, (buffer.0 as f32, buffer.1 as f32), 0.0), (halo, 2.0, covered, 1.0)] {
+        for (target, grid, soft) in [(image, (buffer.0 as f32, buffer.1 as f32), 0.0), (halo, covered, 1.0)] {
             ctx.begin_pass(Some(target.pass), PassAction::clear_color(0.0, 0.0, 0.0, 0.0));
             ctx.apply_pipeline(&self.points);
             ctx.apply_bindings(&points);
-            ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / grid.0, 2.0 / grid.1, size, 0.0], target: [target.w as f32, target.h as f32, soft, (span * span) as f32] }));
+            ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / grid.0, 2.0 / grid.1, dot as f32, 0.0], target: [target.w as f32, target.h as f32, soft, 0.0] }));
             ctx.draw(0, vertices.len() as i32, 1);
             ctx.end_render_pass();
         }
@@ -323,7 +352,7 @@ impl Gpu {
             ctx.draw(0, 6, 1);
             ctx.apply_pipeline(&self.points);
             ctx.apply_bindings(&points);
-            ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / buffer.0 as f32, 2.0 / buffer.1 as f32, (dot * span) as f32, 0.0], target: [trail.w as f32, trail.h as f32, 0.0, 1.0] }));
+            ctx.apply_uniforms(UniformsSource::table(&PointUniforms { view: [2.0 / buffer.0 as f32, 2.0 / buffer.1 as f32, dot as f32, 0.0], target: [trail.w as f32, trail.h as f32, 0.0, 0.0] }));
             ctx.draw(0, vertices.len() as i32, 1);
             ctx.end_render_pass();
         }

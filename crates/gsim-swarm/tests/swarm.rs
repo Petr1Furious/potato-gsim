@@ -251,7 +251,8 @@ fn the_runner_holds_the_pace_whatever_a_step_costs() {
     for count in [300.0, 3000.0, 30_000.0] {
         let pace = 86_400.0;
         let runner = Runner::start(Sim::new(scenario::build("cloud", 1, &params(&[("count", count), ("heat", 0.2), ("rotation", 1.0)])).unwrap()), pace, 4);
-        std::thread::sleep(Duration::from_millis(400));
+        // (The world comes up to its pace over the first steps: measured once it is there.)
+        std::thread::sleep(Duration::from_millis(1500));
         let from = (runner.published.lock().unwrap().time, std::time::Instant::now());
         std::thread::sleep(Duration::from_millis(1200));
         let p = runner.published.lock().unwrap();

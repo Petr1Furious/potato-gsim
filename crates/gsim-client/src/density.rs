@@ -41,6 +41,21 @@ pub struct Big {
     pub fade: f32,
 }
 
+/// Light around a body that shines: where (as in `pix`), its colour in the palette, how
+/// bright in the middle and how many pixels across. It falls off smoothly from the middle.
+type Aura = (u32, u8, f32, f32);
+
+/// How bright an aura `across` pixels wide is `far` pixels from its middle, of what it is there.
+fn aura_share(far: f32, across: f32) -> f32 {
+    let d = (2.0 * far / across).min(1.0);
+    (-5.0 * d * d).exp() * (1.0 - d * d)
+}
+
+/// How many pixels a dot `size` across lights, counting those at its soft edge in part.
+fn lit(size: f32) -> f32 {
+    if size <= 1.0 { 1.0 } else { std::f32::consts::FRAC_PI_4 * size * size }
+}
+
 /// A brief light where two bodies merged, in buffer pixels.
 pub struct Flash {
     pub x: f64,
@@ -80,16 +95,20 @@ pub struct Density {
     corner: (f64, f64, f64),
     /// Per body: buffer pixel (`y << 16 | x`) or `NOWHERE`, and palette entry with brightness.
     pix: Vec<u32>,
-    tint: Vec<(u8, f32)>,
+    /// For each body: its colour in the palette, how bright it is, how many pixels across
+    /// and how much stronger than usual its glow.
+    tint: Vec<(u8, f32, f32, f32)>,
+    auras: Vec<Aura>,
     image: Image,
     texture: Option<Texture2D>,
     exposure: f32,
     pool: rayon::ThreadPool,
     gpu: Option<Gpu>,
     gpu_wanted: bool,
-    /// A world of a few thousand bodies, where each one should be easy to see: dots are
-    /// larger and brighter and glow more than in a crowd of hundreds of thousands.
-    pub sparse: bool,
+    /// Where the world is between one of a thousand bodies or fewer (0), in which each
+    /// should be easy to see and to tell from the others, and a crowd of fifty thousand or
+    /// more (1), which is drawn as a crowd: dots get smaller, dimmer and glow less on the way.
+    pub crowd: f32,
     /// Light lingers and fades slowly, so that moving bodies draw streaks.
     pub long_exposure: bool,
     /// The lingering light (rasteriser only; the graphics card keeps its own).
@@ -160,13 +179,14 @@ impl Density {
             corner: (0.0, 0.0, 1.0),
             pix: Vec::new(),
             tint: Vec::new(),
+            auras: Vec::new(),
             image: Image::empty(),
             texture: None,
             exposure: 1.0,
             pool,
             gpu: None,
             gpu_wanted: false,
-            sparse: false,
+            crowd: 1.0,
             long_exposure: false,
             trail: Vec::new(),
             trail_stale: false,
@@ -210,12 +230,12 @@ impl Density {
 
     /// How bright a typical lit pixel should come out, before tone mapping.
     fn brightness(&self) -> f32 {
-        if self.sparse { 3.0 } else { 0.5 }
+        3.0 * (0.5f32 / 3.0).powf(self.crowd)
     }
 
     /// How much stronger than usual the glow is.
     fn halo(&self) -> f32 {
-        if self.sparse { 2.5 } else { 1.0 }
+        2.5 * (1.0f32 / 2.5).powf(self.crowd)
     }
 
     /// Images for drawing without the graphics card, sized for the current buffer.
@@ -246,21 +266,22 @@ impl Density {
         let (w, h, scale) = (self.w, self.h, self.scale);
         let n = bodies.len();
         self.pix.resize(n, NOWHERE);
-        self.tint.resize(n, (0, 0.0));
+        self.tint.resize(n, (0, 0.0, 1.0, 1.0));
         let colors = palette(mode);
         // Buffer pixels per metre, and the world position of the buffer's corner.
         let ppm = 1.0 / (view.mpp * scale as f64);
         let (x0, y0) = (view.cx - 0.5 * screen_width() as f64 * view.mpp, view.cy - 0.5 * screen_height() as f64 * view.mpp);
         let big_r = BIG_PX * scale;
-        let faintest = if self.sparse { 0.5 } else { 0.02 };
+        let crowd = self.crowd;
+        let faintest = 0.5 * (0.02f32 / 0.5).powf(crowd);
         let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
         let (pix, tint) = (&mut self.pix, &mut self.tint);
-        let mut big: Vec<Big> = self.pool.install(|| {
+        let big = self.pool.install(|| {
             pix.par_chunks_mut(chunk)
                 .zip(tint.par_chunks_mut(chunk))
                 .enumerate()
                 .map(|(c, (pix, tint))| {
-                    let mut big = Vec::new();
+                    let (mut big, mut auras) = (Vec::new(), Vec::new());
                     let base = c * chunk;
                     for (k, (p, t)) in pix.iter_mut().zip(tint.iter_mut()).enumerate() {
                         let i = base + k;
@@ -274,14 +295,14 @@ impl Density {
                         if mass <= 0.0 || !(bx > -r && by > -r && bx < w as f32 + r && by < h as f32 + r) {
                             continue;
                         }
-                        if r * scale >= big_r {
+                        let shown = r * scale >= big_r;
+                        if shown {
                             big.push(Big { id: bodies.id[i], x: bx * scale, y: by * scale, r: r * scale, mass, fade: 1.0 - bodies.fade[i] });
-                            continue;
                         }
                         if bx < 0.0 || by < 0.0 || bx >= w as f32 || by >= h as f32 {
                             continue;
                         }
-                        *p = (by as u32) << 16 | bx as u32;
+                        let at = (by as u32) << 16 | bx as u32;
                         let shade = match mode {
                             ColorMode::Mass => ((mass.log10() - 19.0) / 12.0).clamp(0.0, 1.0),
                             ColorMode::Speed => {
@@ -290,19 +311,46 @@ impl Density {
                             }
                             ColorMode::Origin => bodies.group[i].min(3) as f32 / (PALETTE - 1) as f32,
                         };
+                        let shade = (shade * (PALETTE - 1) as f32 + 0.5) as u8;
+                        // A body drawn as a disc keeps its dot under it for a while, and with
+                        // it its glow: that fades away as the disc grows, instead of going out
+                        // the moment the disc appears.
+                        let lasting = if shown { (1.0 - (r * scale - big_r) / (6.0 * big_r)).clamp(0.0, 1.0) } else { 1.0 };
+                        if lasting <= 0.0 {
+                            continue;
+                        }
+                        let shine = style::shine(mass as f64);
+                        if shine > 0.0 {
+                            // What shines has light around it, wider and stronger the more it
+                            // shines (a disc has a corona of its own to take over).
+                            auras.push((at, shade, (0.25 + 0.75 * shine) * lasting * (1.0 - bodies.fade[i]), (8.0 + 28.0 * shine) * (1.0 - 0.5 * crowd)));
+                        }
+                        *p = at;
                         // A dot's light grows with its area until it fills a pixel; heavier
                         // bodies shine a little more so they stand out when zoomed far out.
                         let area = (r * r * std::f32::consts::PI).clamp(faintest, 1.0);
                         let weight = area.sqrt() * (0.35 + 0.65 * ((mass.log10() - 19.0) / 8.0).clamp(0.0, 1.0)) * (1.0 - bodies.fade[i]);
-                        *t = ((shade * (PALETTE - 1) as f32 + 0.5) as u8, weight);
+                        // In a small world a dot is 1.5 to 4 pixels across by its mass; in a
+                        // crowd one pixel, with the heaviest standing out at up to two.
+                        let heft = style::heft(mass as f64);
+                        // What shines is bright however few pixels it covers. (The glow all
+                        // bodies share is not made stronger for that: it has light of its own.)
+                        let brighter = 1.0 + 4.0 * shine;
+                        let weight = weight.max(shine * (1.0 - bodies.fade[i])) * brighter * lasting;
+                        let size = (1.5 + 2.5 * heft).powf(1.0 - crowd) * (1.0 + ((mass.log10() - 27.0) / 3.0).clamp(0.0, 1.0)).powf(crowd);
+                        let glow = (1.0 - 0.5 * (1.0 - crowd)) / brighter;
+                        *t = (shade, weight, size, glow);
                     }
-                    big
+                    (big, auras)
                 })
-                .reduce(Vec::new, |mut a, mut b| {
-                    a.append(&mut b);
+                .reduce(Default::default, |mut a: (Vec<Big>, Vec<Aura>), mut b| {
+                    a.0.append(&mut b.0);
+                    a.1.append(&mut b.1);
                     a
                 })
         });
+        let (mut big, auras) = big;
+        self.auras = auras;
         if big.len() > MAX_BIG {
             big.sort_unstable_by(|a, b| b.r.total_cmp(&a.r));
             big.truncate(MAX_BIG);
@@ -340,24 +388,41 @@ impl Density {
         // Each band of rows is owned by one task, which picks its bodies out of the list.
         let bands = self.pool.current_num_threads();
         let rows = h.div_ceil(bands).max(1);
-        let span: u32 = if self.sparse { 2 } else { 1 };
-        let (pix, tint) = (&self.pix, &self.tint);
+        let (pix, tint, auras) = (&self.pix, &self.tint, &self.auras);
         self.pool.install(|| {
             self.acc.par_chunks_mut(rows * w).enumerate().for_each(|(band, acc)| {
                 acc.fill([0.0; 4]);
-                let (first, last) = ((band * rows) as u32, (band * rows + acc.len() / w) as u32);
-                for (p, (shade, weight)) in pix.iter().zip(tint) {
-                    let (x, y) = ((p & 0xFFFF) as usize, p >> 16);
-                    if *p == NOWHERE || y + span <= first || y >= last {
+                let (first, last) = ((band * rows) as i32, (band * rows + acc.len() / w) as i32);
+                for (p, shade, light, across) in auras {
+                    let (x, y, reach) = ((p & 0xFFFF) as i32, (p >> 16) as i32, (0.5 * across).ceil() as i32);
+                    let c = &colors[*shade as usize];
+                    for row in (y - reach).max(first)..=(y + reach).min(last - 1) {
+                        for col in (x - reach).max(0)..=(x + reach).min(w as i32 - 1) {
+                            let share = light * aura_share((((col - x) * (col - x) + (row - y) * (row - y)) as f32).sqrt(), *across);
+                            let at = &mut acc[(row - first) as usize * w + col as usize];
+                            for k in 0..3 {
+                                at[k] += c[k] * share;
+                            }
+                        }
+                    }
+                }
+                for (p, (shade, weight, size, _)) in pix.iter().zip(tint) {
+                    let (x, y) = ((p & 0xFFFF) as i32, (p >> 16) as i32);
+                    // A dot of one pixel is that pixel; a larger one is a disc with a soft
+                    // edge, reaching this many pixels from its centre.
+                    let reach = if *size <= 1.0 { 0 } else { (0.5 * size).ceil() as i32 };
+                    if *p == NOWHERE || y + reach < first || y - reach >= last {
                         continue;
                     }
                     let c = &colors[*shade as usize];
                     // A dot may straddle two bands; each band lights its own rows of it.
-                    for row in y.max(first)..(y + span).min(last) {
-                        let start = (row - first) as usize * w + x;
-                        for at in &mut acc[start..start + (span as usize).min(w - x)] {
+                    for row in (y - reach).max(first)..=(y + reach).min(last - 1) {
+                        for col in (x - reach).max(0)..=(x + reach).min(w as i32 - 1) {
+                            let far = (((col - x) * (col - x) + (row - y) * (row - y)) as f32).sqrt();
+                            let share = if reach == 0 { 1.0 } else { (0.5 * size - far + 0.5).clamp(0.0, 1.0) };
+                            let at = &mut acc[(row - first) as usize * w + col as usize];
                             for k in 0..3 {
-                                at[k] += c[k] * weight;
+                                at[k] += c[k] * weight * share;
                             }
                         }
                     }
@@ -397,20 +462,21 @@ impl Density {
         let (glow, blur) = (&mut self.glow, &mut self.blur);
         let bands = self.pool.current_num_threads();
         let glow_rows = gh.div_ceil(bands).max(1);
-        // A body's position in the small image, and how much light it is in all.
-        let (half, lit) = (0.5 * span as f32, (span * span) as f32);
+        // A body's position in the small image.
         let small = |v: usize| {
-            let g = ((v as f32 + half) / GLOW_DIV as f32 - 0.5).max(0.0);
+            let g = ((v as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
             (g as usize, g.fract())
         };
         self.pool.install(|| {
             glow.par_chunks_mut(glow_rows * gw).enumerate().for_each(|(band, out)| {
                 out.fill([0.0; 4]);
                 let (first, last) = (band * glow_rows, band * glow_rows + out.len() / gw);
-                for (p, (shade, weight)) in pix.iter().zip(tint) {
+                for (p, (shade, weight, size, glow)) in pix.iter().zip(tint) {
                     if *p == NOWHERE {
                         continue;
                     }
+                    // How much light the dot is in all, and how much of it glows.
+                    let lit = lit(*size) * glow;
                     let (gy, fy) = small((p >> 16) as usize);
                     if gy + 1 < first || gy >= last {
                         continue;
@@ -552,10 +618,8 @@ impl Density {
         let (cw, ch) = (w.div_ceil(CELL), h.div_ceil(CELL));
         let colors = self.colors;
         let n = self.pix.len();
-        self.vertices.resize(n, [0.0; 5]);
+        self.vertices.resize(n, [0.0; 7]);
         let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
-        let span: u32 = if self.sparse { 2 } else { 1 };
-        let centre = 0.5 * span as f32;
         let (pix, tint, vertices) = (&self.pix, &self.tint, &mut self.vertices);
         let grid = self.pool.install(|| {
             vertices
@@ -564,18 +628,19 @@ impl Density {
                 .zip(tint.par_chunks(chunk))
                 .map(|((out, pix), tint)| {
                     let mut grid = vec![(0u32, 0.0f32); cw * ch];
-                    for ((v, p), (shade, weight)) in out.iter_mut().zip(pix).zip(tint) {
+                    for ((v, p), (shade, weight, size, glow)) in out.iter_mut().zip(pix).zip(tint) {
                         if *p == NOWHERE {
                             // Off screen: the card clips it.
-                            *v = [-10.0, -10.0, 0.0, 0.0, 0.0];
+                            *v = [-10.0, -10.0, 0.0, 0.0, 0.0, 1.0, 0.0];
                             continue;
                         }
                         let (x, y) = ((p & 0xFFFF) as usize, (p >> 16) as usize);
                         let c = &colors[*shade as usize];
-                        *v = [x as f32 + centre, y as f32 + centre, c[0] * weight, c[1] * weight, c[2] * weight];
+                        let lit = lit(*size);
+                        *v = [x as f32 + 0.5, y as f32 + 0.5, c[0] * weight, c[1] * weight, c[2] * weight, *size, lit * glow];
                         let cell = &mut grid[(y / CELL) * cw + x / CELL];
-                        cell.0 += 1;
-                        cell.1 += (c[0] + c[1] + c[2]) * weight;
+                        cell.0 += lit.ceil() as u32;
+                        cell.1 += (c[0] + c[1] + c[2]) * weight * lit;
                     }
                     grid
                 })
@@ -587,6 +652,13 @@ impl Density {
                 })
                 .unwrap_or_default()
         });
+        // The light around what shines: points too, marked by a negative last number. (The
+        // card draws a point only so large.)
+        let widest = 60.0 / self.dot as f32;
+        self.vertices.extend(self.auras.iter().map(|(p, shade, light, across)| {
+            let c = &colors[*shade as usize];
+            [(p & 0xFFFF) as f32 + 0.5, (p >> 16) as f32 + 0.5, c[0] * light, c[1] * light, c[2] * light, across.min(widest), -1.0]
+        }));
         // Bodies in a block light at most as many pixels as the block has.
         let (lit, light) = grid.iter().fold((0u32, 0.0f32), |s, c| (s.0 + c.0.min((CELL * CELL) as u32), s.1 + c.1));
         if lit > 0 {
@@ -597,7 +669,8 @@ impl Density {
         // card to blend one by one. When bodies share pixels that heavily, add their light up
         // here and send one point for each lit pixel instead.
         let seen: u32 = grid.iter().map(|c| c.0).sum();
-        if span == 1 && seen > 2 * lit {
+        // (Only dots of one pixel are added up; the few larger ones in a crowd go as they are.)
+        if self.crowd >= 1.0 && seen > 2 * lit {
             let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
             for (i, _) in grid.iter().enumerate().filter(|(_, c)| c.0 > 0) {
                 (x0, x1, y0, y1) = (x0.min(i % cw), x1.max(i % cw), y0.min(i / cw), y1.max(i / cw));
@@ -608,13 +681,13 @@ impl Density {
             self.merged.clear();
             self.merged.resize(bw * bh, [0.0; 3]);
             let rows = bh.div_ceil(self.pool.current_num_threads()).max(1);
-            let (pix, tint, merged) = (&self.pix, &self.tint, &mut self.merged);
+            let (pix, tint, merged, vertices) = (&self.pix, &self.tint, &mut self.merged, &self.vertices);
             self.vertices = self.pool.install(|| {
                 merged.par_chunks_mut(rows * bw).enumerate().for_each(|(band, out)| {
                     let (first, last) = (top + band * rows, top + band * rows + out.len() / bw);
-                    for (p, (shade, weight)) in pix.iter().zip(tint) {
+                    for (p, (shade, weight, size, _)) in pix.iter().zip(tint) {
                         let y = (p >> 16) as usize;
-                        if *p == NOWHERE || y < first || y >= last {
+                        if *p == NOWHERE || *size > 1.0 || y < first || y >= last {
                             continue;
                         }
                         let at = &mut out[(y - first) * bw + (p & 0xFFFF) as usize - left];
@@ -624,12 +697,14 @@ impl Density {
                         }
                     }
                 });
+                let larger = vertices.par_iter().filter(|v| v[5] > 1.0).copied();
                 merged
                     .par_chunks(bw)
                     .enumerate()
                     .flat_map_iter(|(row, line)| {
-                        line.iter().enumerate().filter(|(_, l)| l[0] + l[1] + l[2] > 0.0).map(move |(col, l)| [(left + col) as f32 + 0.5, (top + row) as f32 + 0.5, l[0], l[1], l[2]])
+                        line.iter().enumerate().filter(|(_, l)| l[0] + l[1] + l[2] > 0.0).map(move |(col, l)| [(left + col) as f32 + 0.5, (top + row) as f32 + 0.5, l[0], l[1], l[2], 1.0, 1.0])
                     })
+                    .chain(larger)
                     .collect()
             });
         }
@@ -638,7 +713,7 @@ impl Density {
         if std::mem::take(&mut self.trail_stale) {
             self.gpu.as_mut().unwrap().clear_trail();
         }
-        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, span, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, linger, style::BACKGROUND);
+        self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, linger, style::BACKGROUND);
         let (x0, y0, ppm) = self.corner;
         for f in flashes {
             let (fx, fy) = (((f.x - x0) * ppm) as f32 * scale, ((f.y - y0) * ppm) as f32 * scale);

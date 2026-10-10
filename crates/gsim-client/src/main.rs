@@ -409,8 +409,8 @@ fn short(version: &str) -> &str {
 /// Reference sheet for the body renderer: one column per mass, one row per on-screen size.
 fn gallery(ui: f32) {
     clear_background(style::BACKGROUND);
-    let masses = [1.0e21, 1.0e22, 1.0e23, 1.0e24, 1.0e25, 1.0e26, 1.0e27, 2.0e30, -1.0e22, -1.0e24, -1.0e26];
-    let sizes = [0.5, 3.0, 8.0, 20.0, 48.0];
+    let masses = [3.0e19, 1.0e22, 6.0e24, 8.0e25, 6.0e26, 2.0e27, 4.0e28, 1.2e29, 2.5e29, 8.0e29, 2.0e30, 5.0e30, 2.0e31, -1.0e24];
+    let sizes = [0.5, 3.0, 8.0, 20.0, 40.0];
     let (w, h) = (screen_width(), screen_height());
     let (dx, mut y) = (w / (masses.len() as f32 + 1.0), 70.0 * ui);
     for (row, size) in sizes.iter().enumerate() {
@@ -418,7 +418,7 @@ fn gallery(ui: f32) {
         y += r.max(8.0 * ui);
         for (col, mass) in masses.iter().enumerate() {
             let x = dx * (col as f32 + 1.0);
-            style::body((x, y), r, *mass, 17 + 31 * col as u32 + 7 * row as u32, 1.0, ui);
+            style::body((x, y), r, *mass, 17 + 31 * col as u32 + 7 * row as u32, 1.0, ui, style::NO_LIGHT);
             if row == 0 {
                 style::centered(&fmt::mass(*mass), x, 40.0 * ui, 12.0 * ui, style::DIM);
             }

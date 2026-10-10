@@ -388,8 +388,9 @@ impl Sandbox {
             self.zoom_pending += 25.0 * dt * (is_key_down(KeyCode::E) as i32 - is_key_down(KeyCode::Q) as i32) as f32;
         }
         self.density.long_exposure = settings.long_exposure;
-        // A few thousand bodies are each drawn to be seen; a crowd is drawn as a crowd.
-        self.density.sparse = seen.stats.bodies <= 4000;
+        // A thousand bodies are each drawn to be seen, fifty thousand as a crowd, and what
+        // lies between as something between, evenly by the factor.
+        self.density.crowd = (((seen.stats.bodies.max(1) as f32).log10() - 3.0) / (5.0e4f32.log10() - 3.0)).clamp(0.0, 1.0);
 
         // A watched body that merged lives on in its survivor.
         if self.watch_told.elapsed().as_secs_f32() > 0.3 && self.selected.is_some() && seen.watch.first().is_some_and(|w| Some(*w) != self.selected) {
@@ -546,8 +547,10 @@ impl Sandbox {
             })
             .collect();
         self.density.present(&flashes);
+        // Planets are lit by the heaviest star there is.
+        let star = seen.heaviest.iter().filter(|h| style::is_star(h.mass as f64)).max_by(|a, b| a.mass.total_cmp(&b.mass)).map(|h| view.to_screen(h.x, h.y));
         for b in &big {
-            style::body((b.x, b.y), b.r, b.mass as f64, b.id, b.fade, ui);
+            style::body((b.x, b.y), b.r, b.mass as f64, b.id, b.fade, ui, style::light_from((b.x, b.y), star));
         }
         let mut labels = style::Labels::default();
 
