@@ -212,9 +212,12 @@ impl SinglePlayer {
                                 saved.remove(spec.key);
                             }
                         }
-                        ui.label("Seed").on_hover_text("The same seed gives the same starting world; empty picks one at random");
-                        ui.add(egui::TextEdit::singleline(&mut self.seed).desired_width(120.0).hint_text("random"));
-                        ui.end_row();
+                        // (A world that starts with nothing in it has nothing to draw lots for.)
+                        if world.name != "empty" {
+                            ui.label("Seed").on_hover_text("The same seed gives the same starting world; empty picks one at random");
+                            ui.add(egui::TextEdit::singleline(&mut self.seed).desired_width(120.0).hint_text("random"));
+                            ui.end_row();
+                        }
                     });
                     // Only a world with a number of bodies to choose has anything to measure.
                     if world.large && world.specs.iter().any(|s| s.key == "count") {

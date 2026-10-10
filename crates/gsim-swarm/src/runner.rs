@@ -284,6 +284,8 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
     let mut workers = pool(threads);
     let (mut pace, mut paused) = (pace, false);
     let mut pacer = Pacer::default();
+    // The step before this one: when it began, what it covered and what of it went on ties.
+    let mut last: Option<(Instant, f64, f64)> = None;
     // What is shown is averaged over windows of half a second, so that it can be read.
     let mut window = Window::new();
     let mut shown = Shown::default();
@@ -358,6 +360,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
         });
         if paused {
             window = Window::new();
+            last = None;
             let mut p = out.lock().unwrap();
             p.clock = Clock { time: sim.time, at: now, rate: 0.0, span: 0.0 };
             (p.time, p.pace, p.theta, p.tight, p.watch) = (sim.time, 0.0, sim.engine.theta, sim.engine.own_steps, sim.watch.clone());
@@ -374,11 +377,16 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             continue;
         }
 
+        let started = Instant::now();
+        // What the last step took is the time from its start to this one's: with a few bodies
+        // a step is over in less than a microsecond, and most of a round is everything else.
+        if let Some((at, dt, own)) = last.take() {
+            pacer.took(dt, started.duration_since(at).as_secs_f64(), own);
+        }
         let dt = pacer.next(pace, sim.engine.longest_step());
         let step_s = pacer.step_s;
         sim.engine.dt_hint = dt;
         sim.engine.fade_step = (step_s / FADE_SECONDS) as f32;
-        let started = Instant::now();
         sim.let_readers_in();
         out.lock().unwrap().clock = Clock { time: sim.time, at: started, rate: dt / step_s, span: dt };
         // A few bodies are stepped right here: handing that to other threads would cost more
@@ -389,7 +397,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             std::thread::sleep(Duration::from_millis(1));
         }
         let took = started.elapsed().as_secs_f64();
-        pacer.took(dt, took, sim.engine.stats.own_ms as f64 * 1.0e-3);
+        last = Some((started, dt, sim.engine.stats.own_ms as f64 * 1.0e-3));
         let s = sim.engine.stats;
         window.steps += 1;
         window.advanced += dt;
