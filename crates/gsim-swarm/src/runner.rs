@@ -6,7 +6,7 @@
 //! unless that would be too long a step for the tightest bound orbit, in which case the
 //! step is shortened and time runs slower than asked.
 
-use crate::engine::{Bodies, Merge, Mode, ORBIT_FRACTION};
+use crate::engine::{Bodies, Merge, Mode};
 use crate::sim::Sim;
 
 use std::path::PathBuf;
@@ -20,6 +20,8 @@ pub enum Command {
     /// Simulated seconds per real second; 0 pauses.
     Pace(f64),
     Theta(f32),
+    /// Whether tight orbits are followed (by bodies taking shorter steps of their own).
+    Tight(bool),
     /// Whether bodies leaving the world for good fade out and are dropped.
     DropLeavers(bool),
     /// How many threads the simulation may use from now on.
@@ -42,6 +44,9 @@ pub struct Clock {
     pub at: Instant,
     /// Simulated seconds per real second being managed right now.
     pub rate: f64,
+    /// Simulated seconds the step under way covers: time is not known to go on beyond that,
+    /// however long the step takes.
+    pub span: f64,
 }
 
 #[derive(Clone, Default)]
@@ -57,8 +62,13 @@ pub struct Stats {
     pub dt: f64,
     /// Simulated seconds per real second achieved.
     pub achieved: f64,
-    /// The step is being held short for the sake of a tight orbit.
+    /// Time is running slower than asked for.
     pub limited: bool,
+    /// Bodies taking more than one step of their own in a step of the world, the most any
+    /// takes, and what that costs.
+    pub fine: u32,
+    pub most: u32,
+    pub own_ms: f32,
     pub merges_total: u64,
     pub removed_total: u64,
     pub merges_per_s: f32,
@@ -87,6 +97,7 @@ pub struct Published {
     /// Simulated seconds per real second asked for (0 while paused).
     pub pace: f64,
     pub theta: f32,
+    pub tight: bool,
     pub stats: Stats,
     pub heaviest: Vec<Heavy>,
     /// Merges since the front end last drained them, with the simulated time of each.
@@ -113,6 +124,65 @@ const HEAVIEST: usize = 12;
 /// Real seconds a body found leaving the world takes to fade away.
 const FADE_SECONDS: f64 = 5.0;
 const LONGEST_STEP: f64 = 0.1;
+/// A step is stretched by at most this much to make up for what the ties cost.
+const STRETCH: f64 = 3.0;
+/// The ties' own steps may take this much of the time the rest of a step takes. Beyond that
+/// time is slowed down for them.
+const OWN_SHARE: f64 = 1.0;
+/// What a step covers changes by at most this fraction from one step to the next, on the
+/// way up: asked for a much higher pace, the world gets there over a few steps, and is seen
+/// to be too much in time.
+const GENTLY: f64 = 0.08;
+
+/// Decides how long each step of the world is.
+///
+/// A step covers as much as a step takes, at the pace asked for: then the world keeps its
+/// pace whether a step takes one millisecond or fifty. Part of a step goes on ties, and the
+/// longer the step, the more there are and the more steps of their own each takes. Where
+/// they are few, a somewhat longer step pays for them and the pace is held. Where they are
+/// many it would only get longer and longer: so a step is never stretched beyond [`STRETCH`]
+/// times what it takes without them, and it only grows while the ties take less than
+/// [`OWN_SHARE`] of the rest, the more slowly the nearer they are to that, and shrinks when
+/// they take more. Time then runs slower than asked for.
+pub struct Pacer {
+    /// Smoothed duration of a step (s), and of what of it is not ties.
+    pub step_s: f64,
+    base_s: f64,
+    /// How much real time's worth a step covers (s).
+    reach: f64,
+    /// What the last step covered (s of the world).
+    last: f64,
+}
+
+impl Default for Pacer {
+    fn default() -> Self {
+        // (The very first steps are short ones, whatever the pace.)
+        Self { step_s: 0.002, base_s: 0.002, reach: 0.0002, last: 0.0 }
+    }
+}
+
+impl Pacer {
+    /// How long the next step is to be (s of the world). `longest` is what the engine allows
+    /// (see `Engine::longest_step`).
+    pub fn next(&self, pace: f64, longest: f64) -> f64 {
+        let gently = if self.last > 0.0 { (1.0 + 3.0 * GENTLY) * self.last } else { f64::MAX };
+        (pace * self.reach).min(longest).min(gently)
+    }
+
+    /// A step of `dt` took `took` seconds, `own` of them on ties.
+    pub fn took(&mut self, dt: f64, took: f64, own: f64) {
+        let rest = (took - own).max(0.0);
+        self.step_s += 0.15 * (took - self.step_s);
+        self.base_s += 0.15 * (rest - self.base_s);
+        self.last = dt;
+        // What would hold the pace, and how much room the ties leave for getting there.
+        let wanted = self.step_s.min(STRETCH * self.base_s).min(LONGEST_STEP);
+        let room = (1.0 - own / (OWN_SHARE * rest).max(1.0e-9)).clamp(-1.0, 1.0);
+        let grown = self.reach * (1.0 + GENTLY * room);
+        self.reach = if grown > wanted { self.reach + 0.15 * (wanted - self.reach) } else { grown };
+    }
+
+}
 
 
 impl Runner {
@@ -122,10 +192,11 @@ impl Runner {
         let bodies = sim.bodies.clone();
         let reading = sim.reader_waiting.clone();
         let published = Arc::new(Mutex::new(Published {
-            clock: Clock { time: 0.0, at: Instant::now(), rate: 0.0 },
+            clock: Clock { time: 0.0, at: Instant::now(), rate: 0.0, span: 0.0 },
             time: 0.0,
             pace,
             theta: sim.engine.theta,
+            tight: sim.engine.own_steps,
             stats: Stats { level: sim.engine.level().name(), ..Default::default() },
             heaviest: Vec::new(),
             merges: Vec::new(),
@@ -177,16 +248,15 @@ struct Window {
     advanced: f64,
     /// Real seconds spent stepping.
     busy: f64,
-    /// Sums of sort, force and finish milliseconds, and of interactions per body.
-    parts: [f64; 4],
+    /// Sums of sort, force and finish milliseconds, of interactions per body, and of the
+    /// milliseconds spent on bodies taking steps of their own.
+    parts: [f64; 5],
     merges: usize,
-    /// Steps held short for a tight orbit.
-    held: u32,
 }
 
 impl Window {
     fn new() -> Self {
-        Self { since: Instant::now(), steps: 0, advanced: 0.0, busy: 0.0, parts: [0.0; 4], merges: 0, held: 0 }
+        Self { since: Instant::now(), steps: 0, advanced: 0.0, busy: 0.0, parts: [0.0; 5], merges: 0 }
     }
 }
 
@@ -202,6 +272,9 @@ struct Shown {
     dt: f64,
     achieved: f64,
     limited: bool,
+    fine: u32,
+    most: u32,
+    own_ms: f32,
     merges_per_s: f32,
 }
 
@@ -210,8 +283,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
     // are left over for that.
     let mut workers = pool(threads);
     let (mut pace, mut paused) = (pace, false);
-    // Smoothed duration of a step, and merges per second.
-    let mut step_s = 0.002f64;
+    let mut pacer = Pacer::default();
     // What is shown is averaged over windows of half a second, so that it can be read.
     let mut window = Window::new();
     let mut shown = Shown::default();
@@ -219,7 +291,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
     let (mut last_heaviest, mut last_error_at) = (Instant::now() - Duration::from_secs(1), Instant::now());
     let mut notice = None;
     // Before the first step, find out how long a step the world as it starts can take.
-    sim.engine.dt_hint = pace * step_s;
+    sim.engine.dt_hint = pacer.next(pace, f64::MAX);
     workers.install(|| sim.refresh());
     loop {
         let mut edited = false;
@@ -229,6 +301,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
                 Ok(Command::Pace(_)) => paused = true,
                 Ok(Command::Theta(t)) => sim.engine.theta = t.clamp(0.2, 1.5),
                 Ok(Command::DropLeavers(on)) => sim.engine.drop_leavers = on,
+                Ok(Command::Tight(on)) => sim.engine.own_steps = on,
                 Ok(Command::Threads(n)) => {
                     if n.max(1) != workers.current_num_threads() {
                         workers = pool(n);
@@ -269,7 +342,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
                                 Err(e) => format!("Could not load: {e}"),
                             });
                         }
-                        Command::Pace(_) | Command::Theta(_) | Command::DropLeavers(_) | Command::Threads(_) | Command::Watch(_) => {}
+                        Command::Pace(_) | Command::Theta(_) | Command::Tight(_) | Command::DropLeavers(_) | Command::Threads(_) | Command::Watch(_) => {}
                     });
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -286,8 +359,8 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
         if paused {
             window = Window::new();
             let mut p = out.lock().unwrap();
-            p.clock = Clock { time: sim.time, at: now, rate: 0.0 };
-            (p.time, p.pace, p.theta, p.watch) = (sim.time, 0.0, sim.engine.theta, sim.watch.clone());
+            p.clock = Clock { time: sim.time, at: now, rate: 0.0, span: 0.0 };
+            (p.time, p.pace, p.theta, p.tight, p.watch) = (sim.time, 0.0, sim.engine.theta, sim.engine.own_steps, sim.watch.clone());
             p.stats.bodies = sim.bodies.read().unwrap().len();
 
             if let Some(h) = heaviest {
@@ -301,15 +374,13 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             continue;
         }
 
-        // How long a step this one should be to hold the pace, and how long it may be.
-        let wanted = pace * step_s.min(LONGEST_STEP);
-        let limit = if sim.engine.omega2 > 0.0 { ORBIT_FRACTION / sim.engine.omega2.sqrt() } else { f64::MAX };
-        let dt = wanted.min(limit);
-        sim.engine.dt_hint = wanted;
+        let dt = pacer.next(pace, sim.engine.longest_step());
+        let step_s = pacer.step_s;
+        sim.engine.dt_hint = dt;
         sim.engine.fade_step = (step_s / FADE_SECONDS) as f32;
         let started = Instant::now();
         sim.let_readers_in();
-        out.lock().unwrap().clock = Clock { time: sim.time, at: started, rate: dt / step_s };
+        out.lock().unwrap().clock = Clock { time: sim.time, at: started, rate: dt / step_s, span: dt };
         // A few bodies are stepped right here: handing that to other threads would cost more
         // than doing it.
         let merges = if sim.small() { sim.step(dt) } else { workers.install(|| sim.step(dt)) };
@@ -318,14 +389,15 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             std::thread::sleep(Duration::from_millis(1));
         }
         let took = started.elapsed().as_secs_f64();
-        step_s += 0.15 * (took - step_s);
+        pacer.took(dt, took, sim.engine.stats.own_ms as f64 * 1.0e-3);
         let s = sim.engine.stats;
         window.steps += 1;
         window.advanced += dt;
         window.busy += took;
-        window.parts = [window.parts[0] + s.sort_ms as f64, window.parts[1] + s.force_ms as f64, window.parts[2] + s.finish_ms as f64, window.parts[3] + s.interactions as f64];
+        for (sum, part) in window.parts.iter_mut().zip([s.sort_ms, s.force_ms, s.finish_ms, s.interactions, s.own_ms]) {
+            *sum += part as f64;
+        }
         window.merges += merges.len();
-        window.held += (limit < wanted) as u32;
         let span = window.since.elapsed().as_secs_f64();
         if span >= WINDOW {
             let steps = window.steps as f64;
@@ -338,7 +410,12 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
                 steps_per_s: (steps / span) as f32,
                 dt: window.advanced / steps,
                 achieved: window.advanced / span,
-                limited: window.held * 4 > window.steps,
+                // (Said to be so from a tenth short, and no longer once nearly made up: a pace
+                // just at the edge would have it change every half second.)
+                limited: window.advanced / span < pace * if shown.limited { 0.97 } else { 0.9 },
+                fine: s.fine,
+                most: s.most,
+                own_ms: (window.parts[4] / steps) as f32,
                 merges_per_s: (window.merges as f64 / span) as f32,
             };
             window = Window::new();
@@ -352,7 +429,7 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
         }
         sim.let_readers_in();
         let mut p = out.lock().unwrap();
-        (p.time, p.pace, p.theta, p.watch) = (sim.time, pace, sim.engine.theta, sim.watch.clone());
+        (p.time, p.pace, p.theta, p.tight, p.watch) = (sim.time, pace, sim.engine.theta, sim.engine.own_steps, sim.watch.clone());
         p.stats = Stats {
             bodies: sim.bodies.read().unwrap().len(),
             step_ms: shown.step_ms,
@@ -364,6 +441,9 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             dt: shown.dt,
             achieved: shown.achieved,
             limited: shown.limited,
+            fine: shown.fine,
+            most: shown.most,
+            own_ms: shown.own_ms,
             merges_total: sim.merges_total,
             removed_total: sim.removed_total,
             merges_per_s: shown.merges_per_s,

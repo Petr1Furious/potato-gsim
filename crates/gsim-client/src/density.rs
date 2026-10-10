@@ -265,8 +265,9 @@ impl Density {
                     for (k, (p, t)) in pix.iter_mut().zip(tint.iter_mut()).enumerate() {
                         let i = base + k;
                         *p = NOWHERE;
-                        let bx = ((bodies.x[i] + bodies.vx[i] * tau - x0) * ppm) as f32;
-                        let by = ((bodies.y[i] + bodies.vy[i] * tau - y0) * ppm) as f32;
+                        let at = bodies.place(i, tau);
+                        let bx = ((at.0 - x0) * ppm) as f32;
+                        let by = ((at.1 - y0) * ppm) as f32;
                         let mass = bodies.m[i];
                         // Radius in buffer pixels.
                         let r = bodies.r[i] * ppm as f32;

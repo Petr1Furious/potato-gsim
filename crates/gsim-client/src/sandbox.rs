@@ -73,6 +73,7 @@ struct Seen {
     time: f64,
     pace: f64,
     theta: f32,
+    tight: bool,
     stats: Stats,
     heaviest: Vec<Heavy>,
     watch: Vec<u32>,
@@ -322,7 +323,7 @@ impl Sandbox {
         let (seen, merges, notice) = {
             let _turn = reading.begin();
             let mut p = self.runner.published.lock().unwrap();
-            let seen = Seen { clock: p.clock, time: p.time, pace: p.pace, theta: p.theta, stats: p.stats.clone(), heaviest: p.heaviest.clone(), watch: p.watch.clone() };
+            let seen = Seen { clock: p.clock, time: p.time, pace: p.pace, theta: p.theta, tight: p.tight, stats: p.stats.clone(), heaviest: p.heaviest.clone(), watch: p.watch.clone() };
             (seen, std::mem::take(&mut p.merges), p.notice.take())
         };
         let now = Instant::now();
@@ -410,10 +411,11 @@ impl Sandbox {
             let _turn = reading.begin();
             let b = self.runner.bodies.read().unwrap();
             bodies_n = b.len();
-            // Between two steps the bodies are drawn part of the way along the last one.
-            present = seen.clock.time + seen.clock.at.elapsed().as_secs_f64() * seen.clock.rate;
-            let tau = (present - b.time).clamp(-b.dt, 0.0);
-            let at = |i: usize| Picked { id: b.id[i], x: b.x[i] + b.vx[i] * tau, y: b.y[i] + b.vy[i] * tau, vx: b.vx[i], vy: b.vy[i], mass: b.m[i] as f64, radius: b.r[i] as f64 };
+            // Between two steps the bodies are drawn part of the way along the last one, or
+            // along the one under way.
+            present = seen.clock.time + (seen.clock.at.elapsed().as_secs_f64() * seen.clock.rate).min(seen.clock.span);
+            let tau = (present - b.time).clamp(-b.dt, b.dt);
+            let at = |i: usize| Picked { id: b.id[i], x: b.place(i, tau).0, y: b.place(i, tau).1, vx: b.vx[i], vy: b.vy[i], mass: b.m[i] as f64, radius: b.r[i] as f64 };
             let chosen = self.selected.and_then(|id| b.locate(id));
             if chosen.is_none() {
                 self.selected = None;
@@ -502,7 +504,8 @@ impl Sandbox {
                     (0..b.len())
                         .into_par_iter()
                         .filter_map(|i| {
-                            let d = ((b.x[i] + b.vx[i] * tau - mx).powi(2) + (b.y[i] + b.vy[i] * tau - my).powi(2)).sqrt() - b.r[i] as f64;
+                            let p = b.place(i, tau);
+                            let d = ((p.0 - mx).powi(2) + (p.1 - my).powi(2)).sqrt() - b.r[i] as f64;
                             (b.m[i] > 0.0 && d <= within).then_some((i, d, b.m[i]))
                         })
                         .reduce_with(|p, q| match (p.1 <= close, q.1 <= close) {
@@ -717,15 +720,19 @@ impl Sandbox {
         // What one real second is worth, as achieved; and as asked for when that is more.
         let pace_line = match seen.pace {
             p if p <= 0.0 => "PAUSED".to_string(),
-            p if stats.achieved > 0.0 && stats.achieved < 0.9 * p => format!("1 s = {}  (of {})", fmt::span(stats.achieved), fmt::span(p)),
+            p if stats.achieved > 0.0 && stats.limited => format!("1 s = {}  (of {})", fmt::span(stats.achieved), fmt::span(p)),
             p => format!("1 s = {}", fmt::span(p)),
         };
         let stat_lines = [
             format!("{} bodies   {:.0} fps   draw {:.1} ms", group_digits(bodies), self.meter.fps, self.meter.ms),
             format!("{} steps per second, {} each", group_digits(stats.steps_per_s as usize), fmt::span(stats.dt)),
-            format!("step {:.2} ms  (sort {:.1}  gravity {:.1}  merge {:.1})", stats.step_ms, stats.sort_ms, stats.force_ms, stats.finish_ms),
+            format!("step {:.2} ms  (sort {:.1}  own steps {:.1}  gravity {:.1}  merge {:.1})", stats.step_ms, stats.sort_ms, stats.own_ms, stats.force_ms, stats.finish_ms),
             format!("{}   {:.0} pulls per body   {}", stats.mode, stats.interactions, stats.level),
-            if stats.limited { "steps held short for a tight orbit".to_string() } else { "steps as long as the pace asks".to_string() },
+            match (stats.limited, stats.fine) {
+                (true, n) => format!("time slowed for {} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(stats.most as usize)),
+                (false, 0) => "every body takes the world's step".to_string(),
+                (false, n) => format!("{} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(stats.most as usize)),
+            },
             match stats.error {
                 Some(e) => format!("force error {:.3} %   angle {:.2}", e * 100.0, seen.theta),
                 None => "force error: measuring".to_string(),
@@ -738,6 +745,7 @@ impl Sandbox {
         let (mut has_ptr, mut has_kb) = (false, false);
         let mut options = settings.clone();
         let (mut new_speed, mut new_theta, mut new_pick) = (None, theta, None);
+        let mut new_tight = seen.tight;
         let mut outcome = Outcome::Continue;
         let mut tool = self.tool;
         let kit = &mut self.kit;
@@ -882,7 +890,8 @@ impl Sandbox {
             if let Some(p) = picked {
                 Area::new(Id::new("body")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
-                        ui.set_width(250.0);
+                        ui.set_width(300.0);
+                        ui.spacing_mut().slider_width = 170.0;
                         style::caption(ui, &format!("B{}", p.id));
                         let was = ((p.vx * p.vx + p.vy * p.vy).sqrt(), p.vy.atan2(p.vx).to_degrees());
                         let (mut mass, mut radius, mut speed, mut heading) = (p.mass, p.radius, was.0, was.1);
@@ -917,9 +926,17 @@ impl Sandbox {
                     ui.set_width(330.0);
                     crate::options::scrolled(ui, |ui| {
                         style::section(ui, "WORLD");
+                        ui.spacing_mut().slider_width = 190.0;
                         ui.add(egui::Slider::new(&mut new_theta, 0.3..=1.2).text("opening angle")).on_hover_text(
                             "How readily distant groups of bodies are treated as one lump when there are too many to sum pair by pair: \
                              smaller is more accurate and slower.",
+                        );
+                        ui.checkbox(&mut new_tight, "Follow tight orbits").on_hover_text(
+                            "On: a body that is held tightly (a moon by its planet, a star close to a galaxy's core) takes shorter steps of its own, \
+                             as many as its orbit needs, while everything else takes the world's step. That costs as much as there are such bodies, \
+                             and the pace gives way if it is more than this machine can do. Off: every body takes the world's step, and whatever \
+                             turns faster than that drifts off its orbit or is flung away. A world of a couple of hundred bodies or fewer is \
+                             stepped whole: there every step is shortened instead.",
                         );
                         ui.checkbox(&mut new_leavers, "Escaping bodies disappear").on_hover_text(
                             "On: a body that has left the crowd for good (moving outwards, too fast to ever be pulled back) fades out and is removed. Off: nothing is ever removed.",
@@ -983,6 +1000,9 @@ impl Sandbox {
         }
         if new_theta != theta {
             self.runner.send(Command::Theta(new_theta));
+        }
+        if new_tight != seen.tight {
+            self.runner.send(Command::Tight(new_tight));
         }
         if options.gpu != settings.gpu {
             self.use_gpu(settings, options.gpu);

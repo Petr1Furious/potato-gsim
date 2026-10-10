@@ -171,7 +171,8 @@ impl SinglePlayer {
         let dim = style::c32(style::DIM);
         let mut choice = Choice::Stay;
         egui::Window::new("SINGLE PLAYER").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.set_width(640.0);
+            ui.set_width(760.0);
+            ui.spacing_mut().slider_width = 280.0;
             // A fixed height: the divider would otherwise stretch the window off the screen.
             ui.allocate_ui_with_layout(egui::vec2(640.0, 400.0), egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                 ui.vertical(|ui| {

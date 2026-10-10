@@ -9,8 +9,6 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 const G: f64 = 6.67430e-11;
-/// Plummer softening between bodies (m).
-const SOFTENING: f64 = 1.0e6;
 
 pub struct Sim {
     pub engine: Engine,
@@ -36,8 +34,9 @@ impl Sim {
     }
 
     pub fn with_level(setup: Setup, level: Level) -> Self {
-        let mut engine = Engine::with_level(level, G, SOFTENING);
+        let mut engine = Engine::with_level(level, G, 0.0);
         engine.theta = setup.theta;
+        engine.own_steps = setup.tight;
         let mut bodies = setup.bodies;
         engine.prime(&mut bodies);
         Self { engine, bodies: Arc::new(RwLock::new(bodies)), time: 0.0, steps: 0, watch: Vec::new(), merges_total: 0, removed_total: 0, seed: 0x9E37_79B9, reader_waiting: Arc::new(AtomicBool::new(false)) }
@@ -57,8 +56,8 @@ impl Sim {
         self.engine.precise(&self.bodies.read().unwrap())
     }
 
-    /// Advance the world by `dt` seconds. The long middle part only reads the bodies, so
-    /// they can be drawn meanwhile.
+    /// Advance the world by `dt` seconds. The long parts only read the bodies, so they can be
+    /// drawn meanwhile.
     pub fn step(&mut self, dt: f64) -> Vec<Merge> {
         let small = self.engine.precise(&self.bodies.read().unwrap());
         self.let_readers_in();
@@ -69,18 +68,22 @@ impl Sim {
             self.engine.leave(&mut b);
             merges
         } else {
-            {
-                let mut b = self.bodies.write().unwrap();
-                self.engine.advance(&mut b, dt);
-                (b.time, b.dt) = (self.time + dt, dt);
-            }
-            {
-                let b = self.bodies.read().unwrap();
-                self.engine.forces(&b);
+            self.engine.begin(&mut self.bodies.write().unwrap(), dt);
+            // A little at a time, so that nobody waits long to draw. (Part of the way through,
+            // tied bodies are each at a moment of their own: `Bodies::late` says which.)
+            while self.engine.own(&mut self.bodies.write().unwrap(), Duration::from_micros(500)) {
+                self.let_readers_in();
             }
             self.let_readers_in();
+            {
+                let mut b = self.bodies.write().unwrap();
+                self.engine.end(&mut b);
+                (b.time, b.dt) = (self.time + dt, dt);
+            }
+            self.engine.forces(&self.bodies.read().unwrap());
+            self.let_readers_in();
             let mut b = self.bodies.write().unwrap();
-            let merges = self.engine.finish(&mut b, dt);
+            let merges = self.engine.finish(&mut b);
             self.engine.leave(&mut b);
             merges
         };

@@ -194,10 +194,41 @@ ones `--set` and `/preset` take) and a seed. There are two kinds:
 
 How the large-scale engine works: there is no fixed step rate. It steps as fast as it can,
 and each step covers "pace x how long steps have been taking", so the world keeps its pace
-whether a step takes one millisecond or fifty. A step is never longer than a fifth of the
-time the tightest bound orbit takes to turn a radian; when that limit bites, time runs slower
-than asked and the header says so. Above 4000 bodies they are kept sorted along a Z-order
-curve and grouped into a tree, and each group of up to 64 neighbours gathers one list of what
+whether a step takes one millisecond or fifty.
+
+Two bodies that hold each other too tightly for such a step (a moon and its planet, a star
+and the core it circles closely, two bodies passing each other) are tied: what they do to
+each other is taken out of the world's step and followed in steps of the pair's own, in
+double precision. Those are the world's step halved as often as it takes for the two to turn
+about each other by no more than a tenth of a radian in each, up to 65,536 of them, chosen by
+where the pair is heading. Both are kicked at the same moments, so a pair keeps its momentum
+exactly, and everything else acts on the two once per step of the world, as it does on
+anybody. Only the pair itself is worked out at each of its steps, so a tight pair costs
+next to nothing, and thousands of bodies close to one heavy core each cost only their own
+steps. Time slows down, and the header says so, when the ties' steps come to take as long
+as everything else in a step does, or when something needs more than 65,536 of them. Bodies that get far closer than the step they are on allowed for are
+not thrown apart: no pull between them is applied for longer than it takes to turn them by
+0.6 of a radian, and those that overlap merge first. Where ties are few, somewhat longer
+steps of the world pay for them and the pace is held; where they are very many it falls
+behind. Following them can be switched off (per world, and in the Esc menu): then every
+body takes the world's step, and whatever turns faster comes out wrong. A world of 192
+bodies or fewer is stepped whole, and follows tight orbits by shortening every step instead.
+
+What this does not get right: a pull from outside that differs across a tight orbit (the
+star's on a moon) is felt once per step of the world, not as the orbit goes round. Over
+thousands of revolutions that moves a moon in the outer part of its planet's reach by a few
+percent of its distance. And two bodies passing each other so fast that they cross many
+times their closest distance in one step of the world are turned too little.
+
+Nothing in the engine is a fixed length, mass or time: a pair of pebbles a millimetre apart
+is followed like a pair of stars, also when the world around them is ten thousand million
+times wider. Forces are single precision, worked out from each group's own centre in units
+of the group's own size; two bodies too close together for that to tell how far apart they
+are (a thousandth of the group's size) are tied like those that turn too fast, and get
+double precision.
+
+Above 4000 bodies they are kept sorted along a Z-order curve (laid over where most of
+them are, so that a few far away do not blur the rest) and grouped into a tree, and each group of up to 64 neighbours gathers one list of what
 acts on it (nearby bodies one by one, distant cells as a point mass plus quadrupole) and
 evaluates it with AVX-512, AVX2 or NEON. Up to 4000, every pair is summed through the same
 kernels; up to 192, in double precision with a fourth-order integrator. Positions are double
@@ -228,7 +259,8 @@ cargo test --workspace
 - `gsim-server`: every preset runs; the solar system keeps all orbits (and the Moon) for two
   simulated years; the figure-eight returns to its start; the runaway pair accelerates.
 - `gsim-swarm`: forces against exact sums on every instruction set the machine has, the
-  pairwise and precise modes, finding tight orbits in a crowd, merges conserving mass and
+  pairwise and precise modes, a moon and a planet around a pair of stars on steps of their
+  own, close passes that fling nothing away, merges conserving mass and
   momentum, every scenario at the limits of its parameters, editing and saving worlds,
   holding the pace and slowing down for a tight orbit.
 - `gsim-testkit`: server plus clients over simulated links (clean, lossy and jittery, 500 ms

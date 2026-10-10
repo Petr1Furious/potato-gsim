@@ -25,8 +25,16 @@ pub trait Simd: Copy {
     unsafe fn sum(self) -> f32;
     /// Is `0 < self < hi` in any lane?
     unsafe fn any_inside(self, hi: Self) -> bool;
-    /// Is `self > lo` in any lane where `d` is positive?
-    unsafe fn any_above(self, lo: Self, d: Self) -> bool;
+    /// Lane by lane the larger of `self` and `o`, where `d` is positive; `self` elsewhere.
+    /// Neither may be negative.
+    unsafe fn max_where(self, o: Self, d: Self) -> Self;
+    /// The largest lane.
+    unsafe fn top(self) -> f32;
+    /// Lane by lane `value` where `self` is no more than `limit` and zero where it is more,
+    /// with a bit set for each lane where it is.
+    unsafe fn keep_le(self, limit: Self, value: Self) -> (Self, u32);
+    /// As [`Simd::keep_le`], leaving out as well the lanes where `near` is less than `least`.
+    unsafe fn keep_apart(self, limit: Self, near: Self, least: Self, value: Self) -> (Self, u32);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -91,8 +99,22 @@ impl Simd for Plain {
         (0..4).any(|i| self.0[i] > 0.0 && self.0[i] < hi.0[i])
     }
     #[inline(always)]
-    unsafe fn any_above(self, lo: Self, d: Self) -> bool {
-        (0..4).any(|i| self.0[i] > lo.0[i] && d.0[i] > 0.0)
+    unsafe fn max_where(self, o: Self, d: Self) -> Self {
+        Plain(std::array::from_fn(|i| if d.0[i] > 0.0 { self.0[i].max(o.0[i]) } else { self.0[i] }))
+    }
+    #[inline(always)]
+    unsafe fn top(self) -> f32 {
+        self.0[0].max(self.0[1]).max(self.0[2].max(self.0[3]))
+    }
+    #[inline(always)]
+    unsafe fn keep_le(self, limit: Self, value: Self) -> (Self, u32) {
+        let over: [bool; 4] = std::array::from_fn(|i| self.0[i] > limit.0[i]);
+        (Plain(std::array::from_fn(|i| if over[i] { 0.0 } else { value.0[i] })), (0..4).map(|i| (over[i] as u32) << i).sum())
+    }
+    #[inline(always)]
+    unsafe fn keep_apart(self, limit: Self, near: Self, least: Self, value: Self) -> (Self, u32) {
+        let out: [bool; 4] = std::array::from_fn(|i| self.0[i] > limit.0[i] || near.0[i] < least.0[i]);
+        (Plain(std::array::from_fn(|i| if out[i] { 0.0 } else { value.0[i] })), (0..4).map(|i| (out[i] as u32) << i).sum())
     }
 }
 
@@ -149,9 +171,23 @@ pub mod x86 {
             _mm512_mask_cmp_ps_mask(below, self.0, _mm512_setzero_ps(), _CMP_GT_OQ) != 0
         }
         #[inline(always)]
-        unsafe fn any_above(self, lo: Self, d: Self) -> bool {
-            let over = _mm512_cmp_ps_mask(self.0, lo.0, _CMP_GT_OQ);
-            _mm512_mask_cmp_ps_mask(over, d.0, _mm512_setzero_ps(), _CMP_GT_OQ) != 0
+        unsafe fn max_where(self, o: Self, d: Self) -> Self {
+            let real = _mm512_cmp_ps_mask(d.0, _mm512_setzero_ps(), _CMP_GT_OQ);
+            Avx512(_mm512_mask_max_ps(self.0, real, self.0, o.0))
+        }
+        #[inline(always)]
+        unsafe fn top(self) -> f32 {
+            _mm512_reduce_max_ps(self.0)
+        }
+        #[inline(always)]
+        unsafe fn keep_le(self, limit: Self, value: Self) -> (Self, u32) {
+            let over = _mm512_cmp_ps_mask(self.0, limit.0, _CMP_GT_OQ);
+            (Avx512(_mm512_maskz_mov_ps(!over, value.0)), over as u32)
+        }
+        #[inline(always)]
+        unsafe fn keep_apart(self, limit: Self, near: Self, least: Self, value: Self) -> (Self, u32) {
+            let out = _mm512_cmp_ps_mask(self.0, limit.0, _CMP_GT_OQ) | _mm512_cmp_ps_mask(near.0, least.0, _CMP_LT_OQ);
+            (Avx512(_mm512_maskz_mov_ps(!out, value.0)), out as u32)
         }
     }
 
@@ -206,10 +242,26 @@ pub mod x86 {
             _mm256_movemask_ps(_mm256_and_ps(below, above)) != 0
         }
         #[inline(always)]
-        unsafe fn any_above(self, lo: Self, d: Self) -> bool {
-            let over = _mm256_cmp_ps(self.0, lo.0, _CMP_GT_OQ);
+        unsafe fn max_where(self, o: Self, d: Self) -> Self {
+            // Zero where `d` is not positive, which no maximum of non-negative numbers minds.
             let real = _mm256_cmp_ps(d.0, _mm256_setzero_ps(), _CMP_GT_OQ);
-            _mm256_movemask_ps(_mm256_and_ps(over, real)) != 0
+            Avx2(_mm256_max_ps(self.0, _mm256_and_ps(o.0, real)))
+        }
+        #[inline(always)]
+        unsafe fn top(self) -> f32 {
+            let q = _mm_max_ps(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
+            let d = _mm_max_ps(q, _mm_movehl_ps(q, q));
+            _mm_cvtss_f32(_mm_max_ss(d, _mm_shuffle_ps(d, d, 1)))
+        }
+        #[inline(always)]
+        unsafe fn keep_le(self, limit: Self, value: Self) -> (Self, u32) {
+            let over = _mm256_cmp_ps(self.0, limit.0, _CMP_GT_OQ);
+            (Avx2(_mm256_andnot_ps(over, value.0)), _mm256_movemask_ps(over) as u32)
+        }
+        #[inline(always)]
+        unsafe fn keep_apart(self, limit: Self, near: Self, least: Self, value: Self) -> (Self, u32) {
+            let out = _mm256_or_ps(_mm256_cmp_ps(self.0, limit.0, _CMP_GT_OQ), _mm256_cmp_ps(near.0, least.0, _CMP_LT_OQ));
+            (Avx2(_mm256_andnot_ps(out, value.0)), _mm256_movemask_ps(out) as u32)
         }
     }
 }
@@ -269,9 +321,28 @@ pub mod arm {
             vmaxvq_u32(inside) != 0
         }
         #[inline(always)]
-        unsafe fn any_above(self, lo: Self, d: Self) -> bool {
-            let both = vandq_u32(vcgtq_f32(self.0, lo.0), vcgtq_f32(d.0, vdupq_n_f32(0.0)));
-            vmaxvq_u32(both) != 0
+        unsafe fn max_where(self, o: Self, d: Self) -> Self {
+            // Zero where `d` is not positive, which no maximum of non-negative numbers minds.
+            let real = vcgtq_f32(d.0, vdupq_n_f32(0.0));
+            Neon(vmaxq_f32(self.0, vreinterpretq_f32_u32(vandq_u32(vreinterpretq_u32_f32(o.0), real))))
+        }
+        #[inline(always)]
+        unsafe fn top(self) -> f32 {
+            vmaxvq_f32(self.0)
+        }
+        #[inline(always)]
+        unsafe fn keep_le(self, limit: Self, value: Self) -> (Self, u32) {
+            let over = vcgtq_f32(self.0, limit.0);
+            let lanes = [1u32, 2, 4, 8];
+            let bits = vaddvq_u32(vandq_u32(over, vld1q_u32(lanes.as_ptr())));
+            (Neon(vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(value.0), over))), bits)
+        }
+        #[inline(always)]
+        unsafe fn keep_apart(self, limit: Self, near: Self, least: Self, value: Self) -> (Self, u32) {
+            let out = vorrq_u32(vcgtq_f32(self.0, limit.0), vcltq_f32(near.0, least.0));
+            let lanes = [1u32, 2, 4, 8];
+            let bits = vaddvq_u32(vandq_u32(out, vld1q_u32(lanes.as_ptr())));
+            (Neon(vreinterpretq_f32_u32(vbicq_u32(vreinterpretq_u32_f32(value.0), out))), bits)
         }
     }
 }

@@ -16,6 +16,7 @@ pub enum World {
 }
 
 pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
+    ui.spacing_mut().slider_width = 190.0;
     let (exact, large) = (world != World::Large, world != World::Exact);
     style::section(ui, "VIEW");
     if exact {

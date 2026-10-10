@@ -41,15 +41,26 @@ const fn p(key: &'static str, label: &'static str, help: &'static str, unit: &'s
     Param { key, label, help, unit, kind, default, min, max }
 }
 
-const PACE: Param = p("time_scale", "Pace", "Simulated seconds per second to start with", "x", Kind::Log, 86_400.0, 60.0, 1.0e9);
+const PACE: Param = p("time_scale", "Pace", "Simulated seconds per second to start with", "x", Kind::Log, 43_200.0, 60.0, 1.0e9);
 
 const COUNT: Param = p("count", "Bodies", "How many bodies the world starts with", "", Kind::Log, 50_000.0, 10.0, 4_000_000.0);
 const SIZE: Param = p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.1, 0.02, 50.0);
 const ACCURACY: Param =
     p("accuracy", "Opening angle", "How readily distant groups are treated as one lump: smaller is more accurate and slower", "", Kind::Linear, 0.7, 0.3, 1.2);
 
+const TIGHT: Param = p(
+    "tight",
+    "Follow tight orbits",
+    "1 lets a body that is held tightly (a moon by its planet, a star close to a galaxy's core) take shorter steps of its own, as many as its orbit needs, while everything else takes the world's step; that costs as much as there are such bodies. 0 gives every body the world's step, and whatever turns faster than that comes out wrong",
+    "",
+    Kind::Count,
+    1.0,
+    0.0,
+    1.0,
+);
+
 pub const SCENARIOS: &[Scenario] = &[
-    Scenario { name: "empty", about: "Nothing at all: build a world from scratch with the tools", params: &[ACCURACY, PACE] },
+    Scenario { name: "empty", about: "Nothing at all: build a world from scratch with the tools", params: &[ACCURACY, TIGHT, PACE] },
     Scenario {
         name: "galaxy",
         about: "A heavy core inside a rotating disc that grows spiral arms and clumps",
@@ -61,26 +72,29 @@ pub const SCENARIOS: &[Scenario] = &[
             p("heat", "Random motion", "Random speed as a fraction of orbital speed: a cold disc clumps, a warm one stays smooth", "", Kind::Linear, 0.03, 0.0, 0.5),
             SIZE,
             ACCURACY,
+            TIGHT,
             PACE,
         ],
     },
     Scenario {
         name: "collision",
-        about: "Two disc galaxies on a grazing course that tear each other into tidal tails",
+        about: "Two disc galaxies that pass through each other, throw out tidal tails, fall back and merge (colour by origin, C, tells them apart)",
         params: &[
             COUNT,
             p("radius", "Disc radius", "Outer edge of the larger galaxy", "m", Kind::Log, 8.0e10, 2.0e10, 6.0e11),
             p("core_mass", "Core mass", "Mass of the larger galaxy's core", "kg", Kind::Log, 2.0e29, 1.0e27, 5.0e30),
-            p("disc_mass", "Disc mass", "Mass of the larger galaxy's disc", "kg", Kind::Log, 6.0e28, 1.0e26, 5.0e30),
+            p("disc_mass", "Disc mass", "Mass of the larger galaxy's disc: a light disc keeps its shape until the other galaxy pulls it apart, a heavy one breaks up into clumps by itself", "kg", Kind::Log, 1.0e28, 1.0e26, 5.0e30),
             p("ratio", "Mass ratio", "Mass of the second galaxy relative to the first", "", Kind::Linear, 0.6, 0.1, 1.0),
-            p("separation", "Separation", "Starting distance between the cores, in disc radii", "R", Kind::Linear, 4.0, 2.5, 10.0),
-            p("pass", "Closest pass", "How near the cores come on the first pass, in disc radii", "R", Kind::Linear, 0.6, 0.05, 3.0),
-            p("speed", "Approach speed", "Fraction of escape speed: below 1 the pair is bound and falls back", "", Kind::Linear, 0.9, 0.3, 2.0),
+            p("separation", "Separation", "Starting distance between the cores, in disc radii", "R", Kind::Linear, 3.0, 2.5, 10.0),
+            p("pass", "Closest pass", "How near the cores come on the first pass, in disc radii", "R", Kind::Linear, 0.5, 0.05, 3.0),
+            p("speed", "Approach speed", "Fraction of escape speed: below 1 the pair is bound and falls back", "", Kind::Linear, 0.5, 0.3, 2.0),
             p("retrograde", "Second spins backwards", "1 makes the second galaxy rotate against the orbit, which damps its tails", "", Kind::Count, 0.0, 0.0, 1.0),
-            p("heat", "Random motion", "Random speed as a fraction of orbital speed", "", Kind::Linear, 0.03, 0.0, 0.5),
-            SIZE,
+            p("heat", "Random motion", "Random speed as a fraction of orbital speed", "", Kind::Linear, 0.08, 0.0, 0.5),
+            p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.1, 0.02, 50.0),
             ACCURACY,
-            PACE,
+            TIGHT,
+            // The galaxies take most of a year to meet and a year to turn once.
+            p("time_scale", "Pace", "Simulated seconds per second to start with", "x", Kind::Log, 864_000.0, 60.0, 1.0e9),
         ],
     },
     Scenario {
@@ -92,8 +106,9 @@ pub const SCENARIOS: &[Scenario] = &[
             p("mass", "Total mass", "Mass of the whole cloud", "kg", Kind::Log, 1.5e29, 1.0e26, 5.0e30),
             p("rotation", "Rotation", "Spin as a fraction of what would hold the cloud up: 0 collapses to a point", "", Kind::Linear, 0.6, 0.0, 1.2),
             p("heat", "Random motion", "Random speed as a fraction of orbital speed at the edge", "", Kind::Linear, 0.04, 0.0, 0.5),
-            p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.3, 0.02, 50.0),
+            p("size", "Body size", "Multiplies every body's radius: larger bodies collide and merge more", "x", Kind::Log, 0.6, 0.02, 50.0),
             ACCURACY,
+            TIGHT,
             PACE,
         ],
     },
@@ -108,6 +123,8 @@ pub struct Setup {
     pub name: String,
     pub bodies: Bodies,
     pub theta: f32,
+    /// Whether tight orbits are followed.
+    pub tight: bool,
     pub time_scale: f64,
     pub group_names: Vec<&'static str>,
 }
@@ -308,8 +325,7 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
     let mut rng = Rng(seed ^ 0x5EED_0F5A);
     let count = get("count") as usize;
     let mut bodies = Bodies::default();
-    let group_names;
-    match name {
+    let group_names = match name {
         "galaxy" => {
             let radius = get("radius");
             let d = Disc {
@@ -325,7 +341,7 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
                 group: 0,
             };
             disc(&mut rng, &d, &mut bodies);
-            group_names = vec!["disc"];
+            vec!["disc"]
         }
         "collision" => {
             let (radius, ratio) = (get("radius"), get("ratio"));
@@ -364,22 +380,23 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
             };
             disc(&mut rng, &a, &mut bodies);
             disc(&mut rng, &b, &mut bodies);
-            group_names = vec!["first galaxy", "second galaxy"];
+            vec!["first galaxy", "second galaxy"]
         }
         "empty" => {
             // Nothing: a world to build with the tools. Nothing is ever dropped from it.
-            group_names = vec![];
+            vec![]
         }
         _ => {
             let radius = get("radius");
             cloud(&mut rng, count, radius, get("mass"), get("rotation"), get("heat"), get("size"), 0, &mut bodies);
-            group_names = vec!["cloud"];
+            vec!["cloud"]
         }
-    }
+    };
     Ok(Setup {
         name: name.to_string(),
         bodies,
         theta: get("accuracy") as f32,
+        tight: get("tight") >= 0.5,
         time_scale: get("time_scale"),
         group_names,
     })

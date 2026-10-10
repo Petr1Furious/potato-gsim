@@ -2,7 +2,11 @@
 //! summed in double precision, advanced with a fourth-order symplectic integrator. This is
 //! what keeps the few planets left at the end of a collapse on clean orbits.
 
-use crate::engine::{Bodies, Merge, HINT_MARGIN, ORBIT_FRACTION};
+use crate::engine::{Bodies, Merge, ORBIT_FRACTION};
+
+/// Orbits are looked for down to those that would only limit a step this many times longer
+/// than the one asked for, so that a pace that is being raised does not outrun what is known.
+const HINT_MARGIN: f64 = 4.0;
 
 /// Yoshida's fourth-order composition of three leapfrog steps.
 const W1: f64 = 1.351_207_191_959_657_8;
@@ -43,6 +47,23 @@ fn accelerate(b: &Bodies, g: f64, eps2: f64, ax: &mut [f64], ay: &mut [f64], wat
     (pairs, omega2)
 }
 
+/// The square of the fastest rate at which a bound pair turns, among those that would hold
+/// up a step of `dt_hint`: what [`step`] also reports, for a world not stepped yet.
+pub fn tightest(b: &Bodies, g: f64, softening: f64, dt_hint: f64) -> f64 {
+    let (mut ax, mut ay) = (vec![0.0; b.len()], vec![0.0; b.len()]);
+    accelerate(b, g, softening * softening, &mut ax, &mut ay, Some(watched(dt_hint))).1
+}
+
+/// The rate squared from which a pair is worth reporting to a caller who would like steps
+/// of `dt_hint`.
+fn watched(dt_hint: f64) -> f64 {
+    if dt_hint > 0.0 {
+        (ORBIT_FRACTION / (HINT_MARGIN * dt_hint)).powi(2)
+    } else {
+        f64::MAX
+    }
+}
+
 /// Advance the world by `dt`. Returns the merges and the fastest bound rate squared, as
 /// [`crate::Engine`] reports it (`dt_hint` is the step the caller would like next).
 pub fn step(b: &mut Bodies, dt: f64, g: f64, softening: f64, dt_hint: f64) -> (Vec<Merge>, f64) {
@@ -69,8 +90,7 @@ pub fn step(b: &mut Bodies, dt: f64, g: f64, softening: f64, dt_hint: f64) -> (V
     drift(b, drifts[3] * dt);
     // Once more at the new positions: for whoever reads the accelerations, to find what
     // now overlaps, and to see how tight the tightest orbit is.
-    let limit = if dt_hint > 0.0 { (ORBIT_FRACTION / (HINT_MARGIN * dt_hint)).powi(2) } else { f64::MAX };
-    let (pairs, omega2) = accelerate(b, g, eps2, &mut ax, &mut ay, Some(limit));
+    let (pairs, omega2) = accelerate(b, g, eps2, &mut ax, &mut ay, Some(watched(dt_hint)));
     for i in 0..n {
         (b.ax[i], b.ay[i]) = (ax[i] as f32, ay[i] as f32);
     }

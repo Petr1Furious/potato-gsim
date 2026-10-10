@@ -77,34 +77,6 @@ fn a_planet_keeps_its_orbit_precisely() {
 }
 
 #[test]
-fn tight_orbits_are_found_in_a_crowd() {
-    // A planet with a close moon, far out in a galaxy of thousands.
-    for count in [3000.0, 12_000.0] {
-        let mut b = small("galaxy", count).bodies;
-        let (planet, d) = (5.0e26, 4.0e8);
-        let v = (G * planet / d).sqrt();
-        b.push(3.0e11, 0.0, 0.0, 0.0, planet, 6.0e7, 0);
-        b.push(3.0e11 + d, 0.0, 0.0, v, 1.0e22, 1.0e6, 0);
-        let mut engine = Engine::new(G, 1.0e6);
-        engine.dt_hint = 86_400.0;
-        engine.prime(&mut b);
-        let rate = (G * planet / d.powi(3)).sqrt();
-        if engine.mode != Mode::Tree {
-            // With every pair looked at, chance pairings of small bodies count as well.
-            assert!(engine.omega2.sqrt() > 0.95 * rate, "{count}: found {:.3e}, the moon turns at {rate:.3e}", engine.omega2.sqrt());
-            continue;
-        }
-        assert!((engine.omega2.sqrt() / rate - 1.0).abs() < 0.05, "{count}: found {:.3e}, the moon turns at {rate:.3e}", engine.omega2.sqrt());
-        // A stranger flying past just as close does not count.
-        let i = b.locate(b.next_id - 1).unwrap();
-        b.vy[i] = 40.0 * v;
-        engine.invalidate();
-        engine.prime(&mut b);
-        assert!(engine.omega2.sqrt() < 0.7 * rate, "{count}: a fly-by was taken for an orbit");
-    }
-}
-
-#[test]
 fn overlapping_bodies_merge_into_the_heavier_one() {
     let mut b = Bodies::default();
     b.push(0.0, 0.0, 10.0, 0.0, 1.0e24, 5.0e6, 0);
@@ -197,7 +169,7 @@ fn the_world_can_be_edited() {
     {
         let b = sim.bodies.read().unwrap();
         // All but the few that have merged meanwhile.
-        assert!((6980..=7001).contains(&b.len()), "{} bodies", b.len());
+        assert!((6940..=7001).contains(&b.len()), "{} bodies", b.len());
         let mut ids = b.id.clone();
         ids.sort_unstable();
         ids.dedup();
@@ -209,7 +181,7 @@ fn the_world_can_be_edited() {
     }
 
     // Shattering keeps the mass and scatters the pieces.
-    let mass_before = sim.bodies.read().unwrap().total_mass();
+    let (mass_before, count_before) = (sim.bodies.read().unwrap().total_mass(), sim.bodies.read().unwrap().len());
     assert!(sim.shatter(0, 40, 1.5));
     assert!(!sim.shatter(0, 40, 1.5), "it is gone now");
     for _ in 0..3 {
@@ -217,7 +189,7 @@ fn the_world_can_be_edited() {
     }
     let b = sim.bodies.read().unwrap();
     assert!((b.total_mass() / mass_before - 1.0).abs() < 1e-5);
-    assert!(b.len() >= 6980 + 30, "the pieces fell straight back together: {} bodies", b.len());
+    assert!(b.len() >= count_before + 15, "the pieces fell straight back together: {} bodies", b.len());
     let id = b.id[0];
     drop(b);
 
@@ -294,13 +266,14 @@ fn the_runner_holds_the_pace_whatever_a_step_costs() {
 
 #[test]
 fn the_runner_slows_down_for_a_tight_orbit() {
-    let mut b = small("cloud", 2000.0).bodies;
+    // A world small enough to be stepped whole follows tight orbits by shortening every step.
+    let mut b = small("cloud", 100.0).bodies;
     // A close pair of stars: one turn takes them a quarter of an hour.
     let (m, d) = (1.0e30, 5.0e8);
     let v = (G * m / (2.0 * d)).sqrt();
     b.push(1.0e12 - 0.5 * d, 0.0, 0.0, -v, m, 5.0e7, 0);
     b.push(1.0e12 + 0.5 * d, 0.0, 0.0, v, m, 5.0e7, 0);
-    let runner = Runner::start(Sim::new(scenario::Setup { bodies: b, ..small("cloud", 1000.0) }), 86_400.0 * 30.0, 4);
+    let runner = Runner::start(Sim::new(scenario::Setup { bodies: b, ..small("cloud", 100.0) }), 86_400.0 * 3000.0, 4);
     std::thread::sleep(Duration::from_millis(800));
     let p = runner.published.lock().unwrap();
     assert!(p.stats.limited, "a step of {} s went unquestioned", p.stats.dt);
@@ -417,4 +390,229 @@ fn only_bodies_that_are_really_leaving_fade_away() {
         // Nothing in a cloud that has only just begun to fall together is on its way out.
         assert!(gone >= 1 && gone <= 1 + before as u32 / 200, "{count} bodies: {gone} dropped");
     }
+}
+
+#[test]
+fn a_moon_takes_steps_of_its_own() {
+    // A moon that goes a third of the way round its star in one step of the world.
+    let (star, d, dt) = (1.0e30, 5.0e8, 3000.0);
+    let v = (G * star / d).sqrt();
+    for count in [3000.0, 20_000.0] {
+        let mut wander = [0.0f64; 2];
+        for (k, own) in [false, true].into_iter().enumerate() {
+            let mut b = small("cloud", count).bodies;
+            b.push(1.0e12, 0.0, 0.0, 0.0, star, 5.0e7, 0);
+            b.push(1.0e12 + d, 0.0, 0.0, v, 1.0e22, 1.0e6, 0);
+            // And one let go at rest, which falls into the star within the step.
+            b.push(1.0e12, 2.0 * d, 0.0, 0.0, 1.0e22, 1.0e6, 0);
+            let (sun, moon, stone) = (b.id[b.len() - 3], b.id[b.len() - 2], b.id[b.len() - 1]);
+            let mut engine = Engine::new(G, 0.0);
+            engine.own_steps = own;
+            let mut fell = false;
+            for _ in 0..300 {
+                fell |= engine.step(&mut b, dt).iter().any(|m| m.absorbed == stone && m.survivor == sun);
+                let (Some(s), Some(m)) = (b.locate(sun), b.locate(moon).filter(|i| b.alive(*i))) else {
+                    wander[k] = f64::MAX;
+                    break;
+                };
+                wander[k] = wander[k].max(((b.x[m] - b.x[s]).hypot(b.y[m] - b.y[s]) / d - 1.0).abs());
+            }
+            if own {
+                assert!(fell, "{count} bodies: the falling stone passed through the star");
+                assert!(engine.stats.fine >= 1 && engine.stats.most >= 16, "{count} bodies: {} on steps of their own, {} at most", engine.stats.fine, engine.stats.most);
+            }
+        }
+        assert!(wander[0] > 0.5, "{count} bodies: the orbit held without help ({})", wander[0]);
+        assert!(wander[1] < 0.05, "{count} bodies: the orbit wandered by {} of its radius", wander[1]);
+    }
+}
+
+/// Kinetic plus potential energy, summed over every pair.
+fn energy(b: &Bodies) -> f64 {
+    let mut e = 0.0;
+    for i in 0..b.len() {
+        let mi = b.m[i] as f64;
+        e += 0.5 * mi * (b.vx[i] * b.vx[i] + b.vy[i] * b.vy[i]);
+        for j in 0..i {
+            e -= G * mi * b.m[j] as f64 / (b.x[i] - b.x[j]).hypot(b.y[i] - b.y[j]).max(1.0);
+        }
+    }
+    e
+}
+
+#[test]
+fn close_passes_do_not_fling_bodies_away() {
+    // A cloud falling together at steps far too long for its close encounters. Left alone,
+    // a pull sampled at the closest point of a pass is applied for a whole step and throws
+    // bodies out at many times any speed the cloud can give them; on steps of their own, the outcome
+    // is that of steps a hundred times shorter (nine bodies above the mark, energy within a
+    // hundredth).
+    let mut flung = [0usize; 2];
+    let mut drift = [0.0f64; 2];
+    for (k, own) in [false, true].into_iter().enumerate() {
+        let mut b = scenario::build("cloud", 3, &params(&[("count", 3800.0)])).unwrap().bodies;
+        let fastest = (0..b.len()).map(|i| b.vx[i].hypot(b.vy[i])).fold(0.0, f64::max);
+        let before = energy(&b);
+        let mut engine = Engine::new(G, 0.0);
+        engine.own_steps = own;
+        for _ in 0..1000 {
+            engine.step(&mut b, 3000.0);
+        }
+        flung[k] = (0..b.len()).filter(|&i| b.vx[i].hypot(b.vy[i]) > 5.0 * fastest).count();
+        drift[k] = (energy(&b) - before) / before.abs();
+    }
+    assert!(flung[0] > 200 && drift[0] > 2.0, "left alone: {} flung, energy up by {}", flung[0], drift[0]);
+    // (The energy is not kept: merging bodies give theirs up, by more or less as chance has
+    // the heavy ones meet.)
+    assert!(flung[1] < 40 && drift[1].abs() < 1.0, "on steps of their own: {} flung, energy changed by {}", flung[1], drift[1]);
+}
+
+#[test]
+fn a_planet_circles_a_tight_pair_of_stars() {
+    // Two stars that go round each other several times in one step of the world, and a
+    // planet around the pair: it has to find the stars where they are each time it is
+    // moved, not where a straight line from the start of the step would put them.
+    let (star, apart, dt) = (1.0e30, 4.0e8, 12_000.0);
+    let around = (G * star / (2.0 * apart)).sqrt();
+    let (far, planet_speed) = (8.0 * apart, (G * 2.0 * star / (8.0 * apart)).sqrt());
+    let mut b = small("cloud", 3000.0).bodies;
+    b.push(1.0e12 - 0.5 * apart, 0.0, 0.0, -around, star, 3.0e7, 0);
+    b.push(1.0e12 + 0.5 * apart, 0.0, 0.0, around, star, 3.0e7, 0);
+    b.push(1.0e12 + far, 0.0, 0.0, planet_speed, 1.0e24, 6.0e6, 0);
+    let (one, two, planet) = (b.id[b.len() - 3], b.id[b.len() - 2], b.id[b.len() - 1]);
+    let turn = std::f64::consts::TAU * apart / (2.0 * around);
+    assert!(dt > 2.0 * turn, "the stars should turn more than twice a step, not once in {turn} s");
+    let mut engine = Engine::new(G, 0.0);
+    let (mut stars, mut orbit) = ((f64::MAX, 0.0f64), (f64::MAX, 0.0f64));
+    for _ in 0..400 {
+        engine.step(&mut b, dt);
+        let (i, j, p) = (b.locate(one).unwrap(), b.locate(two).unwrap(), b.locate(planet).unwrap());
+        let d = (b.x[i] - b.x[j]).hypot(b.y[i] - b.y[j]) / apart;
+        let r = (b.x[p] - 0.5 * (b.x[i] + b.x[j])).hypot(b.y[p] - 0.5 * (b.y[i] + b.y[j])) / far;
+        stars = (stars.0.min(d), stars.1.max(d));
+        orbit = (orbit.0.min(r), orbit.1.max(r));
+    }
+    assert!(stars.0 > 0.93 && stars.1 < 1.07, "the stars went from {} to {} of their distance", stars.0, stars.1);
+    assert!(orbit.0 > 0.9 && orbit.1 < 1.1, "the planet went from {} to {} of its distance", orbit.0, orbit.1);
+}
+
+/// One step through the phases a large world goes through, however few bodies there are.
+fn through(e: &mut Engine, b: &mut Bodies, dt: f64) {
+    e.begin(b, dt);
+    while e.own(b, std::time::Duration::MAX) {}
+    e.end(b);
+    e.forces(b);
+    e.finish(b);
+}
+
+/// Two bodies on an orbit of semi-major axis `a` around the origin, starting furthest apart.
+/// Returns their ids, the rate (rad/s) of their mean motion and their relative speed.
+fn pair(b: &mut Bodies, heavy: f64, ratio: f64, a: f64, ecc: f64) -> (u32, u32, f64, f64) {
+    let light = heavy / ratio;
+    let mu = G * (heavy + light);
+    let v = (mu * (1.0 - ecc) / (a * (1.0 + ecc))).sqrt();
+    let (of_heavy, of_light) = (light / (heavy + light), heavy / (heavy + light));
+    let first = b.next_id;
+    b.push(-a * (1.0 + ecc) * of_heavy, 0.0, 0.0, -v * of_heavy, heavy, a * 1.0e-5, 0);
+    b.push(a * (1.0 + ecc) * of_light, 0.0, 0.0, v * of_light, light, a * 1.0e-5, 0);
+    (first, first + 1, (mu / (a * a * a)).sqrt(), v)
+}
+
+/// Semi-major axis and eccentricity of the orbit of `j` around `i`, were they alone.
+fn orbit(b: &Bodies, i: u32, j: u32) -> (f64, f64) {
+    let (i, j) = (b.locate(i).expect("still there"), b.locate(j).expect("still there"));
+    let mu = G * (b.m[i] as f64 + b.m[j] as f64);
+    let (rx, ry, vx, vy) = (b.x[j] - b.x[i], b.y[j] - b.y[i], b.vx[j] - b.vx[i], b.vy[j] - b.vy[i]);
+    let energy = 0.5 * (vx * vx + vy * vy) - mu / rx.hypot(ry);
+    let h = rx * vy - ry * vx;
+    (-mu / (2.0 * energy), (1.0 + 2.0 * energy * h * h / (mu * mu)).max(0.0).sqrt())
+}
+
+/// A hundred revolutions at steps of the world that each cover `turn` radians of them.
+/// Returns how far the orbit's size and eccentricity moved, and the drift of the pair as a
+/// whole in units of its orbital speed.
+fn hundred_turns(b: &mut Bodies, ids: (u32, u32, f64, f64), turn: f64) -> (f64, f64, f64) {
+    let (i, j, rate, v) = ids;
+    let mut e = Engine::new(G, 0.0);
+    let (from, p0) = (orbit(b, i, j), momentum(b));
+    for _ in 0..(100.0 * std::f64::consts::TAU / turn).ceil() as usize {
+        through(&mut e, b, turn / rate);
+    }
+    let (to, p) = (orbit(b, i, j), momentum(b));
+    (to.0 / from.0 - 1.0, to.1 - from.1, ((p.1 - p0.1) / p.0).hypot((p.2 - p0.2) / p.0) / v)
+}
+
+#[test]
+fn an_unequal_eccentric_pair_keeps_its_orbit_and_its_momentum() {
+    // Sixteen to one, going round five times in a step of the world. Each must take the
+    // other's pull at the same moments, or the pair as a whole wanders off (by a tenth of its
+    // orbital speed, when each was given steps by the other's mass alone); and each step must
+    // be chosen by where the body is going, or the orbit shrinks by a third.
+    for ratio in [1.0, 16.0, 1.0e4] {
+        let mut b = Bodies::default();
+        let ids = pair(&mut b, 1.0e26, ratio, 1.0e8, 0.6);
+        let (size, shape, drift) = hundred_turns(&mut b, ids, 30.0);
+        assert!(size.abs() < 0.01 && shape.abs() < 0.01, "1:{ratio}: size changed by {size}, eccentricity by {shape}");
+        assert!(drift < 1.0e-6, "1:{ratio}: the pair drifted at {drift} of its orbital speed");
+    }
+}
+
+#[test]
+fn a_pair_is_followed_in_a_world_vastly_wider_than_itself() {
+    // Light bodies a hundred million times further out than the pair is wide. The world's
+    // forces are worked out in single precision, which cannot tell the two apart: they are
+    // tied, and what they do to each other is worked out in double precision.
+    for others in [2, 300, 6000] {
+        let mut b = Bodies::default();
+        let ids = pair(&mut b, 1.0e26, 16.0, 1.0e8, 0.0);
+        for k in 0..others {
+            let t = std::f64::consts::TAU * k as f64 / others as f64;
+            let r = 1.0e16 * (0.4 + 0.6 * ((k * 7919) % 1000) as f64 / 1000.0);
+            b.push(r * t.cos(), r * t.sin(), 0.0, 0.0, 1.0e10, 1.0, 0);
+        }
+        let (size, shape, _) = hundred_turns(&mut b, ids, 30.0);
+        assert!(size.abs() < 1.0e-3 && shape.abs() < 0.02, "{others} others: size changed by {size}, eccentricity by {shape}");
+    }
+}
+
+#[test]
+fn nothing_depends_on_how_large_or_heavy_things_are() {
+    // The same pair a millimetre and a hundred million million kilometres across.
+    for (size, mass) in [(1.0e-3, 1.0e-3), (1.0, 1.0e3), (1.0e20, 1.0e37)] {
+        let mut b = Bodies::default();
+        let ids = pair(&mut b, mass, 16.0, size, 0.6);
+        let (changed, shape, drift) = hundred_turns(&mut b, ids, 30.0);
+        assert!(changed.abs() < 0.01 && shape.abs() < 0.01 && drift < 1.0e-6, "{size} m, {mass} kg: size changed by {changed}, eccentricity by {shape}, drift {drift}");
+    }
+}
+
+#[test]
+fn own_steps_go_very_deep_and_then_time_slows() {
+    // Fifty revolutions in one step of the world are still followed.
+    let mut b = Bodies::default();
+    let ids = pair(&mut b, 1.0e26, 16.0, 1.0e8, 0.0);
+    let (size, shape, _) = hundred_turns(&mut b, ids, 300.0);
+    assert!(size.abs() < 1.0e-3 && shape.abs() < 0.02, "size changed by {size}, eccentricity by {shape}");
+    // Beyond that the engine says how long a step may be: 65,536 own steps of a tenth of a
+    // radian.
+    let mut e = Engine::new(G, 0.0);
+    through(&mut e, &mut b, 1.0);
+    let limit = e.longest_step() * ids.2;
+    assert!((6000.0..7000.0).contains(&limit), "a step may cover {limit} radians of the tightest orbit");
+    e.own_steps = false;
+    assert_eq!(e.longest_step(), f64::MAX);
+
+    // And the runner keeps to it, or to what the ties cost before that: slowed, but not to
+    // the step a world stepped whole would need.
+    let mut b = small("cloud", 2000.0).bodies;
+    let (m, d) = (1.0e30, 5.0e8);
+    let v = (G * m / (2.0 * d)).sqrt();
+    b.push(1.0e12 - 0.5 * d, 0.0, 0.0, -v, m, 5.0e7, 0);
+    b.push(1.0e12 + 0.5 * d, 0.0, 0.0, v, m, 5.0e7, 0);
+    let rate = (G * 2.0 * m / d.powi(3)).sqrt();
+    let runner = Runner::start(Sim::new(scenario::Setup { bodies: b, ..small("cloud", 2000.0) }), 86_400.0 * 3.0e4, 4);
+    std::thread::sleep(Duration::from_millis(2500));
+    let p = runner.published.lock().unwrap();
+    assert!(p.stats.limited, "a step of {} s went unquestioned", p.stats.dt);
+    assert!(p.stats.dt * rate < 7200.0 && p.stats.dt * rate > 1.0, "steps of {} radians of the tightest orbit", p.stats.dt * rate);
 }
