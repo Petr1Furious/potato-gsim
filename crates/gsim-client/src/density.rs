@@ -51,6 +51,15 @@ fn aura_share(far: f32, across: f32) -> f32 {
     (-5.0 * d * d).exp() * (1.0 - d * d)
 }
 
+/// Reading a coarse image at the place `at` (in its pixels) without its pixels showing: the
+/// first of the four it is read from, and how much each of them counts. Between two pixels
+/// alone the creases along the grid show wherever a small bright spot has a glow.
+fn smooth(at: f32) -> (i32, [f32; 4]) {
+    let (i, f) = (at.floor(), at - at.floor());
+    let g = 1.0 - f;
+    (i as i32 - 1, [g * g * g / 6.0, (4.0 - 6.0 * f * f + 3.0 * f * f * f) / 6.0, (4.0 - 6.0 * g * g + 3.0 * g * g * g) / 6.0, f * f * f / 6.0])
+}
+
 /// How many pixels a dot `size` across lights, counting those at its soft edge in part.
 fn lit(size: f32) -> f32 {
     if size <= 1.0 { 1.0 } else { std::f32::consts::FRAC_PI_4 * size * size }
@@ -88,7 +97,7 @@ pub struct Density {
     glow: Vec<[f32; 4]>,
     blur: Vec<[f32; 4]>,
     /// Per buffer column: the glow column to its left and how far towards the next it lies.
-    across: Vec<(u32, f32)>,
+    across: Vec<(i32, [f32; 4])>,
     /// From the last projection: palette, and the world position of the buffer's corner with
     /// buffer pixels per metre.
     colors: [[f32; 3]; PALETTE],
@@ -243,12 +252,7 @@ impl Density {
         let (w, h) = (self.w, self.h);
         if self.acc.len() != w * h {
             self.acc = vec![[0.0; 4]; w * h];
-            self.across = (0..w)
-                .map(|x| {
-                    let gx = ((x as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
-                    (gx as u32, gx.fract())
-                })
-                .collect();
+            self.across = (0..w).map(|x| smooth((x as f32 + 0.5) / GLOW_DIV as f32 - 0.5)).collect();
             let (gw, gh) = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
             self.glow = vec![[0.0; 4]; gw * gh];
             self.blur = vec![[0.0; 4]; gw * gh];
@@ -559,25 +563,28 @@ impl Density {
                 .map_init(
                     || vec![[0.0f32; 4]; gw],
                     |halo, (y, ((out, row), past))| {
-                        // The glow for this row: blend the two rows of the small image it lies
-                        // between once, then only across for each pixel.
-                        let gy = ((y as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
-                        let (gy0, fy) = (gy as usize, gy.fract());
-                        let gy1 = (gy0 + 1).min(gh - 1);
-                        for (o, (a, b)) in halo.iter_mut().zip(glow[gy0 * gw..(gy0 + 1) * gw].iter().zip(&glow[gy1 * gw..(gy1 + 1) * gw])) {
-                            for k in 0..4 {
-                                o[k] = (a[k] + (b[k] - a[k]) * fy) * gain;
+                        // The glow for this row: blend the rows of the small image around it
+                        // once, then only across for each pixel.
+                        let (first, parts) = smooth((y as f32 + 0.5) / GLOW_DIV as f32 - 0.5);
+                        halo.fill([0.0; 4]);
+                        for (k, part) in parts.iter().enumerate() {
+                            let gy = (first + k as i32).clamp(0, gh as i32 - 1) as usize;
+                            for (o, a) in halo.iter_mut().zip(&glow[gy * gw..(gy + 1) * gw]) {
+                                for c in 0..4 {
+                                    o[c] += a[c] * part * gain;
+                                }
                             }
                         }
                         let mut light = [0.0f32; 4];
                         let mut lit = 0u32;
-                        for (((px, a), (gx, fx)), t) in out.chunks_exact_mut(4).zip(row).zip(across).zip(past) {
-                            let (h0, h1) = (halo[*gx as usize], halo[*gx as usize + 1]);
+                        for (((px, a), (first, parts)), t) in out.chunks_exact_mut(4).zip(row).zip(across).zip(past) {
+                            let near: [[f32; 4]; 4] = std::array::from_fn(|k| halo[(first + k as i32).clamp(0, gw as i32 - 1) as usize]);
                             lit += (a[0] + a[1] + a[2] > 0.0) as u32;
                             let mut v = [0.0f32; 4];
                             for k in 0..4 {
                                 light[k] += a[k];
-                                v[k] = a[k] * exposure + t[k] * strength + h0[k] + (h1[k] - h0[k]) * fx;
+                                let glow = near[0][k] * parts[0] + near[1][k] * parts[1] + near[2][k] * parts[2] + near[3][k] * parts[3];
+                                v[k] = a[k] * exposure + t[k] * strength + glow;
                                 // Compress highlights, lift faint light.
                                 v[k] = (v[k] / (1.0 + v[k])).sqrt();
                             }

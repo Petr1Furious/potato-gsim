@@ -250,22 +250,27 @@ fn hash01(slot: u32, salt: u32) -> f32 {
 
 /// Bands across a disc, as on a giant planet: strips from pole to pole, each one of a few
 /// bands that a body keeps from frame to frame, darker or lighter than what is under them.
+/// Each strip ends on the circle at both of its edges, so together they follow it.
 fn bands(s: (f32, f32), r: f32, slot: u32, strength: f32, tint: impl Fn(f32) -> Color) {
-    let strips = (r * 0.8).clamp(12.0, 64.0) as usize;
+    let strips = (r * 0.5).clamp(16.0, 200.0) as usize;
     let count = 5 + (hash01(slot, 40) * 6.0) as u32;
-    let thick = 2.0 * r / strips as f32;
+    // Half the width of the disc at a height, a hair inside its edge.
+    let half = |y: f32| (r * r - y * y).max(0.0).sqrt() * 0.995;
+    let (mut vertices, mut indices) = (Vec::with_capacity(strips * 4), Vec::with_capacity(strips * 6));
     for k in 0..strips {
-        let y = -r + thick * (k as f32 + 0.5);
+        let (top, bottom) = (-r + 2.0 * r * k as f32 / strips as f32, -r + 2.0 * r * (k + 1) as f32 / strips as f32);
         // Bands narrow towards the poles, as seen on a sphere.
-        let latitude = (y / r).asin() / std::f32::consts::FRAC_PI_2;
+        let latitude = (0.5 * (top + bottom) / r).asin() / std::f32::consts::FRAC_PI_2;
         let band = ((latitude * 0.5 + 0.5) * count as f32) as u32;
-        let depth = strength * (0.35 + 0.65 * hash01(slot, 41 + band));
-        // Just inside the edge, so the strips' square ends do not show.
-        let half = (r * r - y * y).max(0.0).sqrt() * 0.97;
         let mut color = tint(if band % 2 == 0 { 0.6 } else { 1.3 });
-        color.a *= depth;
-        draw_rectangle(s.0 - half, s.1 + y - 0.5 * thick, 2.0 * half, thick, color);
+        color.a *= strength * (0.35 + 0.65 * hash01(slot, 41 + band));
+        let first = vertices.len() as u16;
+        for (x, y) in [(-half(top), top), (half(top), top), (half(bottom), bottom), (-half(bottom), bottom)] {
+            vertices.push(macroquad::models::Vertex::new(s.0 + x, s.1 + y, 0.0, 0.0, 0.0, color));
+        }
+        indices.extend([first, first + 1, first + 2, first, first + 2, first + 3]);
     }
+    macroquad::models::draw_mesh(&macroquad::models::Mesh { vertices, indices, texture: None });
 }
 
 /// A body at screen position `s` with on-screen radius `r`. Far away it is a dot, larger

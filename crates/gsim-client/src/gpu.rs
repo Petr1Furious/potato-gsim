@@ -125,8 +125,28 @@ uniform sampler2D Trail;
 uniform vec4 Tone;
 uniform vec4 Linger;
 uniform vec4 Background;
+// The glow image is a quarter the size, and read between two of its pixels alone the creases
+// along its grid show wherever a small bright spot has a glow. This reads it as a smooth
+// surface through sixteen of them, in four reads that each blend four.
+vec3 glow(vec2 at) {
+    vec2 size = Linger.yz;
+    vec2 st = at * size - 0.5;
+    vec2 f = fract(st);
+    vec2 i = floor(st);
+    vec2 g = 1.0 - f;
+    vec2 w0 = g * g * g / 6.0;
+    vec2 w1 = (4.0 - 6.0 * f * f + 3.0 * f * f * f) / 6.0;
+    vec2 w2 = (4.0 - 6.0 * g * g + 3.0 * g * g * g) / 6.0;
+    vec2 w3 = f * f * f / 6.0;
+    vec2 a = w0 + w1;
+    vec2 b = w2 + w3;
+    vec2 p0 = (i - 0.5 + w1 / a) / size;
+    vec2 p1 = (i + 1.5 + w3 / b) / size;
+    return a.y * (a.x * texture2D(Glow, vec2(p0.x, p0.y)).rgb + b.x * texture2D(Glow, vec2(p1.x, p0.y)).rgb)
+         + b.y * (a.x * texture2D(Glow, vec2(p0.x, p1.y)).rgb + b.x * texture2D(Glow, vec2(p1.x, p1.y)).rgb);
+}
 void main() {
-    vec3 v = texture2D(Texture, uv).rgb * Tone.x + texture2D(Trail, uv).rgb * Linger.x + texture2D(Glow, uv * Tone.zw).rgb * Tone.y;
+    vec3 v = texture2D(Texture, uv).rgb * Tone.x + texture2D(Trail, uv).rgb * Linger.x + glow(uv * Tone.zw) * Tone.y;
     v = sqrt(v / (1.0 + v));
     gl_FragColor = vec4(Background.rgb + (1.0 - Background.rgb) * v, 1.0);
 }"#;
@@ -371,7 +391,7 @@ impl Gpu {
         self.tone.set_uniform("Background", [background.r, background.g, background.b, 1.0]);
         self.tone.set_texture("Glow", Texture2D::from_miniquad_texture(halo.texture));
         // Without lingering light the same image is read twice, the second time for nothing.
-        self.tone.set_uniform("Linger", [linger.map_or(0.0, |l| l.1 * exposure), 0.0, 0.0, 0.0]);
+        self.tone.set_uniform("Linger", [linger.map_or(0.0, |l| l.1 * exposure), halo.w as f32, halo.h as f32, 0.0]);
         self.tone.set_texture("Trail", Texture2D::from_miniquad_texture(if linger.is_some() { trail.texture } else { image.texture }));
         gl_use_material(&self.tone);
         let params = DrawTextureParams { dest_size: Some(vec2(dest.0, dest.1)), ..Default::default() };
