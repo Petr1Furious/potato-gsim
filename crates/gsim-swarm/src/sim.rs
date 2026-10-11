@@ -21,6 +21,8 @@ pub struct Sim {
     pub watch: Vec<u32>,
     pub merges_total: u64,
     pub removed_total: u64,
+    /// Seconds of the last step spent waiting for whoever draws the bodies to let go of them.
+    pub waited: f64,
     seed: u64,
     /// Raised by whoever wants to read the bodies. A small world is stepped hundreds of
     /// thousands of times a second, each step taking the lock for itself; without this a
@@ -39,7 +41,7 @@ impl Sim {
         engine.own_steps = setup.tight;
         let mut bodies = setup.bodies;
         engine.prime(&mut bodies);
-        Self { engine, bodies: Arc::new(RwLock::new(bodies)), time: 0.0, steps: 0, watch: Vec::new(), merges_total: 0, removed_total: 0, seed: 0x9E37_79B9, reader_waiting: Arc::new(AtomicBool::new(false)) }
+        Self { engine, bodies: Arc::new(RwLock::new(bodies)), time: 0.0, steps: 0, watch: Vec::new(), merges_total: 0, removed_total: 0, waited: 0.0, seed: 0x9E37_79B9, reader_waiting: Arc::new(AtomicBool::new(false)) }
     }
 
     /// Stand aside while somebody is waiting to read the bodies (but not forever: a reader
@@ -60,33 +62,41 @@ impl Sim {
     /// drawn meanwhile.
     pub fn step(&mut self, dt: f64) -> Vec<Merge> {
         let small = self.engine.precise(&self.bodies.read().unwrap());
-        self.let_readers_in();
+        let mut waited = Duration::ZERO;
+        // The bodies to write to, once nobody is reading them.
+        macro_rules! bodies {
+            () => {{
+                let asked = Instant::now();
+                self.let_readers_in();
+                let b = self.bodies.write().unwrap();
+                waited += asked.elapsed();
+                b
+            }};
+        }
         let merges = if small {
-            let mut b = self.bodies.write().unwrap();
+            let mut b = bodies!();
             let merges = self.engine.step(&mut b, dt);
             (b.time, b.dt) = (self.time + dt, dt);
             self.engine.leave(&mut b);
             merges
         } else {
-            self.engine.begin(&mut self.bodies.write().unwrap(), dt);
-            // A little at a time, so that nobody waits long to draw. (Part of the way through,
-            // tied bodies are each at a moment of their own: `Bodies::late` says which.)
-            while self.engine.own(&mut self.bodies.write().unwrap(), Duration::from_micros(500)) {
-                self.let_readers_in();
-            }
-            self.let_readers_in();
             {
-                let mut b = self.bodies.write().unwrap();
+                let mut b = bodies!();
+                self.engine.begin(&mut b, dt);
+            }
+            self.engine.own(&self.bodies.read().unwrap());
+            {
+                let mut b = bodies!();
                 self.engine.end(&mut b);
                 (b.time, b.dt) = (self.time + dt, dt);
             }
             self.engine.forces(&self.bodies.read().unwrap());
-            self.let_readers_in();
-            let mut b = self.bodies.write().unwrap();
+            let mut b = bodies!();
             let merges = self.engine.finish(&mut b);
             self.engine.leave(&mut b);
             merges
         };
+        self.waited = waited.as_secs_f64();
         for m in &merges {
             for w in self.watch.iter_mut().filter(|w| **w == m.absorbed) {
                 *w = m.survivor;

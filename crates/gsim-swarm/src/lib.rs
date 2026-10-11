@@ -17,6 +17,6 @@ pub mod runner;
 pub mod scenario;
 pub mod sim;
 
-pub use engine::{Bodies, Engine, Merge, Mode, StepStats};
+pub use engine::{Bodies, Engine, Merge, Mode, Part, StepStats};
 pub use kernel::Level;
 pub use sim::Sim;

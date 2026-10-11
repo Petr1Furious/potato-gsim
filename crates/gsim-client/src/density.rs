@@ -65,6 +65,32 @@ fn lit(size: f32) -> f32 {
     if size <= 1.0 { 1.0 } else { std::f32::consts::FRAC_PI_4 * size * size }
 }
 
+/// What a body's mass alone says about how its dot is drawn: worked out once a frame for
+/// every mass there can be, sixteen to each doubling, instead of once for every body.
+#[derive(Clone, Copy)]
+struct ByMass {
+    /// Where on the palette it falls when colour shows mass.
+    shade: f32,
+    /// How much heavier bodies shine than lighter ones of the same size on screen.
+    weight: f32,
+    /// The dot's width in pixels, and how much glow it adds.
+    size: f32,
+    glow: f32,
+    shine: f32,
+}
+
+const TABLE: usize = 4096;
+
+/// Where a positive number falls in such a table.
+fn slot(v: f32) -> usize {
+    (v.to_bits() >> 19) as usize & (TABLE - 1)
+}
+
+/// A table of `of` at the middle of each slot.
+fn table<T>(of: impl Fn(f32) -> T) -> Vec<T> {
+    (0..TABLE as u32).map(|slot| of(f32::from_bits(slot << 19 | 1 << 18))).collect()
+}
+
 /// A brief light where two bodies merged, in buffer pixels.
 pub struct Flash {
     pub x: f64,
@@ -132,6 +158,8 @@ pub struct Density {
     merged: Vec<[f32; 3]>,
     /// Milliseconds the last frame took to rasterise.
     pub last_ms: f32,
+    /// Of those, the ones spent going through the bodies.
+    pub project_ms: f32,
 }
 
 fn palette(mode: ColorMode) -> [[f32; 3]; PALETTE] {
@@ -205,6 +233,7 @@ impl Density {
             vertices: Vec::new(),
             merged: Vec::new(),
             last_ms: 0.0,
+            project_ms: 0.0,
         }
     }
 
@@ -280,6 +309,24 @@ impl Density {
         let faintest = 0.5 * (0.02f32 / 0.5).powf(crowd);
         let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
         let (pix, tint) = (&mut self.pix, &mut self.tint);
+        let by_mass = table(|mass| {
+            let (log, shine, heft) = (mass.log10(), style::shine(mass as f64), style::heft(mass as f64));
+            ByMass {
+                shade: ((log - 19.0) / 12.0).clamp(0.0, 1.0),
+                // Heavier bodies shine a little more, so they stand out when zoomed far out.
+                weight: 0.35 + 0.65 * ((log - 19.0) / 8.0).clamp(0.0, 1.0),
+                // In a small world a dot is 1.5 to 4 pixels across by its mass; in a crowd
+                // one pixel, with the heaviest standing out at up to two.
+                size: (1.5 + 2.5 * heft).powf(1.0 - crowd) * (1.0 + ((log - 27.0) / 3.0).clamp(0.0, 1.0)).powf(crowd),
+                // What shines is bright however few pixels it covers. (The glow all bodies
+                // share is not made stronger for that: it has light of its own.)
+                glow: (1.0 - 0.5 * (1.0 - crowd)) / (1.0 + 4.0 * shine),
+                shine,
+            }
+        });
+        // And where a speed falls on the palette, by its square.
+        let by_speed = table(|v2| ((0.5 * v2.max(1.0).log10() - 3.3) / 1.5).clamp(0.0, 1.0));
+        let (by_mass, by_speed) = (&by_mass, &by_speed);
         let big = self.pool.install(|| {
             pix.par_chunks_mut(chunk)
                 .zip(tint.par_chunks_mut(chunk))
@@ -307,12 +354,10 @@ impl Density {
                             continue;
                         }
                         let at = (by as u32) << 16 | bx as u32;
+                        let of = &by_mass[slot(mass)];
                         let shade = match mode {
-                            ColorMode::Mass => ((mass.log10() - 19.0) / 12.0).clamp(0.0, 1.0),
-                            ColorMode::Speed => {
-                                let v = ((bodies.vx[i] * bodies.vx[i] + bodies.vy[i] * bodies.vy[i]) as f32).sqrt();
-                                ((v.max(1.0).log10() - 3.3) / 1.5).clamp(0.0, 1.0)
-                            }
+                            ColorMode::Mass => of.shade,
+                            ColorMode::Speed => by_speed[slot((bodies.vx[i] * bodies.vx[i] + bodies.vy[i] * bodies.vy[i]) as f32)],
                             ColorMode::Origin => bodies.group[i].min(3) as f32 / (PALETTE - 1) as f32,
                         };
                         let shade = (shade * (PALETTE - 1) as f32 + 0.5) as u8;
@@ -323,27 +368,17 @@ impl Density {
                         if lasting <= 0.0 {
                             continue;
                         }
-                        let shine = style::shine(mass as f64);
-                        if shine > 0.0 {
+                        let staying = 1.0 - bodies.fade[i];
+                        if of.shine > 0.0 {
                             // What shines has light around it, wider and stronger the more it
                             // shines (a disc has a corona of its own to take over).
-                            auras.push((at, shade, (0.25 + 0.75 * shine) * lasting * (1.0 - bodies.fade[i]), (8.0 + 28.0 * shine) * (1.0 - 0.5 * crowd)));
+                            auras.push((at, shade, (0.25 + 0.75 * of.shine) * lasting * staying, (8.0 + 28.0 * of.shine) * (1.0 - 0.5 * crowd)));
                         }
                         *p = at;
-                        // A dot's light grows with its area until it fills a pixel; heavier
-                        // bodies shine a little more so they stand out when zoomed far out.
+                        // A dot's light grows with its area until it fills a pixel.
                         let area = (r * r * std::f32::consts::PI).clamp(faintest, 1.0);
-                        let weight = area.sqrt() * (0.35 + 0.65 * ((mass.log10() - 19.0) / 8.0).clamp(0.0, 1.0)) * (1.0 - bodies.fade[i]);
-                        // In a small world a dot is 1.5 to 4 pixels across by its mass; in a
-                        // crowd one pixel, with the heaviest standing out at up to two.
-                        let heft = style::heft(mass as f64);
-                        // What shines is bright however few pixels it covers. (The glow all
-                        // bodies share is not made stronger for that: it has light of its own.)
-                        let brighter = 1.0 + 4.0 * shine;
-                        let weight = weight.max(shine * (1.0 - bodies.fade[i])) * brighter * lasting;
-                        let size = (1.5 + 2.5 * heft).powf(1.0 - crowd) * (1.0 + ((mass.log10() - 27.0) / 3.0).clamp(0.0, 1.0)).powf(crowd);
-                        let glow = (1.0 - 0.5 * (1.0 - crowd)) / brighter;
-                        *t = (shade, weight, size, glow);
+                        let weight = (area.sqrt() * of.weight).max(of.shine) * staying * (1.0 + 4.0 * of.shine) * lasting;
+                        *t = (shade, weight, of.size, of.glow);
                     }
                     (big, auras)
                 })
@@ -363,6 +398,7 @@ impl Density {
         self.colors = colors;
         self.corner = (x0, y0, ppm);
         self.last_ms = started.elapsed().as_secs_f32() * 1e3;
+        self.project_ms = self.last_ms;
         big
     }
 
@@ -715,22 +751,26 @@ impl Density {
                     .collect()
             });
         }
+        // Merge flashes: points like the bodies, hot discs that grow a little and fade.
+        let (x0, y0, ppm) = self.corner;
+        let hot = 6.0 / self.exposure.max(1e-3);
+        self.vertices.extend(flashes.iter().filter_map(|f| {
+            let (fx, fy) = (((f.x - x0) * ppm) as f32, ((f.y - y0) * ppm) as f32);
+            let across = 2.0 * (1.0 + 2.5 * (1.0 - f.life) + ((f.mass.max(1.0).log10() - 19.0) * 0.25).clamp(0.0, 2.5)) / scale.sqrt();
+            let light = hot * f.life * f.life;
+            (fx > -across && fy > -across && fx < w as f32 + across && fy < h as f32 + across).then_some([fx, fy, light, 0.85 * light, 0.55 * light, across, 0.5 * self::lit(across)])
+        }));
         let glow = 0.045 / (GLOW_DIV * GLOW_DIV) as f32 * 4.0 * self.exposure * self.halo();
         let linger = self.linger();
         if std::mem::take(&mut self.trail_stale) {
             self.gpu.as_mut().unwrap().clear_trail();
         }
         self.gpu.as_mut().unwrap().draw(&self.vertices, (w, h), self.dot, GLOW_DIV, (w as f32 * scale, h as f32 * scale), self.exposure, glow, linger, style::BACKGROUND);
-        let (x0, y0, ppm) = self.corner;
-        for f in flashes {
-            let (fx, fy) = (((f.x - x0) * ppm) as f32 * scale, ((f.y - y0) * ppm) as f32 * scale);
-            let r = (1.0 + 2.5 * (1.0 - f.life) + ((f.mass.max(1.0).log10() - 19.0) * 0.25).clamp(0.0, 2.5)) * scale.sqrt();
-            if fx > -r && fy > -r && fx < screen_width() + r && fy < screen_height() + r {
-                // A hot core inside a wider, fainter halo.
-                style::disc(fx, fy, 2.4 * r, Color::new(1.0, 0.8, 0.5, 0.22 * f.life * f.life));
-                style::disc(fx, fy, r, Color::new(1.0, 0.92, 0.7, f.life));
-            }
-        }
+    }
+
+    /// The picture's size in pixels, and whether the graphics card draws it.
+    pub fn picture(&self) -> (usize, usize, bool) {
+        (self.w, self.h, self.gpu.is_some())
     }
 
     /// Switch between the graphics card and the rasteriser threads. Takes effect on the

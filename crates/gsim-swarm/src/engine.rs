@@ -10,11 +10,11 @@
 //! are makes the world's step too long: [`Engine::longest_step`] says how long it may be.
 //!
 //! The step is split into phases, so that a renderer can read the bodies in between:
-//! 1. [`Engine::begin`] (writes bodies): half the world's kick, and for each tie its own step
-//!    and half its kick;
-//! 2. [`Engine::own`] (writes, a little at a time): the ties' steps, moment by moment;
-//! 3. [`Engine::end`] (writes): everything is moved to the end of the step, the ties give the
-//!    other half of their kicks, the bodies are re-sorted and the tree is rebuilt;
+//! 1. [`Engine::begin`] (writes bodies): half the world's kick;
+//! 2. [`Engine::own`] (reads): the ties' steps, each cluster of ties that share bodies
+//!    worked through by itself on a copy of those bodies, many clusters at a time;
+//! 3. [`Engine::end`] (writes): everything is moved to the end of the step, the tied bodies
+//!    to where their clusters got them, the bodies are re-sorted and the tree is rebuilt;
 //! 4. [`Engine::forces`] (reads): refit the tree, gather each group's interaction lists,
 //!    evaluate them with the vector kernels, note what is tied and what overlaps;
 //! 5. [`Engine::finish`] (writes): second half of the world's kick, merge the overlapping.
@@ -51,9 +51,6 @@ pub struct Bodies {
     /// 0 for a body that is staying. One found to be leaving the world for good fades from
     /// just above 0 to 1 and is then dropped.
     pub fade: Vec<f32>,
-    /// Part of the way through a step, the bodies that have been moved on since it began: how
-    /// many seconds into it each of them is. Empty between steps.
-    pub late: Vec<f32>,
     /// Simulated time these positions belong to (maintained by whoever steps the engine).
     pub time: f64,
     /// Seconds the step that led here covered: bodies moved `v * dt` to arrive.
@@ -89,8 +86,32 @@ impl Bodies {
 
     /// Where a body is `tau` seconds after `time`, as far as its velocity tells.
     pub fn place(&self, i: usize, tau: f64) -> (f64, f64) {
-        let tau = tau - self.late.get(i).copied().unwrap_or(0.0) as f64;
         (self.x[i] + self.vx[i] * tau, self.y[i] + self.vy[i] * tau)
+    }
+
+    /// Take a copy of one of `from`'s bodies, id and all.
+    fn copy(&mut self, from: &Bodies, i: usize) {
+        self.x.push(from.x[i]);
+        self.y.push(from.y[i]);
+        self.vx.push(from.vx[i]);
+        self.vy.push(from.vy[i]);
+        self.ax.push(from.ax[i]);
+        self.ay.push(from.ay[i]);
+        self.m.push(from.m[i]);
+        self.r.push(from.r[i]);
+        self.id.push(from.id[i]);
+    }
+
+    fn clear(&mut self) {
+        self.x.clear();
+        self.y.clear();
+        self.vx.clear();
+        self.vy.clear();
+        self.ax.clear();
+        self.ay.clear();
+        self.m.clear();
+        self.r.clear();
+        self.id.clear();
     }
 
     pub fn alive(&self, i: usize) -> bool {
@@ -523,6 +544,166 @@ struct Tug {
     touching: bool,
 }
 
+/// A tied body as its cluster's own steps leave it at the end of the world's step.
+struct Settled {
+    i: u32,
+    x: f64,
+    y: f64,
+    vx: f64,
+    vy: f64,
+    ax: f32,
+    ay: f32,
+    m: f32,
+    r: f32,
+}
+
+/// What working through some clusters comes to.
+#[derive(Default)]
+struct Worked {
+    settled: Vec<Settled>,
+    merges: Vec<Merge>,
+    kicks: u64,
+    most: u32,
+    clusters: u32,
+    largest: u32,
+    halved: [u32; DEEPEST as usize + 1],
+}
+
+/// Ties that share bodies, directly or through one another, and those bodies: nothing they
+/// do within a step of the world touches anything else, so they are worked through on a copy
+/// of their own, which stays in the processor's cache however many steps they take.
+#[derive(Default)]
+struct Cluster {
+    /// Which of the world's bodies these are, in order.
+    who: Vec<u32>,
+    /// Copies of them, and the ties between them by where they are in the copy.
+    c: Bodies,
+    ties: Vec<Tie>,
+    /// The tick at which each body was last moved.
+    since: Vec<u32>,
+}
+
+impl Cluster {
+    /// Move a body, in a straight line, from where it was last put to where it is at `now`.
+    fn bring(&mut self, i: usize, now: u32, tick: f64) {
+        let secs = (now - self.since[i]) as f64 * tick;
+        self.c.x[i] += self.c.vx[i] * secs;
+        self.c.y[i] += self.c.vy[i] * secs;
+        self.since[i] = now;
+    }
+
+    /// One step of the world for the ties in `run`, which make up a cluster.
+    ///
+    /// Each tie's own step is the world's, halved until the two turn about each other by no
+    /// more than [`OWN_TURN`] in it: a moon takes many with its planet while the planet takes
+    /// one with its star. At each moment at which some of them end a step, their bodies are
+    /// moved to where they are by then and kicked by each other, and the tie chooses its next
+    /// step; bodies that have come to overlap merge.
+    fn work(&mut self, e: &Engine, b: &Bodies, run: &mut [(u32, Tie)], out: &mut Worked) {
+        let (dt, tick) = (e.span, e.span / WHOLE as f64);
+        self.who.clear();
+        self.who.extend(run.iter().flat_map(|(_, tie)| [Some(tie.i), if let With::Body(j) = tie.with { Some(j) } else { None }]).flatten());
+        self.who.sort_unstable();
+        self.who.dedup();
+        self.c.clear();
+        for &i in &self.who {
+            self.c.copy(b, i as usize);
+        }
+        let who = &self.who;
+        let here = |i: u32| who.binary_search(&i).unwrap() as u32;
+        self.ties.clear();
+        self.ties.extend(run.iter().map(|(_, tie)| Tie { i: here(tie.i), with: if let With::Body(j) = tie.with { With::Body(here(j)) } else { tie.with }, ..*tie }));
+        self.since.clear();
+        self.since.resize(self.who.len(), 0);
+        let mut ties = std::mem::take(&mut self.ties);
+        // Bodies that overlap become one before anything pulls on them: the closer they are,
+        // the harder they would be thrown apart.
+        for tie in &ties {
+            if let (Some(Tug { touching: true, .. }), With::Body(j)) = (e.tug(&self.c, tie, 0.0), tie.with) {
+                out.merges.extend(merge(&mut self.c, tie.i as usize, j as usize));
+            }
+        }
+        // Each tie's first step, and half its kick. (All from where the bodies are now: a
+        // kick moves nobody.)
+        for tie in &mut ties {
+            let Some(tug) = e.tug(&self.c, tie, 0.0) else {
+                tie.depth = 0;
+                continue;
+            };
+            // (With following switched off there are still ties, between bodies too close
+            // together for the world's sums, but they take the world's step.)
+            tie.depth = if e.own_steps { depth_for(dt, ahead(tug.rate, tie.before, tie.last)) } else { 0 };
+            pull(&mut self.c, tie, &tug, half_kick(dt / (1u32 << tie.depth) as f64, tug.rate));
+            out.most = out.most.max(1 << tie.depth);
+        }
+        // The shortest steps first: at most moments only the first few have anything to do.
+        ties.sort_unstable_by_key(|tie| std::cmp::Reverse(tie.depth));
+        let mut now = 0;
+        while let Some(deepest) = ties.first().map(|tie| tie.depth).filter(|depth| *depth > 0) {
+            // The shortest steps there are now end at multiples of their length. (Not simply
+            // one such length on: the tie that was on shorter ones may just have gone.)
+            let shortest = WHOLE >> deepest;
+            now = (now / shortest + 1) * shortest;
+            if now >= WHOLE {
+                break;
+            }
+            // Steps end at multiples of their length, so the more often the more they are
+            // halved: at this moment, those halved at least this many times.
+            let ending = DEEPEST - now.trailing_zeros() as u8;
+            let due = ties.partition_point(|tie| tie.depth >= ending);
+            let mut gone = false;
+            for tie in &mut ties[..due] {
+                self.bring(tie.i as usize, now, tick);
+                if let With::Body(j) = tie.with {
+                    self.bring(j as usize, now, tick);
+                }
+                let tug = e.tug(&self.c, tie, now as f64 * tick);
+                if let (Some(Tug { touching: true, .. }), With::Body(j)) = (&tug, tie.with) {
+                    out.merges.extend(merge(&mut self.c, tie.i as usize, j as usize));
+                }
+                let Some(tug) = tug.filter(|tug| !tug.touching) else {
+                    (tie.depth, gone) = (0, true);
+                    continue;
+                };
+                let ended = dt / (1u32 << tie.depth) as f64;
+                // The step the tie now asks for, if such a step can end in time with all
+                // the others: so not a longer one than those ending at this moment.
+                tie.depth = depth_for(dt, ahead(tug.rate, tie.rate, ended)).max(ending);
+                let next = dt / (1u32 << tie.depth) as f64;
+                pull(&mut self.c, tie, &tug, half_kick(ended, tug.rate) + half_kick(next, tug.rate));
+                (tie.before, tie.rate, tie.last) = (tie.rate, tug.rate, ended);
+                out.most = out.most.max(1 << tie.depth);
+            }
+            out.kicks += due as u64;
+            // Only those that were due can have changed, and none of them to less than was
+            // due unless it is gone: putting them back in order leaves the whole list in order.
+            let stirred = if gone { ties.len() } else { due };
+            ties[..stirred].sort_unstable_by_key(|tie| std::cmp::Reverse(tie.depth));
+        }
+        // Everybody to the end of the world's step, and the other half of each tie's kick.
+        for i in 0..self.who.len() {
+            self.bring(i, WHOLE, tick);
+        }
+        for tie in &mut ties {
+            // (Those that overlap by now are about to merge.)
+            let Some(tug) = e.tug(&self.c, tie, dt).filter(|tug| !tug.touching) else { continue };
+            let own = dt / (1u32 << tie.depth) as f64;
+            pull(&mut self.c, tie, &tug, half_kick(own, tug.rate));
+            (tie.before, tie.rate, tie.last) = (tie.rate, tug.rate, own);
+        }
+        let c = &self.c;
+        out.settled.extend(self.who.iter().enumerate().map(|(k, &i)| Settled { i, x: c.x[k], y: c.y[k], vx: c.vx[k], vy: c.vy[k], ax: c.ax[k], ay: c.ay[k], m: c.m[k], r: c.r[k] }));
+        (out.clusters, out.largest) = (out.clusters + 1, out.largest.max(self.who.len() as u32));
+        for tie in &ties {
+            out.halved[tie.depth as usize] += 1;
+        }
+        for (to, tie) in run.iter_mut().zip(&ties) {            let there = |i: u32| self.who[i as usize];
+            to.1 = Tie { i: there(tie.i), with: if let With::Body(j) = tie.with { With::Body(there(j)) } else { tie.with }, ..*tie };
+        }
+        self.ties = ties;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// Distant groups approximated through the tree.
@@ -543,23 +724,72 @@ impl Mode {
     }
 }
 
+/// What a step's time goes on, in the order it happens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    Kick,
+    Cluster,
+    Own,
+    Move,
+    Settle,
+    Sort,
+    Gravity,
+    Find,
+    Close,
+    HandOver,
+    Merge,
+    Leave,
+}
+
+impl Part {
+    /// Each part, what to call it, and whether it is work for the ties.
+    pub const ALL: [(Part, &'static str, bool); 12] = [
+        (Part::Kick, "first half kick", false),
+        (Part::Cluster, "sorting ties into clusters", true),
+        (Part::Own, "the ties' own steps", true),
+        (Part::Move, "moving the bodies", false),
+        (Part::Settle, "placing the tied bodies", true),
+        (Part::Sort, "sorting, building the tree", false),
+        (Part::Gravity, "gravity", false),
+        (Part::Find, "listing the new ties", true),
+        (Part::Close, "second half kick", false),
+        (Part::HandOver, "old ties to new", true),
+        (Part::Merge, "merging", false),
+        (Part::Leave, "looking for leavers", false),
+    ];
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StepStats {
-    pub sort_ms: f32,
-    /// Spent on bodies taking steps of their own.
-    pub own_ms: f32,
-    pub force_ms: f32,
-    pub finish_ms: f32,
+    /// Milliseconds spent on each [`Part`].
+    pub ms: [f32; Part::ALL.len()],
     /// Sources evaluated per body in the last force pass.
     pub interactions: f32,
-    /// And for the bodies taking steps of their own, in all of those steps together, counted
-    /// the same way: per body of the world.
-    pub own_interactions: f32,
     pub merges: u32,
     pub removed: u32,
-    /// Bodies that took more than one step of their own, and the most any took.
+    /// Ties followed in this step, the clusters they made, the bodies in the largest of
+    /// those and in all of them, and the kicks given part of the way through the step.
+    pub ties: u32,
+    pub clusters: u32,
+    pub largest: u32,
     pub fine: u32,
+    pub kicks: u64,
+    /// The most steps of its own any tie took, and how many ties ended the step on a step
+    /// halved this many times.
     pub most: u32,
+    pub halved: [u32; DEEPEST as usize + 1],
+}
+
+impl StepStats {
+    /// Milliseconds spent on the ties.
+    pub fn own_ms(&self) -> f32 {
+        Part::ALL.iter().filter(|part| part.2).map(|part| self.ms[part.0 as usize]).sum()
+    }
+
+    fn took(&mut self, part: Part, since: std::time::Instant) -> std::time::Instant {
+        self.ms[part as usize] += ms(since);
+        std::time::Instant::now()
+    }
 }
 
 /// A body counts as clear of the crowd beyond this many times the radius that holds
@@ -572,7 +802,7 @@ const WIDE: f64 = 4.0;
 const ROUND: usize = 64;
 const CENSUS_EVERY: u32 = 128;
 /// Pairs summed a step, at most, to settle whether bodies are leaving.
-const SUM_BUDGET: usize = 4_000_000;
+const SUM_BUDGET: usize = 500_000;
 
 /// Where the mass of the world is, taken now and then.
 #[derive(Clone, Copy, Default)]
@@ -636,11 +866,12 @@ pub struct Engine {
     /// The length (s) of the step that `found` was made for: what turns by more than
     /// [`TIE_TURN`] in it is tied. 0 when nothing is.
     tied_for: f64,
-    /// The step under way: its length (s) and how many ticks of it have passed.
+    /// The length (s) of the step under way.
     span: f64,
-    now: u32,
-    /// The tick at which each body was last moved.
-    since: Vec<u32>,
+    /// Which cluster of ties each body is in (scratch for telling them apart).
+    label: Vec<u32>,
+    /// Where the ties' own steps have left the tied bodies, for `end` to put them there.
+    settled: Vec<Settled>,
     /// Where the last sort put each body (the dead: nowhere), for the ties to follow.
     moved: Vec<u32>,
     /// Merges made part of the way through a step, handed over by the next `finish`.
@@ -708,8 +939,8 @@ impl Engine {
             found: Vec::new(),
             tied_for: 0.0,
             span: 0.0,
-            now: 0,
-            since: Vec::new(),
+            label: Vec::new(),
+            settled: Vec::new(),
             moved: Vec::new(),
             early: Vec::new(),
             fade_step: 1.0 / 64.0,
@@ -807,11 +1038,12 @@ impl Engine {
             let (merges, omega2) = crate::exact::step(b, dt, self.g, self.softening, self.dt_hint);
             (self.omega2, self.tightest, self.mode, self.primed) = (omega2, 0.0, Mode::Precise, true);
             self.steps += 1;
-            self.stats = StepStats { force_ms: ms(t0), interactions: b.len() as f32, merges: merges.len() as u32, ..Default::default() };
+            self.stats = StepStats { interactions: b.len() as f32, merges: merges.len() as u32, most: 1, ..Default::default() };
+            self.stats.took(Part::Gravity, t0);
             return merges;
         }
         self.begin(b, dt);
-        while self.own(b, std::time::Duration::MAX) {}
+        self.own(b);
         self.end(b);
         self.forces(b);
         self.finish(b)
@@ -840,12 +1072,7 @@ impl Engine {
         Some(Tug { ax: self.g * mass * dx * inv3, ay: self.g * mass * dy * inv3, back: own / mass, rate: (self.g * (own + mass) * inv3).sqrt(), touching: d2 < reach * reach })
     }
 
-    /// Phase 1: the first half of the world's kick, from everything that is not tied; and
-    /// each tie gets a step of its own for this step of the world, and half its kick.
-    ///
-    /// A tie's own step is the world's, halved until the two turn about each other by no
-    /// more than [`OWN_TURN`] in it. A moon takes many with its planet while the planet takes
-    /// one with its star.
+    /// Phase 1: the first half of the world's kick, from everything that is not tied.
     pub fn begin(&mut self, b: &mut Bodies, dt: f64) {
         if !self.primed {
             self.prime(b);
@@ -853,160 +1080,105 @@ impl Engine {
         // Ties are made for a step of some length. For one much longer or shorter (or when
         // following them was switched on or off) they are made afresh.
         let fits = if self.own_steps { self.tied_for > 0.0 && (0.5..=2.0).contains(&(self.tied_for / dt)) } else { self.tied_for == 0.0 };
-        if !fits && !b.is_empty() {
+        self.stats = StepStats { most: 1, ..Default::default() };        if !fits && !b.is_empty() {
             self.span = dt;
             self.forces(b);
             self.adopt(b);
         }
-        (self.span, self.now) = (dt, 0);
-        (self.stats.own_ms, self.stats.own_interactions, self.stats.fine, self.stats.most) = (0.0, 0.0, 0, 1);
+        self.span = dt;
+
         if b.is_empty() {
             return;
         }
         let t0 = std::time::Instant::now();
-        self.since.clear();
-        self.since.resize(b.len(), 0);
-        b.late.clear();
-        b.late.resize(b.len(), 0.0);
         (&mut b.vx, &mut b.vy, &b.ax, &b.ay).into_par_iter().with_min_len(GRAIN).for_each(|(vx, vy, ax, ay)| {
             *vx += *ax as f64 * 0.5 * dt;
             *vy += *ay as f64 * 0.5 * dt;
         });
-        self.stats.sort_ms = ms(t0);
-        // What follows is for the ties, and counted as theirs.
-        let t0 = std::time::Instant::now();
-        let mut ties = std::mem::take(&mut self.ties);
-        // Bodies that overlap become one before anything pulls on them: the closer they are,
-        // the harder they would be thrown apart.
-        for tie in &ties {
-            if let (Some(Tug { touching: true, .. }), With::Body(j)) = (self.tug(b, tie, 0.0), tie.with) {
-                self.early.extend(merge(b, tie.i as usize, j as usize));
-            }
-        }
-        let this: &Engine = self;
-        let tugs: Vec<Option<Tug>> = ties.par_iter().with_min_len(4096).map(|tie| this.tug(b, tie, 0.0)).collect();
-        for (tie, tug) in ties.iter_mut().zip(&tugs) {
-            let Some(tug) = tug else {
-                tie.depth = 0;
-                continue;
-            };
-            // (With following switched off there are still ties, between bodies too close
-            // together for the world's sums, but they take the world's step.)
-            tie.depth = if self.own_steps { depth_for(dt, ahead(tug.rate, tie.before, tie.last)) } else { 0 };
-            pull(b, tie, tug, half_kick(dt / (1u32 << tie.depth) as f64, tug.rate));
-            self.stats.most = self.stats.most.max(1 << tie.depth);
-        }
-        // The shortest steps first: at most moments only the first few have anything to do.
-        ties.sort_unstable_by_key(|tie| std::cmp::Reverse(tie.depth));
-        let mut tied: Vec<u32> = ties.iter().flat_map(|tie| [Some(tie.i), if let With::Body(j) = tie.with { Some(j) } else { None }]).flatten().collect();
-        tied.sort_unstable();
-        tied.dedup();
-        self.stats.fine = tied.len() as u32;
-        self.ties = ties;
-        self.stats.own_ms += ms(t0);
+        self.stats.took(Part::Kick, t0);
     }
 
-    /// Phase 2: the ties' own steps. At each moment at which some of them end a step before
-    /// the world's step does, their bodies are moved to where they are by then and kicked by
-    /// each other, and the tie chooses its next step; bodies that have come to overlap merge.
+    /// Phase 2: the ties' own steps, for the whole step of the world. Only reads the bodies:
+    /// where the tied ones end up is kept for [`Engine::end`].
     ///
-    /// Works for about `at_most` and says whether there is more to do, so that whoever
-    /// draws the bodies can be let in between.
-    pub fn own(&mut self, b: &mut Bodies, at_most: std::time::Duration) -> bool {
+    /// Ties that share a body have to be followed together, so they are sorted into
+    /// clusters, and the clusters are worked through many at a time (see [`Cluster`]).
+    pub fn own(&mut self, b: &Bodies) {
+        self.settled.clear();
+        if self.ties.is_empty() {
+            return;
+        }
         let t0 = std::time::Instant::now();
-        let (dt, tick) = (self.span, self.span / WHOLE as f64);
-        let mut ties = std::mem::take(&mut self.ties);
-        let mut kicks = 0;
-        let more = loop {
-            let Some(deepest) = ties.first().map(|tie| tie.depth).filter(|depth| *depth > 0) else { break false };
-            // The shortest steps there are now end at multiples of their length. (Not simply
-            // one such length on: the tie that was on shorter ones may just have gone.)
-            let shortest = WHOLE >> deepest;
-            let now = (self.now / shortest + 1) * shortest;
-            if now >= WHOLE {
-                break false;
+        // Every body starts as a cluster of its own, and each tie joins two of them.
+        fn root(label: &mut [u32], mut i: u32) -> u32 {
+            while label[i as usize] != i {
+                label[i as usize] = label[label[i as usize] as usize];
+                i = label[i as usize];
             }
-            self.now = now;
-            // Steps end at multiples of their length, so the more often the more they are
-            // halved: at this moment, those halved at least this many times.
-            let ending = DEEPEST - now.trailing_zeros() as u8;
-            let due = ties.partition_point(|tie| tie.depth >= ending);
-            let mut gone = false;
-            for tie in &mut ties[..due] {
-                self.bring(b, tie.i as usize);
-                if let With::Body(j) = tie.with {
-                    self.bring(b, j as usize);
+            i
+        }
+        let mut label = std::mem::take(&mut self.label);
+        label.clear();
+        label.extend(0..b.len() as u32);
+        for tie in &self.ties {
+            if let With::Body(j) = tie.with {
+                let (one, other) = (root(&mut label, tie.i), root(&mut label, j));
+                label[one.max(other) as usize] = one.min(other);
+            }
+        }
+        let mut ties: Vec<(u32, Tie)> = std::mem::take(&mut self.ties).into_iter().map(|tie| (root(&mut label, tie.i), tie)).collect();
+        ties.par_sort_unstable_by_key(|tie| tie.0);
+        self.label = label;
+        let t0 = self.stats.took(Part::Cluster, t0);
+        let this: &Engine = self;
+        let worked = ties
+            .par_chunk_by_mut(|one, other| one.0 == other.0)
+            .fold(<(Cluster, Worked)>::default, |mut at, run| {
+                at.0.work(this, b, run, &mut at.1);
+                at
+            })
+            .map(|at| at.1)
+            .reduce(Worked::default, |mut all, mut some| {
+                all.settled.append(&mut some.settled);
+                all.merges.append(&mut some.merges);
+                (all.kicks, all.most) = (all.kicks + some.kicks, all.most.max(some.most));
+                (all.clusters, all.largest) = (all.clusters + some.clusters, all.largest.max(some.largest));
+                for (all, some) in all.halved.iter_mut().zip(some.halved) {
+                    *all += some;
                 }
-                let tug = self.tug(b, tie, now as f64 * tick);
-                if let (Some(Tug { touching: true, .. }), With::Body(j)) = (&tug, tie.with) {
-                    self.early.extend(merge(b, tie.i as usize, j as usize));
-                }
-                let Some(tug) = tug.filter(|tug| !tug.touching) else {
-                    (tie.depth, gone) = (0, true);
-                    continue;
-                };
-                let ended = dt / (1u32 << tie.depth) as f64;
-                // The step the tie now asks for, if such a step can end in time with all
-                // the others: so not a longer one than those ending at this moment.
-                tie.depth = depth_for(dt, ahead(tug.rate, tie.rate, ended)).max(ending);
-                let next = dt / (1u32 << tie.depth) as f64;
-                pull(b, tie, &tug, half_kick(ended, tug.rate) + half_kick(next, tug.rate));
-                (tie.before, tie.rate, tie.last) = (tie.rate, tug.rate, ended);
-                self.stats.most = self.stats.most.max(1 << tie.depth);
-            }
-            kicks += due;
-            // Only those that were due can have changed, and none of them to less than was
-            // due unless it is gone: putting them back in order leaves the whole list in order.
-            let stirred = if gone { ties.len() } else { due };
-            ties[..stirred].sort_unstable_by_key(|tie| std::cmp::Reverse(tie.depth));
-            if t0.elapsed() >= at_most {
-                break true;
-            }
-        };
-        self.ties = ties;
-        self.stats.own_interactions += kicks as f32 / b.len().max(1) as f32;
-        self.stats.own_ms += ms(t0);
-        more
+                all
+            });
+        self.ties = ties.into_iter().map(|tie| tie.1).collect();
+        self.settled = worked.settled;
+        self.early.extend(worked.merges);
+        let s = &mut self.stats;
+        (s.ties, s.clusters, s.largest, s.fine) = (self.ties.len() as u32, worked.clusters, worked.largest, self.settled.len() as u32);
+        (s.kicks, s.most, s.halved) = (worked.kicks, worked.most.max(1), worked.halved);
+        s.took(Part::Own, t0);
     }
 
-    /// Move a body, in a straight line, from where it was last put to where it is now.
-    fn bring(&mut self, b: &mut Bodies, i: usize) {
-        let secs = (self.now - self.since[i]) as f64 * self.span / WHOLE as f64;
-        b.x[i] += b.vx[i] * secs;
-        b.y[i] += b.vy[i] * secs;
-        self.since[i] = self.now;
-        b.late[i] = (self.now as f64 * self.span / WHOLE as f64) as f32;
-    }
-
-    /// Phase 3: every body is moved to the end of the world's step, the ties give the second
-    /// half of their kicks there, and the bodies are put back in order for the force pass.
+    /// Phase 3: every body is moved to the end of the world's step, the tied ones to where
+    /// their own steps took them, and the bodies are put back in order for the force pass.
     /// Afterwards positions are those of the next tick.
     pub fn end(&mut self, b: &mut Bodies) {
         if b.is_empty() {
             return;
         }
         let t0 = std::time::Instant::now();
-        let (dt, tick) = (self.span, self.span / WHOLE as f64);
-        (&mut b.x, &mut b.y, &b.vx, &b.vy, &self.since).into_par_iter().with_min_len(GRAIN).for_each(|(x, y, vx, vy, since)| {
-            let secs = (WHOLE - since) as f64 * tick;
-            *x += vx * secs;
-            *y += vy * secs;
+        let dt = self.span;
+        (&mut b.x, &mut b.y, &b.vx, &b.vy).into_par_iter().with_min_len(GRAIN).for_each(|(x, y, vx, vy)| {
+            *x += vx * dt;
+            *y += vy * dt;
         });
-        b.late.clear();
-        let tied = std::time::Instant::now();
-        let mut ties = std::mem::take(&mut self.ties);
-        for tie in &mut ties {
-            // (Those that overlap by now are about to merge.)
-            let Some(tug) = self.tug(b, tie, dt).filter(|tug| !tug.touching) else { continue };
-            let own = dt / (1u32 << tie.depth) as f64;
-            pull(b, tie, &tug, half_kick(own, tug.rate));
-            (tie.before, tie.rate, tie.last) = (tie.rate, tug.rate, own);
+        let t0 = self.stats.took(Part::Move, t0);
+        for s in self.settled.drain(..) {
+            let i = s.i as usize;
+            (b.x[i], b.y[i], b.vx[i], b.vy[i]) = (s.x, s.y, s.vx, s.vy);
+            (b.ax[i], b.ay[i], b.m[i], b.r[i]) = (s.ax, s.ay, s.m, s.r);
         }
-        self.ties = ties;
-        let tied = ms(tied);
-        self.stats.own_ms += tied;
+        let t0 = self.stats.took(Part::Settle, t0);
         self.sort(b);
-        self.stats.sort_ms += ms(t0) - tied;
+        self.stats.took(Part::Sort, t0);
     }
 
     /// Reorder the bodies along the Z-order curve, dropping dead ones, and rebuild the tree.
@@ -1256,7 +1428,7 @@ impl Engine {
         }
         let to = out.each_mut().map(|list| Shared(list.as_mut_ptr()));
         let this: &Engine = self;
-        let (count, mut pairs, mut tied) = (this.leaves.par_iter())
+        let (count, mut pairs, tied) = (this.leaves.par_iter())
             .map(|&at| {
                 LISTS.with(|l| {
                     let (l, to) = (&mut *l.borrow_mut(), &to);
@@ -1295,21 +1467,21 @@ impl Engine {
         // one: then one entry stands for both ways, and what the two do to each other cancels
         // exactly. Seen from one side only (the other takes it as part of a lump), it is
         // that side's alone.
-        let sorting = std::time::Instant::now();
-        let mut bodies: Vec<(u32, u32)> = tied.iter().filter_map(|(i, with)| if let With::Body(j) = with { Some((*i, *j)) } else { None }).collect();
+        let t0 = self.stats.took(Part::Gravity, t0);
+        let mut bodies: Vec<(u32, u32)> = tied.par_iter().filter_map(|(i, with)| if let With::Body(j) = with { Some((*i, *j)) } else { None }).collect();
         bodies.par_sort_unstable();
-        tied.retain(|(i, with)| match with {
-            With::Body(j) => i < j || bodies.binary_search(&(*j, *i)).is_err(),
-            With::Lump { .. } => true,
-        });
-        self.found.extend(tied.into_iter().map(|(i, with)| {
-            let both = matches!(with, With::Body(j) if bodies.binary_search(&(j, i)).is_ok());
-            Tie { i, with, both, depth: 0, rate: 0.0, before: 0.0, last: 0.0 }
-        }));
+        self.found = tied
+            .par_iter()
+            .filter_map(|&(i, with)| {
+                let both = matches!(with, With::Body(j) if bodies.binary_search(&(j, i)).is_ok());
+                // (Of the two ways, the one from the body that comes first.)
+                let other = matches!(with, With::Body(j) if both && j < i);
+                (!other).then_some(Tie { i, with, both, depth: 0, rate: 0.0, before: 0.0, last: 0.0 })
+            })
+            .collect();
         self.stats.interactions = count as f32 / n as f32;
-        // (Sorting the ties out is their cost, not the force pass's.)
-        self.stats.own_ms += ms(sorting);
-        self.stats.force_ms = ms(t0) - ms(sorting);
+        self.stats.took(Part::Find, t0);
+
     }
 
     /// What acts on the group `at`, by walking the tree from the top: cells that look small
@@ -1474,10 +1646,9 @@ impl Engine {
             *vx += *ax as f64 * half;
             *vy += *ay as f64 * half;
         });
-        let handing = std::time::Instant::now();
+        let t0 = self.stats.took(Part::Close, t0);
         self.hand_over(b);
-        self.stats.own_ms += ms(handing);
-        let t0 = t0 + handing.elapsed();
+        let t0 = self.stats.took(Part::HandOver, t0);
         // Those that met part of the way through the step come first.
         let mut merges = std::mem::take(&mut self.early);
         for &(i, j) in &self.pairs {
@@ -1485,7 +1656,7 @@ impl Engine {
         }
         self.steps += 1;
         self.stats.merges = merges.len() as u32;
-        self.stats.finish_ms = ms(t0);
+        self.stats.took(Part::Merge, t0);
         merges
     }
 
@@ -1501,53 +1672,51 @@ impl Engine {
         let (old, mut new) = (std::mem::take(&mut self.ties), std::mem::take(&mut self.found));
         // Each way of each tie between two bodies, and where it is in its list.
         let ways = |ties: &[Tie]| {
-            let mut ways: Vec<(u32, u32, u32)> = Vec::new();
-            for (at, tie) in ties.iter().enumerate() {
-                if let With::Body(j) = tie.with {
-                    ways.push((tie.i, j, at as u32));
-                    if tie.both {
-                        ways.push((j, tie.i, at as u32));
-                    }
-                }
-            }
-            ways.sort_unstable();
+            let mut ways: Vec<(u32, u32, u32)> = (ties.par_iter().enumerate())
+                .flat_map_iter(|(at, tie)| {
+                    let other = if let With::Body(j) = tie.with { Some(j) } else { None };
+                    [other.map(|j| (tie.i, j, at as u32)), other.filter(|_| tie.both).map(|j| (j, tie.i, at as u32))].into_iter().flatten()
+                })
+                .collect();
+            ways.par_sort_unstable();
             ways
         };
         let (was, is) = (ways(&old), ways(&new));
+        let among = |ways: &[(u32, u32, u32)], i: u32, j: u32| {
+            let at = ways.partition_point(|way| (way.0, way.1) < (i, j));
+            ways.get(at).filter(|way| (way.0, way.1) == (i, j)).map(|way| way.2 as usize)
+        };
+        // A tie that goes on keeps what is known of how it has been turning.
+        new.par_iter_mut().for_each(|tie| {
+            let With::Body(j) = tie.with else { return };
+            if let Some(at) = among(&was, tie.i, j).or_else(|| among(&was, j, tie.i).filter(|_| tie.both)) {
+                (tie.rate, tie.before, tie.last) = (old[at].rate, old[at].before, old[at].last);
+            }
+        });
+        // What each body is owed, worked out from where the bodies are (a kick moves nobody)
+        // and then given.
+        let (this, bodies): (&Engine, &Bodies) = (self, b);
         let one_way = |i: u32, j: u32| Tie { i, with: With::Body(j), both: false, depth: 0, rate: 0.0, before: 0.0, last: 0.0 };
-        let (mut a, mut c) = (0, 0);
-        while a < was.len() || c < is.len() {
-            let ended = was.get(a).map(|way| (way.0, way.1));
-            let begun = is.get(c).map(|way| (way.0, way.1));
-            if ended.is_some() && ended == begun {
-                // Goes on: so does what is known of how it has been turning.
-                let (from, to) = (&old[was[a].2 as usize], &mut new[is[c].2 as usize]);
-                (to.rate, to.before, to.last) = (from.rate, from.before, from.last);
-                (a, c) = (a + 1, c + 1);
-            } else if begun.is_none() || ended.is_some_and(|ended| Some(ended) < begun) {
-                let tie = one_way(was[a].0, was[a].1);
-                if let Some(tug) = self.tug(b, &tie, dt) {
-                    pull(b, &tie, &tug, -0.5 * dt);
-                }
-                a += 1;
-            } else {
-                let tie = one_way(is[c].0, is[c].1);
-                if let Some(tug) = self.tug(b, &tie, dt).filter(|tug| !tug.touching) {
-                    pull(b, &tie, &tug, half_kick(dt, tug.rate));
-                }
-                c += 1;
-            }
-        }
+        let ended = was.par_iter().filter(|way| among(&is, way.0, way.1).is_none()).filter_map(|way| {
+            let tug = this.tug(bodies, &one_way(way.0, way.1), dt)?;
+            Some((way.0, tug.ax * -0.5 * dt, tug.ay * -0.5 * dt))
+        });
+        let begun = is.par_iter().filter(|way| among(&was, way.0, way.1).is_none()).filter_map(|way| {
+            let tug = this.tug(bodies, &one_way(way.0, way.1), dt).filter(|tug| !tug.touching)?;
+            let secs = half_kick(dt, tug.rate);
+            Some((way.0, tug.ax * secs, tug.ay * secs))
+        });
         // Lumps are never the same from one step to the next.
-        for tie in old.iter().filter(|tie| matches!(tie.with, With::Lump { .. })) {
-            if let Some(tug) = self.tug(b, tie, dt) {
-                pull(b, tie, &tug, -0.5 * dt);
-            }
-        }
-        for tie in new.iter().filter(|tie| matches!(tie.with, With::Lump { .. })) {
-            if let Some(tug) = self.tug(b, tie, 0.0) {
-                pull(b, tie, &tug, 0.5 * dt);
-            }
+        let lump = |tie: &Tie, at: f64, secs: f64| {
+            let tug = this.tug(bodies, tie, at).filter(|_| matches!(tie.with, With::Lump { .. }))?;
+            Some((tie.i, tug.ax * secs, tug.ay * secs))
+        };
+        let left = old.par_iter().filter_map(|tie| lump(tie, dt, -0.5 * dt));
+        let met = new.par_iter().filter_map(|tie| lump(tie, 0.0, 0.5 * dt));
+        let owed: Vec<(u32, f64, f64)> = ended.chain(begun).chain(left).chain(met).collect();
+        for (i, vx, vy) in owed {
+            b.vx[i as usize] += vx;
+            b.vy[i as usize] += vy;
         }
         self.ties = new;
     }
@@ -1561,6 +1730,7 @@ impl Engine {
     /// cheap estimate lets through.
     pub fn leave(&mut self, b: &mut Bodies) {
         self.stats.removed = 0;
+        let t0 = std::time::Instant::now();
         let n = b.len();
         if !self.drop_leavers {
             // Those already on their way out stay after all.
@@ -1623,7 +1793,7 @@ impl Engine {
             let (x, y) = (b.x[i], b.y[i]);
             let well: f64 = (0..n)
                 .into_par_iter()
-                .with_min_len(GRAIN)
+                .with_min_len(4096)
                 .map(|j| {
                     let d2 = (b.x[j] - x).powi(2) + (b.y[j] - y).powi(2) + eps2;
                     if j != i && d2 > 0.0 { b.m[j] as f64 / d2.sqrt() } else { 0.0 }
@@ -1635,6 +1805,7 @@ impl Engine {
                 self.fading += 1;
             }
         }
+        self.stats.took(Part::Leave, t0);
     }
 
     /// Centre of mass of the world and its velocity, as of the last force pass.

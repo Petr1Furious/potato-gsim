@@ -136,6 +136,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Pause", "SPACE");
         style::key_row(ui, "Slow time down, speed it up", "< >");
         style::key_row(ui, "Delete the selected body", "DEL");
+        style::key_row(ui, "Pages of the details panel", "F3 + 1 - 4");
     }
     style::key_row(ui, "Fullscreen", "F11");
     style::section(ui, "BODIES");

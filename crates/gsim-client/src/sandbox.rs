@@ -10,7 +10,7 @@ use crate::style::{self, Rank};
 use egui_macroquad::egui;
 use gsim_swarm::runner::{Command, Heavy, Runner, Stats};
 use gsim_swarm::scenario::{self, radius_from_mass, Setup, Structure};
-use gsim_swarm::{Bodies, Merge};
+use gsim_swarm::{Bodies, Merge, Part};
 use macroquad::prelude::*;
 use rayon::prelude::*;
 use std::path::PathBuf;
@@ -37,6 +37,9 @@ enum Tool {
     Erase,
     Shatter,
 }
+
+/// Pages of detail under the F3 panel: F3 with one of these keys shows that page, or hides it.
+const PAGES: [(KeyCode, &str); 4] = [(KeyCode::Key1, "STEP"), (KeyCode::Key2, "TIES"), (KeyCode::Key3, "PACE"), (KeyCode::Key4, "DRAWING")];
 
 impl Tool {
     const ALL: [(Tool, &'static str, KeyCode); 6] = [
@@ -134,6 +137,14 @@ pub struct Sandbox {
     seed: u64,
     density: Density,
     meter: fmt::Meter,
+    /// The page of detail shown under the F3 panel, and whether F3 was used to pick one
+    /// since it went down.
+    page: Option<usize>,
+    paged: bool,
+    /// Milliseconds the last frame waited for the bodies, and held on to them.
+    reading_ms: (f32, f32),
+    /// Bodies drawn as discs in the last frame.
+    discs: usize,
     flashes: Vec<(Merge, f64, Instant)>,
     /// Simulated seconds per real second last asked for (kept while paused).
     last_pace: f64,
@@ -257,6 +268,10 @@ impl Sandbox {
             seed: 1,
             density,
             meter: fmt::Meter::default(),
+            page: None,
+            paged: false,
+            reading_ms: (0.0, 0.0),
+            discs: 0,
             flashes: Vec::new(),
             last_pace: pace,
             menu_open: false,
@@ -347,7 +362,18 @@ impl Sandbox {
                 self.menu_open = !self.menu_open;
             }
         }
-        if is_key_pressed(KeyCode::F3) {
+        // F3 by itself shows or hides the panel, once let go; with a number, a page of it.
+        let paging = is_key_down(KeyCode::F3) || is_key_pressed(KeyCode::F3);
+        if paging {
+            for (page, (key, _)) in PAGES.iter().enumerate() {
+                if is_key_pressed(*key) {
+                    self.page = Some(page).filter(|page| self.page != Some(*page) || !settings.details);
+                    self.paged = true;
+                    settings.details |= self.page.is_some();
+                }
+            }
+        }
+        if is_key_released(KeyCode::F3) && !std::mem::take(&mut self.paged) {
             settings.details = !settings.details;
         }
         if is_key_pressed(KeyCode::F11) {
@@ -376,7 +402,7 @@ impl Sandbox {
                 settings.camera = if settings.camera == Camera::Ship { Camera::Selection } else { Camera::Ship };
             }
             for (tool, _, key) in Tool::ALL {
-                if is_key_pressed(key) {
+                if is_key_pressed(key) && !paging {
                     self.tool = tool;
                 }
             }
@@ -409,8 +435,10 @@ impl Sandbox {
         let mut clicked: Option<Option<u32>> = None;
         let mut moved_view = false;
         {
+            let asked = Instant::now();
             let _turn = reading.begin();
             let b = self.runner.bodies.read().unwrap();
+            let got = Instant::now();
             bodies_n = b.len();
             // Between two steps the bodies are drawn part of the way along the last one, or
             // along the one under way.
@@ -531,6 +559,8 @@ impl Sandbox {
                 self.density.clear_trail();
             }
             big = self.density.project(&b, &view, tau, settings.color);
+            self.reading_ms = ((got - asked).as_secs_f32() * 1e3, got.elapsed().as_secs_f32() * 1e3);
+            self.discs = big.len();
         }
         let view = self.view;
         let (mx, my) = view.to_world(mouse.0, mouse.1);
@@ -726,22 +756,82 @@ impl Sandbox {
             p if stats.achieved > 0.0 && stats.limited => format!("1 s = {}  (of {})", fmt::span(stats.achieved), fmt::span(p)),
             p => format!("1 s = {}", fmt::span(p)),
         };
+        let own_ms = stats.own_ms();
+        let (sort_ms, merge_ms) = (stats.ms(&[Part::Kick, Part::Move, Part::Sort]), stats.ms(&[Part::Close, Part::Merge, Part::Leave]));
+        let gravity_ms = stats.ms(&[Part::Gravity]);
+        let last = &stats.last;
         let stat_lines = [
             format!("{} bodies   {:.0} fps   draw {:.1} ms", group_digits(bodies), self.meter.fps, self.meter.ms),
             format!("{} steps per second, {} each", group_digits(stats.steps_per_s as usize), fmt::span(stats.dt)),
-            format!("step {:.2} ms  (sort {:.1}  own steps {:.1}  gravity {:.1}  merge {:.1})", stats.step_ms, stats.sort_ms, stats.own_ms, stats.force_ms, stats.finish_ms),
+            format!(
+                "step {:.2} ms  (sort {sort_ms:.1}  own steps {own_ms:.1}  gravity {gravity_ms:.1}  merge {merge_ms:.1}  other {:.1})",
+                stats.step_ms,
+                (stats.step_ms - sort_ms - own_ms - gravity_ms - merge_ms).max(0.0)
+            ),
             format!("{}   {:.0} pulls per body   {}", stats.mode, stats.interactions, stats.level),
-            match (stats.limited, stats.fine) {
-                (true, n) => format!("time slowed for {} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(stats.most as usize)),
+            match (stats.limited, last.fine) {
+                (true, n) => format!("time slowed for {} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(last.most as usize)),
                 (false, 0) => "every body takes the world's step".to_string(),
-                (false, n) => format!("{} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(stats.most as usize)),
+                (false, n) => format!("{} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(last.most as usize)),
             },
             match stats.error {
                 Some(e) => format!("force error {:.3} %   angle {:.2}", e * 100.0, seen.theta),
                 None => "force error: measuring".to_string(),
             },
             format!("day {:.0}   merges {} ({:.0}/s)   escaped {}", seen.time / 86_400.0, group_digits(stats.merges_total as usize), stats.merges_per_s, stats.removed_total),
+            format!("F3 + {}", PAGES.iter().enumerate().map(|(k, page)| format!("{} {}", k + 1, page.1.to_lowercase())).collect::<Vec<_>>().join("   ")),
         ];
+        // The page of detail that is switched on: a heading and its lines.
+        let share = |ms: f32| if stats.step_ms > 0.0 { 100.0 * ms / stats.step_ms } else { 0.0 };
+        let row = |what: &str, ms: f32| format!("{what:<28}{ms:>9.2} ms {:>5.1} %", share(ms));
+        let pages: Vec<(&str, Vec<String>)> = (self.page.iter())
+            .map(|page| {
+                let title = &PAGES[*page].1;
+                let lines = match *title {
+                    "STEP" => {
+                        let counted: f32 = stats.parts.iter().sum::<f32>() + stats.wait_ms;
+                        let mut lines: Vec<String> = Part::ALL.iter().map(|(part, what, ties)| row(&format!("{}{what}", if *ties { "· " } else { "" }), stats.parts[*part as usize])).collect();
+                        lines.push(row("waiting for the drawing", stats.wait_ms));
+                        lines.push(row("everything else", (stats.step_ms - counted).max(0.0)));
+                        lines.push(row("a whole step", stats.step_ms));
+                        lines.push(row("· of it for the ties", own_ms));
+                        lines
+                    }
+                    "TIES" => {
+                        let mut lines = vec![
+                            format!("{} ties between {} bodies", group_digits(last.ties as usize), group_digits(last.fine as usize)),
+                            format!("in {} clusters, the largest of {} bodies", group_digits(last.clusters as usize), group_digits(last.largest as usize)),
+                            format!("{} kicks within a step", group_digits(last.kicks as usize)),
+                            "own steps a step        ties".to_string(),
+                        ];
+                        lines.extend(last.halved.iter().enumerate().filter(|(_, ties)| **ties > 0).map(|(depth, ties)| format!("{:>16} {:>11}", group_digits(1 << depth), group_digits(*ties as usize))));
+                        lines
+                    }
+                    "PACE" => vec![
+                        format!("asked for      1 s = {}", fmt::span(seen.pace)),
+                        format!("managed        1 s = {}", fmt::span(stats.achieved)),
+                        format!("a step covers  {}, as much as {:.1} ms at the pace asked for", fmt::span(stats.dt), stats.reach_s * 1e3),
+                        format!("and takes      {:.1} ms", stats.step_ms),
+                        match stats.longest {
+                            longest if longest < f64::MAX => format!("longest step the tightest orbit allows  {}", fmt::span(longest)),
+                            _ => "no orbit limits the step".to_string(),
+                        },
+                        format!("{} threads for the simulation", stats.threads),
+                    ],
+                    _ => {
+                        let (w, h, gpu) = self.density.picture();
+                        vec![
+                            format!("{:.0} fps, {:.1} ms a frame", self.meter.fps, if self.meter.fps > 0.0 { 1000.0 / self.meter.fps } else { 0.0 }),
+                            format!("waited {:.1} ms for the bodies, held them {:.1} ms", self.reading_ms.0, self.reading_ms.1),
+                            format!("going through the bodies {:.1} ms, drawing them {:.1} ms", self.density.project_ms, (self.density.last_ms - self.density.project_ms).max(0.0)),
+                            format!("{w} x {h} pixels, drawn by {}", if gpu { "the graphics card" } else { "the processor" }),
+                            format!("{} bodies drawn as discs", group_digits(self.discs)),
+                        ]
+                    }
+                };
+                (*title, lines)
+            })
+            .collect();
         let status = self.status.as_ref().filter(|s| s.1 > get_time()).map(|s| s.0.clone());
         let (speed, theta) = (seen.pace, seen.theta);
         let mut menu = self.menu_open;
@@ -793,6 +883,12 @@ impl Sandbox {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         for l in &stat_lines {
                             ui.label(RichText::new(l).monospace().color(dim));
+                        }
+                        for (title, lines) in &pages {
+                            style::section(ui, title);
+                            for l in lines {
+                                ui.label(RichText::new(l).monospace().color(dim));
+                            }
                         }
                     });
                 });

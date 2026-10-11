@@ -500,7 +500,7 @@ fn a_planet_circles_a_tight_pair_of_stars() {
 /// One step through the phases a large world goes through, however few bodies there are.
 fn through(e: &mut Engine, b: &mut Bodies, dt: f64) {
     e.begin(b, dt);
-    while e.own(b, std::time::Duration::MAX) {}
+    e.own(b);
     e.end(b);
     e.forces(b);
     e.finish(b);

@@ -6,7 +6,7 @@
 //! unless that would be too long a step for the tightest bound orbit, in which case the
 //! step is shortened and time runs slower than asked.
 
-use crate::engine::{Bodies, Merge, Mode};
+use crate::engine::{Bodies, Merge, Mode, Part, StepStats};
 use crate::sim::Sim;
 
 use std::path::PathBuf;
@@ -53,9 +53,10 @@ pub struct Clock {
 pub struct Stats {
     pub bodies: usize,
     pub step_ms: f32,
-    pub sort_ms: f32,
-    pub force_ms: f32,
-    pub finish_ms: f32,
+    /// Milliseconds of a step spent on each [`Part`], and waiting for whoever draws the
+    /// bodies to let go of them.
+    pub parts: [f32; Part::ALL.len()],
+    pub wait_ms: f32,
     pub interactions: f32,
     pub steps_per_s: f32,
     /// Simulated seconds the last step covered.
@@ -64,11 +65,13 @@ pub struct Stats {
     pub achieved: f64,
     /// Time is running slower than asked for.
     pub limited: bool,
-    /// Bodies taking more than one step of their own in a step of the world, the most any
-    /// takes, and what that costs.
-    pub fine: u32,
-    pub most: u32,
-    pub own_ms: f32,
+    /// The latest step's own figures: its ties, above all.
+    pub last: StepStats,
+    /// How much real time's worth a step is being made to cover (s), and the longest step
+    /// the tightest tie allows (s of the world).
+    pub reach_s: f64,
+    pub longest: f64,
+    pub threads: usize,
     pub merges_total: u64,
     pub removed_total: u64,
     pub merges_per_s: f32,
@@ -76,7 +79,18 @@ pub struct Stats {
     pub error: Option<f32>,
     pub level: &'static str,
     pub mode: &'static str,
+}
 
+impl Stats {
+    /// Milliseconds of a step spent on the ties.
+    pub fn own_ms(&self) -> f32 {
+        Part::ALL.iter().filter(|part| part.2).map(|part| self.parts[part.0 as usize]).sum()
+    }
+
+    /// And on some parts of it.
+    pub fn ms(&self, parts: &[Part]) -> f32 {
+        parts.iter().map(|part| self.parts[*part as usize]).sum()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -118,7 +132,8 @@ pub struct Runner {
     thread: Option<JoinHandle<()>>,
 }
 
-const MERGE_BACKLOG: usize = 6000;
+/// Merges kept for a front end that is not taking them.
+const MERGE_BACKLOG: usize = 1_000_000;
 const HEAVIEST: usize = 12;
 /// However slow steps get, one never covers more than this much real time's worth.
 /// Real seconds a body found leaving the world takes to fade away.
@@ -154,6 +169,7 @@ pub struct Pacer {
     last: f64,
 }
 
+
 impl Default for Pacer {
     fn default() -> Self {
         // (The very first steps are short ones, whatever the pace.)
@@ -182,6 +198,10 @@ impl Pacer {
         self.reach = if grown > wanted { self.reach + 0.15 * (wanted - self.reach) } else { grown };
     }
 
+    /// How much real time's worth a step is being made to cover (s).
+    pub fn reach(&self) -> f64 {
+        self.reach
+    }
 }
 
 
@@ -248,34 +268,18 @@ struct Window {
     advanced: f64,
     /// Real seconds spent stepping.
     busy: f64,
-    /// Sums of sort, force and finish milliseconds, of interactions per body, and of the
-    /// milliseconds spent on bodies taking steps of their own.
-    parts: [f64; 5],
+    /// Sums of the milliseconds spent on each part, of those spent waiting, and of
+    /// interactions per body.
+    parts: [f64; Part::ALL.len()],
+    waited: f64,
+    interactions: f64,
     merges: usize,
 }
 
 impl Window {
     fn new() -> Self {
-        Self { since: Instant::now(), steps: 0, advanced: 0.0, busy: 0.0, parts: [0.0; 5], merges: 0 }
+        Self { since: Instant::now(), steps: 0, advanced: 0.0, busy: 0.0, parts: [0.0; Part::ALL.len()], waited: 0.0, interactions: 0.0, merges: 0 }
     }
-}
-
-/// The figures of the last whole window.
-#[derive(Clone, Copy, Default)]
-struct Shown {
-    step_ms: f32,
-    sort_ms: f32,
-    force_ms: f32,
-    finish_ms: f32,
-    interactions: f32,
-    steps_per_s: f32,
-    dt: f64,
-    achieved: f64,
-    limited: bool,
-    fine: u32,
-    most: u32,
-    own_ms: f32,
-    merges_per_s: f32,
 }
 
 fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace: f64, threads: usize) {
@@ -288,7 +292,8 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
     let mut last: Option<(Instant, f64, f64)> = None;
     // What is shown is averaged over windows of half a second, so that it can be read.
     let mut window = Window::new();
-    let mut shown = Shown::default();
+    // The figures of the last whole window.
+    let mut shown = Stats::default();
     let mut last_error = None;
     let (mut last_heaviest, mut last_error_at) = (Instant::now() - Duration::from_secs(1), Instant::now());
     let mut notice = None;
@@ -397,34 +402,32 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
             std::thread::sleep(Duration::from_millis(1));
         }
         let took = started.elapsed().as_secs_f64();
-        last = Some((started, dt, sim.engine.stats.own_ms as f64 * 1.0e-3));
+        last = Some((started, dt, sim.engine.stats.own_ms() as f64 * 1.0e-3));
         let s = sim.engine.stats;
         window.steps += 1;
         window.advanced += dt;
         window.busy += took;
-        for (sum, part) in window.parts.iter_mut().zip([s.sort_ms, s.force_ms, s.finish_ms, s.interactions, s.own_ms]) {
+        for (sum, part) in window.parts.iter_mut().zip(s.ms) {
             *sum += part as f64;
         }
+        (window.waited, window.interactions) = (window.waited + sim.waited, window.interactions + s.interactions as f64);
         window.merges += merges.len();
         let span = window.since.elapsed().as_secs_f64();
         if span >= WINDOW {
             let steps = window.steps as f64;
-            shown = Shown {
+            shown = Stats {
                 step_ms: (window.busy / steps * 1e3) as f32,
-                sort_ms: (window.parts[0] / steps) as f32,
-                force_ms: (window.parts[1] / steps) as f32,
-                finish_ms: (window.parts[2] / steps) as f32,
-                interactions: (window.parts[3] / steps) as f32,
+                parts: window.parts.map(|sum| (sum / steps) as f32),
+                wait_ms: (window.waited / steps * 1e3) as f32,
+                interactions: (window.interactions / steps) as f32,
                 steps_per_s: (steps / span) as f32,
                 dt: window.advanced / steps,
                 achieved: window.advanced / span,
                 // (Said to be so from a tenth short, and no longer once nearly made up: a pace
                 // just at the edge would have it change every half second.)
                 limited: window.advanced / span < pace * if shown.limited { 0.97 } else { 0.9 },
-                fine: s.fine,
-                most: s.most,
-                own_ms: (window.parts[4] / steps) as f32,
                 merges_per_s: (window.merges as f64 / span) as f32,
+                ..Default::default()
             };
             window = Window::new();
         }
@@ -440,25 +443,16 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
         (p.time, p.pace, p.theta, p.tight, p.watch) = (sim.time, pace, sim.engine.theta, sim.engine.own_steps, sim.watch.clone());
         p.stats = Stats {
             bodies: sim.bodies.read().unwrap().len(),
-            step_ms: shown.step_ms,
-            sort_ms: shown.sort_ms,
-            force_ms: shown.force_ms,
-            finish_ms: shown.finish_ms,
-            interactions: shown.interactions,
-            steps_per_s: shown.steps_per_s,
-            dt: shown.dt,
-            achieved: shown.achieved,
-            limited: shown.limited,
-            fine: shown.fine,
-            most: shown.most,
-            own_ms: shown.own_ms,
+            last: s,
+            reach_s: pacer.reach(),
+            longest: sim.engine.longest_step(),
+            threads: workers.current_num_threads(),
             merges_total: sim.merges_total,
             removed_total: sim.removed_total,
-            merges_per_s: shown.merges_per_s,
             error: last_error,
             level: sim.engine.level().name(),
             mode: sim.engine.mode.name(),
-
+            ..shown.clone()
         };
         if let Some(h) = heaviest {
             p.heaviest = h;
@@ -469,8 +463,14 @@ fn run(mut sim: Sim, inbox: Receiver<Command>, out: Arc<Mutex<Published>>, pace:
         let time = sim.time;
         p.merges.extend(merges.into_iter().map(|m| (m, time)));
         if p.merges.len() > MERGE_BACKLOG {
-            let extra = p.merges.len() - MERGE_BACKLOG;
-            p.merges.drain(..extra);
+            // More than anybody can be shown: every so-manyth is kept. (Not simply the latest:
+            // a step lists its merges in the order of the tree, and those would all be from
+            // one corner of the world.)
+            let (all, mut at) = (p.merges.len(), 0);
+            p.merges.retain(|_| {
+                at += 1;
+                at * MERGE_BACKLOG / all != (at - 1) * MERGE_BACKLOG / all
+            });
         }
     }
 }

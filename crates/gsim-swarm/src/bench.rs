@@ -5,9 +5,10 @@ use crate::scenario::{self, Params};
 use crate::Sim;
 use std::time::Instant;
 
-/// How long each measurement plays a world for (s). Long enough for a disc or a cloud to
-/// start clumping: the close pairs that form then are what a step costs most for.
-const PLAY: f64 = 8.0;
+/// How long each measurement plays a world for (s). In the first of them the steps grow to
+/// the length the game would settle on, and with them the number of close pairs followed in
+/// steps of their own; what a step costs after that changes little for a long while.
+const PLAY: f64 = 2.0;
 
 /// Milliseconds a step of `scenario` with `count` bodies takes, played the way the game
 /// plays it and averaged over the second half of [`PLAY`] seconds.
@@ -24,7 +25,7 @@ pub fn step_ms(name: &str, params: &Params, count: usize) -> Result<f64, String>
         let dt = pacer.next(pace, sim.engine.longest_step());
         sim.step(dt);
         let took = started.elapsed().as_secs_f64();
-        pacer.took(dt, took, sim.engine.stats.own_ms as f64 * 1.0e-3);
+        pacer.took(dt, took, sim.engine.stats.own_ms() as f64 * 1.0e-3);
         played += took;
         if played > 0.5 * PLAY {
             (late, steps) = (late + took, steps + 1);
@@ -42,8 +43,8 @@ pub fn step_ms(name: &str, params: &Params, count: usize) -> Result<f64, String>
 pub fn suggest(name: &str, params: &Params, budget_ms: f64) -> Result<usize, String> {
     // (bodies, ms a step)
     let (mut fits, mut too_many): (Option<(f64, f64)>, Option<(f64, f64)>) = (None, None);
-    let mut count = 60_000.0f64;
-    for _ in 0..4 {
+    let mut count = 100_000.0f64;
+    for _ in 0..3 {
         let ms = step_ms(name, params, count as usize)?;
         if ms <= budget_ms {
             fits = Some((count, ms));
@@ -54,14 +55,14 @@ pub fn suggest(name: &str, params: &Params, budget_ms: f64) -> Result<usize, Str
             // Where a line between the two crosses the budget.
             (Some(a), Some(b)) => a.0 + (b.0 - a.0) * (budget_ms - a.1) / (b.1 - a.1),
             // In proportion, but no further than this at once.
-            (Some(a), None) => a.0 * (budget_ms / a.1).min(3.0),
+            (Some(a), None) => a.0 * (budget_ms / a.1).min(4.0),
             (None, Some(b)) => b.0 * (budget_ms / b.1).max(0.2),
             (None, None) => unreachable!(),
         };
         // Round to two significant digits: nobody wants 437,912 bodies.
         let unit = 10f64.powf(next.log10().floor() - 1.0);
         let next = ((next / unit).floor() * unit).clamp(2_000.0, 4_000_000.0);
-        let settled = (next / count - 1.0).abs() < 0.12;
+        let settled = (next / count - 1.0).abs() < 0.15;
         count = next;
         if settled {
             break;

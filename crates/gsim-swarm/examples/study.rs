@@ -13,7 +13,7 @@ const G: f64 = 6.67430e-11;
 /// One step through the phases a large world goes through, whatever the number of bodies.
 fn step(e: &mut Engine, b: &mut Bodies, dt: f64) -> usize {
     e.begin(b, dt);
-    while e.own(b, std::time::Duration::MAX) {}
+    e.own(b);
     e.end(b);
     e.forces(b);
     e.finish(b).len()
@@ -345,9 +345,9 @@ fn cost() {
             let dt = wanted.min(longest(&sim.engine));
             merged += sim.step(dt).len();
             let s = sim.engine.stats;
-            let took = step_ms * 1.0e-3 * (1.0 + (s.own_interactions / s.interactions.max(1.0)) as f64);
+            let took = step_ms * 1.0e-3 * (1.0 + s.kicks as f64 / (s.interactions.max(1.0) as f64 * count));
             (steps, fine, most) = (steps + 1, fine + s.fine as u64, most.max(s.most));
-            (full, own) = (full + s.interactions as f64, own + s.own_interactions as f64);
+            (full, own) = (full + s.interactions as f64, own + s.kicks as f64 / count);
             (played, slowed) = (played + took, slowed + took * (1.0 - dt / wanted));
         }
         println!(
@@ -402,9 +402,9 @@ fn played(harder: bool) {
                 sim.step(wanted.min(limit));
                 let took = t0.elapsed().as_secs_f64();
                 let s = sim.engine.stats;
-                base_s += 0.15 * ((took - s.own_ms as f64 * 1.0e-3).max(0.0) - base_s);
+                base_s += 0.15 * ((took - s.own_ms() as f64 * 1.0e-3).max(0.0) - base_s);
                 (steps, held, most) = (steps + 1, held + (limit < wanted) as u32, most.max(s.most));
-                (own_ms, rest_ms, fine) = (own_ms + s.own_ms as f64, rest_ms + took * 1.0e3 - s.own_ms as f64, fine + s.fine as u64);
+                (own_ms, rest_ms, fine) = (own_ms + s.own_ms() as f64, rest_ms + took * 1.0e3 - s.own_ms() as f64, fine + s.fine as u64);
             }
             let spent = started.elapsed().as_secs_f64();
             let n = steps as f64;
@@ -421,11 +421,51 @@ fn played(harder: bool) {
     }
 }
 
+/// A world far too large for the machine, stepped as the game steps it: where a step's time
+/// goes, with nobody drawing it and with somebody reading the bodies for `READ_MS` out of
+/// every `FRAME_MS`. `BIG=<bodies> WORLD=<name> PACE=<times the world's own>`.
+fn big() {
+    let var = |name: &str, or: f64| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(or);
+    let (count, times, read_ms, frame_ms) = (var("BIG", 2.0e6), var("PACE", 1.0), var("READ_MS", 0.0), var("FRAME_MS", 33.0));
+    let name = std::env::var("WORLD").unwrap_or("galaxy".into());
+    let setup = scenario::build(&name, 7, &params(count)).unwrap();
+    let pace = setup.time_scale * times;
+    let mut sim = Sim::new(setup);
+    println!("\n== {name}, {count} bodies, {times} x pace, read {read_ms} of {frame_ms} ms ==");
+    println!("{:>4} {:>7} {:>6} |{} | {:>7} {:>7} {:>7} {:>7} {:>5} {:>8}", "step", "wall", "waited", gsim_swarm::Part::ALL.map(|p| format!(" {:>6.6}", format!("{:?}", p.0))).concat(), "ties", "cluster", "largest", "fine", "most", "kicks");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = (read_ms > 0.0).then(|| {
+        let (bodies, waiting, stop) = (sim.bodies.clone(), sim.reader_waiting.clone(), stop.clone());
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            while !stop.load(Ordering::Relaxed) {
+                waiting.store(true, Ordering::Release);
+                let b = bodies.read().unwrap();
+                waiting.store(false, Ordering::Release);
+                std::thread::sleep(std::time::Duration::from_secs_f64(read_ms * 1.0e-3));
+                drop(b);
+                std::thread::sleep(std::time::Duration::from_secs_f64((frame_ms - read_ms).max(0.0) * 1.0e-3));
+            }
+        })
+    });
+    let dt = pace * 0.1;
+    for k in 0..var("STEPS", 8.0) as usize {
+        let t0 = std::time::Instant::now();
+        sim.step(dt.min(longest(&sim.engine)));
+        let (wall, s) = (t0.elapsed().as_secs_f32() * 1.0e3, sim.engine.stats);
+        println!("{k:>4} {wall:>7.1} {:>6.1} |{} | {:>7} {:>7} {:>7} {:>7} {:>5} {:>8}", sim.waited * 1.0e3, s.ms.map(|ms| format!(" {ms:>6.1}")).concat(), s.ties, s.clusters, s.largest, s.fine, s.most, s.kicks);
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(r) = reader {
+        let _ = r.join();
+    }
+}
+
 fn main() {
     let asked: Vec<String> = std::env::args().skip(1).collect();
-    let all: [(&str, fn()); 10] = [("binary", binary), ("moon", moon), ("flyby", flyby), ("width", width), ("scale", scale), ("energy", energy), ("cost", cost), ("pace", pace), ("tide", tide), ("harder", harder)];
+    let all: [(&str, fn()); 11] = [("binary", binary), ("moon", moon), ("flyby", flyby), ("width", width), ("scale", scale), ("energy", energy), ("cost", cost), ("pace", pace), ("tide", tide), ("harder", harder), ("big", big)];
     for (name, run) in all {
-        if asked.is_empty() || asked.iter().any(|a| a == name) {
+        if (asked.is_empty() && name != "big") || asked.iter().any(|a| a == name) {
             run();
         }
     }
