@@ -24,7 +24,9 @@ const ROCK: f64 = 5514.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
-    Body(u32),
+    /// The selected body, or the centre of mass of the selected bodies (told apart by a
+    /// number made of their ids).
+    Bodies(u32),
     Free,
 }
 
@@ -124,7 +126,8 @@ pub struct Sandbox {
     offset: (f64, f64),
     last_target: Target,
     last_target_pos: (f64, f64),
-    selected: Option<u32>,
+    /// The selected bodies. Several are followed, and measured from, by their centre of mass.
+    selected: Vec<u32>,
     /// When the simulation was last told what to watch.
     watch_told: Instant,
     tool: Tool,
@@ -198,7 +201,57 @@ fn circling(centre: &Picked, x: f64, y: f64, towards: (f64, f64)) -> (f64, f64) 
     (centre.vx - v * ry / d, centre.vy + v * rx / d)
 }
 
-/// What pulls hardest at a point, among the heaviest few bodies and the selected one.
+/// Several bodies taken as one: all their mass at their centre of mass, moving as that does.
+fn centre(bodies: &[Picked]) -> Picked {
+    let mass: f64 = bodies.iter().map(|p| p.mass).sum();
+    let mean = |of: fn(&Picked) -> f64| bodies.iter().map(|p| of(p) * p.mass).sum::<f64>() / mass;
+    Picked { id: u32::MAX, x: mean(|p| p.x), y: mean(|p| p.y), vx: mean(|p| p.vx), vy: mean(|p| p.vy), mass, radius: 0.0 }
+}
+
+/// What can be said of several bodies together, for the panel that shows them: what each
+/// figure is, and the figure.
+fn together(bodies: &[Picked]) -> Vec<(&'static str, String)> {
+    let c = centre(bodies);
+    let spread = bodies.iter().map(|p| ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt()).fold(0.0, f64::max);
+    let mut rows = vec![("mass", fmt::mass(c.mass)), ("speed", fmt::speed((c.vx * c.vx + c.vy * c.vy).sqrt())), ("radius", fmt::distance(spread))];
+    let yes = |bound: bool| if bound { "yes" } else { "no" }.to_string();
+    if let [p, q] = bodies {
+        let (rx, ry, vx, vy) = (q.x - p.x, q.y - p.y, q.vx - p.vx, q.vy - p.vy);
+        let (d, mu) = ((rx * rx + ry * ry).sqrt(), G * c.mass);
+        rows.extend([("distance", fmt::distance(d)), ("rel. speed", fmt::speed((vx * vx + vy * vy).sqrt()))]);
+        // The orbit of one about the other, if they were alone.
+        let energy = 0.5 * (vx * vx + vy * vy) - mu / d.max(1.0e-9);
+        rows.push(("bound", yes(energy < 0.0)));
+        if energy < 0.0 {
+            let (a, turn) = (-0.5 * mu / energy, rx * vy - ry * vx);
+            let ecc = (1.0 + 2.0 * energy * turn * turn / (mu * mu)).max(0.0).sqrt();
+            rows.extend([
+                ("period", fmt::span(std::f64::consts::TAU * (a * a * a / mu).sqrt())),
+                ("nearest", fmt::distance(a * (1.0 - ecc))),
+                ("furthest", fmt::distance(a * (1.0 + ecc))),
+                ("eccentricity", format!("{ecc:.3}")),
+            ]);
+        }
+    } else {
+        // Energy as seen from the centre of mass: less than none, and they cannot all part.
+        let moving: f64 = bodies.iter().map(|p| 0.5 * p.mass * ((p.vx - c.vx).powi(2) + (p.vy - c.vy).powi(2))).sum();
+        let mut held = 0.0;
+        for (k, p) in bodies.iter().enumerate() {
+            for q in &bodies[k + 1..] {
+                held += G * p.mass * q.mass / ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt().max(1.0e-9);
+            }
+        }
+        rows.push(("bound", yes(moving < held)));
+    }
+    rows
+}
+
+/// Shift, Ctrl or Cmd is held: a click adds to what is selected.
+fn adding() -> bool {
+    [KeyCode::LeftShift, KeyCode::RightShift, KeyCode::LeftControl, KeyCode::RightControl, KeyCode::LeftSuper, KeyCode::RightSuper].into_iter().any(is_key_down)
+}
+
+/// What pulls hardest at a point, among the heaviest few bodies and what is selected.
 fn anchor(heavy: &[Heavy], selected: Option<Picked>, x: f64, y: f64) -> Option<Picked> {
     let listed = heavy.iter().map(|h| Picked { id: h.id, x: h.x, y: h.y, vx: h.vx, vy: h.vy, mass: h.mass as f64, radius: h.radius as f64 });
     listed.chain(selected).max_by(|a, b| {
@@ -257,7 +310,7 @@ impl Sandbox {
             offset: (0.0, 0.0),
             last_target: Target::Free,
             last_target_pos: (0.0, 0.0),
-            selected: None,
+            selected: Vec::new(),
             watch_told: Instant::now(),
             tool: Tool::Look,
             kit: Kit { mass: 1.0e25, density: ROCK, brush: 40.0, rate: 200.0, structure: Structure::Galaxy, count: 5000.0, bulk: 1.0e29, pieces: 60.0, violence: 1.5 },
@@ -288,10 +341,23 @@ impl Sandbox {
         self.status = Some((text.to_string(), get_time() + 2.5));
     }
 
-    fn select(&mut self, id: Option<u32>) {
-        self.selected = id;
+    /// Select these bodies and no others.
+    fn select(&mut self, ids: Vec<u32>) {
+        self.selected = ids;
         self.watch_told = Instant::now();
-        self.runner.send(Command::Watch(id.into_iter().collect()));
+        self.runner.send(Command::Watch(self.selected.clone()));
+    }
+
+    /// Select a body alone or, with `more`, along with those selected already (or no longer,
+    /// if it is one of them).
+    fn pick(&mut self, id: Option<u32>, more: bool) {
+        let mut ids = if more { self.selected.clone() } else { Vec::new() };
+        match id {
+            Some(id) if ids.contains(&id) => ids.retain(|other| *other != id),
+            Some(id) => ids.push(id),
+            None => {}
+        }
+        self.select(ids);
     }
 
     /// Set the pace in simulated seconds per real second (0 pauses).
@@ -347,7 +413,7 @@ impl Sandbox {
             // A world was saved or swapped: the list on disk, or what is selected, may be stale.
             self.saves = list_saves();
             if text.starts_with("Loaded") {
-                self.select(None);
+                self.select(Vec::new());
                 self.density.clear_trail();
             }
             self.say(&text);
@@ -406,9 +472,11 @@ impl Sandbox {
                     self.tool = tool;
                 }
             }
-            if let (true, Some(id)) = (is_key_pressed(KeyCode::Delete) || is_key_pressed(KeyCode::Backspace), self.selected) {
-                self.runner.send(Command::Remove(id));
-                self.select(None);
+            if is_key_pressed(KeyCode::Delete) || is_key_pressed(KeyCode::Backspace) {
+                for id in std::mem::take(&mut self.selected) {
+                    self.runner.send(Command::Remove(id));
+                }
+                self.select(Vec::new());
             }
             pan = ((is_key_down(KeyCode::D) as i32 - is_key_down(KeyCode::A) as i32) as f64, (is_key_down(KeyCode::S) as i32 - is_key_down(KeyCode::W) as i32) as f64);
             self.zoom_pending += 25.0 * dt * (is_key_down(KeyCode::E) as i32 - is_key_down(KeyCode::Q) as i32) as f32;
@@ -418,9 +486,17 @@ impl Sandbox {
         // lies between as something between, evenly by the factor.
         self.density.crowd = (((seen.stats.bodies.max(1) as f32).log10() - 3.0) / (5.0e4f32.log10() - 3.0)).clamp(0.0, 1.0);
 
-        // A watched body that merged lives on in its survivor.
-        if self.watch_told.elapsed().as_secs_f32() > 0.3 && self.selected.is_some() && seen.watch.first().is_some_and(|w| Some(*w) != self.selected) {
-            self.selected = seen.watch.first().copied();
+        // A watched body that merged lives on in its survivor (two that merged with each
+        // other, as one).
+        let settled = self.watch_told.elapsed().as_secs_f32() > 0.3 && seen.watch.len() == self.selected.len();
+        if settled && seen.watch != self.selected {
+            let mut ids: Vec<u32> = Vec::new();
+            for id in &seen.watch {
+                if !ids.contains(id) {
+                    ids.push(*id);
+                }
+            }
+            self.select(ids);
         }
 
         clear_background(style::BACKGROUND);
@@ -431,7 +507,7 @@ impl Sandbox {
         let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         let left_pressed = pointer && is_mouse_button_pressed(MouseButton::Left);
         let left_released = is_mouse_button_released(MouseButton::Left);
-        let (big, present, picked, hovered, bodies_n, frame_v, target_pos);
+        let (big, present, picked, group, hovered, bodies_n, frame_v, target_pos): (_, _, _, Vec<Picked>, _, _, _, _);
         let mut clicked: Option<Option<u32>> = None;
         let mut moved_view = false;
         {
@@ -445,23 +521,35 @@ impl Sandbox {
             present = seen.clock.time + (seen.clock.at.elapsed().as_secs_f64() * seen.clock.rate).min(seen.clock.span);
             let tau = (present - b.time).clamp(-b.dt, b.dt);
             let at = |i: usize| Picked { id: b.id[i], x: b.place(i, tau).0, y: b.place(i, tau).1, vx: b.vx[i], vy: b.vy[i], mass: b.m[i] as f64, radius: b.r[i] as f64 };
-            let chosen = self.selected.and_then(|id| b.locate(id));
-            if chosen.is_none() {
-                self.selected = None;
+            let mut ids = self.selected.clone();
+            ids.sort_unstable();
+            group = if ids.is_empty() { Vec::new() } else { (0..b.len()).into_par_iter().filter(|i| b.m[*i] > 0.0 && ids.binary_search(&b.id[*i]).is_ok()).map(at).collect() };
+            // One that the simulation, too, takes to be selected and that is not there is gone.
+            if group.len() < ids.len() && settled && seen.watch == self.selected {
+                self.selected = group.iter().map(|p| p.id).collect();
+                self.watch_told = Instant::now();
+                self.runner.send(Command::Watch(self.selected.clone()));
             }
-            picked = chosen.map(at);
+            // Several are followed and measured from as one body at their centre of mass.
+            picked = match group.len() {
+                0 => None,
+                1 => Some(group[0]),
+                _ => Some(centre(&group)),
+            };
+            let mut found: Vec<u32> = group.iter().map(|p| p.id).collect();
+            found.sort_unstable();
 
             // --- camera ------------------------------------------------------------------------
             let target = match (settings.camera != Camera::Ship, picked) {
-                (true, Some(p)) => Target::Body(p.id),
+                (true, Some(_)) => Target::Bodies(found.iter().fold(found.len() as u32, |all, id| all.wrapping_mul(0x9E37_79B1) ^ id)),
                 _ => Target::Free,
             };
             target_pos = match (target, picked) {
-                (Target::Body(_), Some(p)) => (p.x, p.y),
+                (Target::Bodies(_), Some(p)) => (p.x, p.y),
                 _ => self.last_target_pos,
             };
             frame_v = match (target, picked) {
-                (Target::Body(_), Some(p)) => (p.vx, p.vy),
+                (Target::Bodies(_), Some(p)) => (p.vx, p.vy),
                 _ => (0.0, 0.0),
             };
             if !self.view_ready && b.is_empty() {
@@ -546,7 +634,7 @@ impl Sandbox {
                         .map(|c| at(c.0))
                 })
                 .flatten();
-            hovered = under.filter(|h| Some(h.id) != self.selected);
+            hovered = under.filter(|h| !self.selected.contains(&h.id));
             if left_released && self.press.is_some() && steady && under.is_some() | (self.tool == Tool::Look) {
                 clicked = Some(under.map(|p| p.id));
             }
@@ -652,7 +740,7 @@ impl Sandbox {
                         new.push(from.0, from.1, v.0, v.1, self.kit.mass, radius_from_mass(self.kit.mass, self.kit.density), 3);
                         commands.push(Command::Add(Box::new(new)));
                     }
-                    (Tool::Drop, true, None) => self.say("Select the body the ring should circle first"),
+                    (Tool::Drop, true, None) => self.say("Select a centre for the ring first"),
                     (Tool::Drop, ring, body) => {
                         // A ring goes around the selected body, wherever the press was.
                         let (centre, at, velocity) = match body.filter(|_| ring) {
@@ -703,7 +791,8 @@ impl Sandbox {
         }
         match (clicked, self.tool) {
             (Some(Some(id)), Tool::Shatter) => commands.push(Command::Shatter { id, pieces: self.kit.pieces as usize, violence: self.kit.violence }),
-            (Some(id), Tool::Look) => self.select(id),
+            // (A click on nothing lets go of the selection, unless more are being added.)
+            (Some(id), Tool::Look) if id.is_some() || !adding() => self.pick(id, adding()),
             _ => {}
         }
 
@@ -714,19 +803,37 @@ impl Sandbox {
             draw_rectangle_lines(s.0 - r_px, s.1 - r_px, 2.0 * r_px, 2.0 * r_px, 1.5 * ui, color);
             (s, r_px)
         };
-        if let Some(p) = &picked {
+        if let [p] = &group[..] {
             let (s, r_px) = outline(p, WHITE);
             // Where it will be a second from now.
             arrow(s, view.to_screen(p.x + (p.vx - frame_v.0) * pace, p.y + (p.vy - frame_v.1) * pace), style::alpha(WHITE, 0.8));
             let lines = vec![format!("B{}", p.id), format!("m = {}", fmt::mass(p.mass)), format!("r = {}", fmt::distance(p.radius)), format!("v = {}", fmt::speed((p.vx * p.vx + p.vy * p.vy).sqrt()))];
             labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
+        } else if let Some(c) = &picked {
+            // Several: each marked and tied by a thin line to their centre of mass, which is
+            // marked the way a centre of mass is, with where it will be a second from now.
+            let s = view.to_screen(c.x, c.y);
+            for p in &group {
+                let (at, r_px) = outline(p, style::alpha(WHITE, 0.8));
+                if view.on_screen(at, 200.0) || view.on_screen(s, 200.0) {
+                    draw_line(s.0, s.1, at.0, at.1, ui, style::alpha(WHITE, 0.18));
+                }
+                labels.push(format!("B{}", p.id), at.0, at.1 + r_px + 12.0 * ui, LABEL * ui, style::alpha(WHITE, 0.8), Rank::BodyName);
+            }
+            let r = 7.0 * ui;
+            style::ring(s.0, s.1, r, 1.5 * ui, GOLD);
+            draw_line(s.0 - 1.6 * r, s.1, s.0 + 1.6 * r, s.1, 1.5 * ui, GOLD);
+            draw_line(s.0, s.1 - 1.6 * r, s.0, s.1 + 1.6 * r, 1.5 * ui, GOLD);
+            arrow(s, view.to_screen(c.x + (c.vx - frame_v.0) * pace, c.y + (c.vy - frame_v.1) * pace), style::alpha(GOLD, 0.9));
+            let lines = vec![format!("{} bodies", group.len()), format!("m = {}", fmt::mass(c.mass)), format!("v = {}", fmt::speed((c.vx * c.vx + c.vy * c.vy).sqrt()))];
+            labels.block(lines, s.0, s.1 + 1.6 * r + 12.0 * ui, LABEL * ui, GOLD, Rank::Selection);
         }
         if let Some(h) = &hovered {
             let (s, r_px) = outline(h, style::alpha(style::ACCENT, 0.9));
             arrow(s, view.to_screen(h.x + (h.vx - frame_v.0) * pace, h.y + (h.vy - frame_v.1) * pace), style::alpha(style::ACCENT, 0.8));
             let mut lines = vec![format!("B{}", h.id), format!("m = {}", fmt::mass(h.mass))];
             match &picked {
-                // Measured from the selected body.
+                // Measured from the selected body, or the centre of the selected ones.
                 Some(p) => {
                     lines.push(format!("d = {}", fmt::distance(((h.x - p.x).powi(2) + (h.y - p.y).powi(2)).sqrt())));
                     lines.push(format!("rel v = {}", fmt::speed(((h.vx - p.vx).powi(2) + (h.vy - p.vy).powi(2)).sqrt())));
@@ -738,7 +845,7 @@ impl Sandbox {
         labels.draw();
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
-        let outcome = self.hud(settings, &before, &seen, bodies_n, picked, hud, &mut commands);
+        let outcome = self.hud(settings, &before, &seen, bodies_n, &group, hud, &mut commands);
         for command in commands {
             self.runner.send(command);
         }
@@ -746,7 +853,7 @@ impl Sandbox {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn hud(&mut self, settings: &mut Settings, before: &Settings, seen: &Seen, bodies: usize, picked: Option<Picked>, hud: f32, commands: &mut Vec<Command>) -> Outcome {
+    fn hud(&mut self, settings: &mut Settings, before: &Settings, seen: &Seen, bodies: usize, group: &[Picked], hud: f32, commands: &mut Vec<Command>) -> Outcome {
         self.meter.frame(self.density.last_ms);
         let stats = &seen.stats;
         let title = format!("{}   ·   {} BODIES", self.scenario.to_uppercase(), group_digits(bodies));
@@ -762,7 +869,7 @@ impl Sandbox {
         let last = &stats.last;
         let stat_lines = [
             format!("{} bodies   {:.0} fps   draw {:.1} ms", group_digits(bodies), self.meter.fps, self.meter.ms),
-            format!("{} steps per second, {} each", group_digits(stats.steps_per_s as usize), fmt::span(stats.dt)),
+            format!("{} steps/s   {} each", group_digits(stats.steps_per_s as usize), fmt::span(stats.dt)),
             format!(
                 "step {:.2} ms  (sort {sort_ms:.1}  own steps {own_ms:.1}  gravity {gravity_ms:.1}  merge {merge_ms:.1}  other {:.1})",
                 stats.step_ms,
@@ -770,9 +877,9 @@ impl Sandbox {
             ),
             format!("{}   {:.0} pulls per body   {}", stats.mode, stats.interactions, stats.level),
             match (stats.limited, last.fine) {
-                (true, n) => format!("time slowed for {} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(last.most as usize)),
-                (false, 0) => "every body takes the world's step".to_string(),
-                (false, n) => format!("{} bodies on shorter steps of their own, up to {} a step", group_digits(n as usize), group_digits(last.most as usize)),
+                (true, n) => format!("slowed   {} bodies on own steps, up to x{}", group_digits(n as usize), group_digits(last.most as usize)),
+                (false, 0) => "no bodies on own steps".to_string(),
+                (false, n) => format!("{} bodies on own steps, up to x{}", group_digits(n as usize), group_digits(last.most as usize)),
             },
             match stats.error {
                 Some(e) => format!("force error {:.3} %   angle {:.2}", e * 100.0, seen.theta),
@@ -781,55 +888,50 @@ impl Sandbox {
             format!("day {:.0}   merges {} ({:.0}/s)   escaped {}", seen.time / 86_400.0, group_digits(stats.merges_total as usize), stats.merges_per_s, stats.removed_total),
             format!("F3 + {}", PAGES.iter().enumerate().map(|(k, page)| format!("{} {}", k + 1, page.1.to_lowercase())).collect::<Vec<_>>().join("   ")),
         ];
-        // The page of detail that is switched on: a heading and its lines.
+        // The page of detail that is switched on: a heading and its rows, each a name and a
+        // figure.
         let share = |ms: f32| if stats.step_ms > 0.0 { 100.0 * ms / stats.step_ms } else { 0.0 };
-        let row = |what: &str, ms: f32| format!("{what:<28}{ms:>9.2} ms {:>5.1} %", share(ms));
-        let pages: Vec<(&str, Vec<String>)> = (self.page.iter())
+        let cost = |what: &str, ms: f32| (what.to_string(), format!("{ms:>8.2} ms {:>5.1} %", share(ms)));
+        let count = |what: &str, n: usize| (what.to_string(), group_digits(n));
+        let pages: Vec<(&str, Vec<(String, String)>)> = (self.page.iter())
             .map(|page| {
                 let title = &PAGES[*page].1;
-                let lines = match *title {
+                let rows = match *title {
                     "STEP" => {
                         let counted: f32 = stats.parts.iter().sum::<f32>() + stats.wait_ms;
-                        let mut lines: Vec<String> = Part::ALL.iter().map(|(part, what, ties)| row(&format!("{}{what}", if *ties { "· " } else { "" }), stats.parts[*part as usize])).collect();
-                        lines.push(row("waiting for the drawing", stats.wait_ms));
-                        lines.push(row("everything else", (stats.step_ms - counted).max(0.0)));
-                        lines.push(row("a whole step", stats.step_ms));
-                        lines.push(row("· of it for the ties", own_ms));
-                        lines
+                        let mut rows: Vec<(String, String)> = Part::ALL.iter().map(|(part, what, _)| cost(what, stats.parts[*part as usize])).collect();
+                        rows.extend([cost("drawing wait", stats.wait_ms), cost("other", (stats.step_ms - counted).max(0.0)), cost("step", stats.step_ms), cost("ties in all", own_ms)]);
+                        rows
                     }
                     "TIES" => {
-                        let mut lines = vec![
-                            format!("{} ties between {} bodies", group_digits(last.ties as usize), group_digits(last.fine as usize)),
-                            format!("in {} clusters, the largest of {} bodies", group_digits(last.clusters as usize), group_digits(last.largest as usize)),
-                            format!("{} kicks within a step", group_digits(last.kicks as usize)),
-                            "own steps a step        ties".to_string(),
-                        ];
-                        lines.extend(last.halved.iter().enumerate().filter(|(_, ties)| **ties > 0).map(|(depth, ties)| format!("{:>16} {:>11}", group_digits(1 << depth), group_digits(*ties as usize))));
-                        lines
+                        let mut rows = vec![count("ties", last.ties as usize), count("bodies", last.fine as usize), count("clusters", last.clusters as usize), count("largest", last.largest as usize), count("kicks", last.kicks as usize)];
+                        rows.extend(last.halved.iter().enumerate().filter(|(_, ties)| **ties > 0).map(|(depth, ties)| count(&format!("x{}", group_digits(1 << depth)), *ties as usize)));
+                        rows
                     }
                     "PACE" => vec![
-                        format!("asked for      1 s = {}", fmt::span(seen.pace)),
-                        format!("managed        1 s = {}", fmt::span(stats.achieved)),
-                        format!("a step covers  {}, as much as {:.1} ms at the pace asked for", fmt::span(stats.dt), stats.reach_s * 1e3),
-                        format!("and takes      {:.1} ms", stats.step_ms),
-                        match stats.longest {
-                            longest if longest < f64::MAX => format!("longest step the tightest orbit allows  {}", fmt::span(longest)),
-                            _ => "no orbit limits the step".to_string(),
-                        },
-                        format!("{} threads for the simulation", stats.threads),
+                        ("asked".to_string(), format!("1 s = {}", fmt::span(seen.pace))),
+                        ("got".to_string(), format!("1 s = {}", fmt::span(stats.achieved))),
+                        ("step".to_string(), fmt::span(stats.dt)),
+                        ("worth".to_string(), format!("{:.1} ms", stats.reach_s * 1e3)),
+                        ("takes".to_string(), format!("{:.1} ms", stats.step_ms)),
+                        ("longest".to_string(), if stats.longest < f64::MAX { fmt::span(stats.longest) } else { "any".to_string() }),
+                        count("threads", stats.threads),
                     ],
                     _ => {
                         let (w, h, gpu) = self.density.picture();
+                        let ms = |what: &str, ms: f32| (what.to_string(), format!("{ms:.1} ms"));
                         vec![
-                            format!("{:.0} fps, {:.1} ms a frame", self.meter.fps, if self.meter.fps > 0.0 { 1000.0 / self.meter.fps } else { 0.0 }),
-                            format!("waited {:.1} ms for the bodies, held them {:.1} ms", self.reading_ms.0, self.reading_ms.1),
-                            format!("going through the bodies {:.1} ms, drawing them {:.1} ms", self.density.project_ms, (self.density.last_ms - self.density.project_ms).max(0.0)),
-                            format!("{w} x {h} pixels, drawn by {}", if gpu { "the graphics card" } else { "the processor" }),
-                            format!("{} bodies drawn as discs", group_digits(self.discs)),
+                            ms("frame", if self.meter.fps > 0.0 { 1000.0 / self.meter.fps } else { 0.0 }),
+                            ms("lock wait", self.reading_ms.0),
+                            ms("lock held", self.reading_ms.1),
+                            ms("bodies", self.density.project_ms),
+                            ms("draw", (self.density.last_ms - self.density.project_ms).max(0.0)),
+                            ("picture".to_string(), format!("{w} x {h}, {}", if gpu { "GPU" } else { "CPU" })),
+                            count("discs", self.discs),
                         ]
                     }
                 };
-                (*title, lines)
+                (*title, rows)
             })
             .collect();
         let status = self.status.as_ref().filter(|s| s.1 > get_time()).map(|s| s.0.clone());
@@ -845,7 +947,7 @@ impl Sandbox {
         let (save_name, saves) = (&mut self.save_name, &self.saves);
         let mut delete: Option<String> = None;
         let mut new_leavers = self.drop_leavers;
-        let selected = self.selected;
+        let selected = self.selected.clone();
         egui_macroquad::ui(|ctx| {
             use egui::{Align2, Area, Id, RichText};
             ctx.set_zoom_factor(hud);
@@ -884,11 +986,15 @@ impl Sandbox {
                         for l in &stat_lines {
                             ui.label(RichText::new(l).monospace().color(dim));
                         }
-                        for (title, lines) in &pages {
+                        for (title, rows) in &pages {
                             style::section(ui, title);
-                            for l in lines {
-                                ui.label(RichText::new(l).monospace().color(dim));
-                            }
+                            egui::Grid::new("page").num_columns(2).spacing([16.0, 1.0]).show(ui, |ui| {
+                                for (what, figure) in rows {
+                                    ui.label(RichText::new(what).monospace().color(dim));
+                                    ui.label(RichText::new(figure).monospace().color(style::c32(style::TEXT)));
+                                    ui.end_row();
+                                }
+                            });
                         }
                     });
                 });
@@ -900,8 +1006,12 @@ impl Sandbox {
                     style::caption(ui, "HEAVIEST");
                     egui::Grid::new("heaviest").num_columns(3).spacing([12.0, 2.0]).show(ui, |ui| {
                         for h in seen.heaviest.iter().take(8) {
-                            let colour = if selected == Some(h.id) { gold } else { style::c32(style::mass_color(h.mass as f64)) };
-                            if ui.add(egui::Label::new(RichText::new(format!("B{}", h.id)).color(colour)).sense(egui::Sense::click())).clicked() {
+                            // In the body's own colour; a selected one on a lighter ground, underlined.
+                            let mut name = RichText::new(format!("B{}", h.id)).color(style::c32(style::mass_color(h.mass as f64)));
+                            if selected.contains(&h.id) {
+                                name = name.underline().background_color(egui::Color32::from_white_alpha(36));
+                            }
+                            if ui.add(egui::Label::new(name).sense(egui::Sense::click())).clicked() {
                                 new_pick = Some(h.id);
                             }
                             ui.label(RichText::new(fmt::mass(h.mass as f64)).color(dim));
@@ -927,22 +1037,22 @@ impl Sandbox {
                     };
                     let density = |ui: &mut egui::Ui, value: &mut f64| {
                         ui.add(egui::Slider::new(value, 100.0..=1.0e6).logarithmic(true).clamping(free).max_decimals(0).suffix(" kg/m³").text("density")).on_hover_text(
-                            "What new bodies are made of, which sets how large they are. Water is 1,000, rock about 3,000, the Earth 5,514, the Sun 1,408, iron 7,900. Denser bodies are smaller and so collide less often.",
+                            "Sets a new body's size from its mass. Water 1,000, Sun 1,408, rock 3,000, Earth 5,514, iron 7,900.",
                         );
                     };
                     match tool {
-                        Tool::Look => hint(ui, "Click a body to select it; drag to move the view."),
+                        Tool::Look => hint(ui, "Click: select. Shift-click: add. Drag: move."),
                         Tool::Place => {
                             mass(ui, &mut kit.mass, "mass");
                             density(ui, &mut kit.density);
-                            hint(ui, "Click to place, drag to throw. Shift: on a circular orbit, going round the way you drag.");
+                            hint(ui, "Click: place. Drag: throw. Shift: circular orbit.");
                         }
                         Tool::Spray => {
                             mass(ui, &mut kit.mass, "mass of each");
                             density(ui, &mut kit.density);
                             ui.add(egui::Slider::new(&mut kit.rate, 5.0..=5000.0).logarithmic(true).clamping(free).text("bodies a second"));
                             ui.add(egui::Slider::new(&mut kit.brush, 5.0..=300.0).clamping(free).text("brush"));
-                            hint(ui, "Hold to spray. Shift: each on a circular orbit.");
+                            hint(ui, "Hold: spray. Shift: circular orbits.");
                         }
                         Tool::Drop => {
                             ui.horizontal(|ui| {
@@ -954,16 +1064,16 @@ impl Sandbox {
                             mass(ui, &mut kit.bulk, "mass in all");
                             density(ui, &mut kit.density);
                             ui.add(egui::Slider::new(&mut kit.brush, 5.0..=300.0).clamping(free).text("size"));
-                            hint(ui, if kit.structure == Structure::Ring { "Click anywhere: it goes around the selected body." } else { "Click to drop, drag to throw. Shift: on a circular orbit, going round the way you drag." });
+                            hint(ui, if kit.structure == Structure::Ring { "Click: ring around the selection." } else { "Click: drop. Drag: throw. Shift: circular orbit." });
                         }
                         Tool::Erase => {
                             ui.add(egui::Slider::new(&mut kit.brush, 5.0..=300.0).clamping(free).text("brush"));
-                            hint(ui, "Hold to remove everything under the brush.");
+                            hint(ui, "Hold: erase.");
                         }
                         Tool::Shatter => {
                             ui.add(egui::Slider::new(&mut kit.pieces, 2.0..=1000.0).logarithmic(true).clamping(free).integer().text("pieces"));
                             ui.add(egui::Slider::new(&mut kit.violence, 0.3..=5.0).clamping(free).text("violence"));
-                            hint(ui, "Click a body to break it apart.");
+                            hint(ui, "Click a body: break it up.");
                         }
                     }
                     // Whatever was typed, the tools are handed something they can use.
@@ -986,7 +1096,8 @@ impl Sandbox {
             });
 
             // Bottom right: the selected body, open to change.
-            if let Some(p) = picked {
+            if let [p] = group {
+                let p = *p;
                 Area::new(Id::new("body")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
                         ui.set_width(300.0);
@@ -1020,6 +1131,32 @@ impl Sandbox {
                 });
             }
 
+            // Or the selected bodies together.
+            if group.len() > 1 {
+                Area::new(Id::new("bodies")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).show(ctx, |ui| {
+                    style::panel().show(ui, |ui| {
+                        ui.set_width(300.0);
+                        style::caption(ui, &format!("{} BODIES", group.len()));
+                        egui::Grid::new("together").num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {
+                            for (what, figure) in together(group) {
+                                ui.label(RichText::new(what).color(dim));
+                                ui.label(RichText::new(figure).monospace().color(style::c32(style::TEXT)));
+                                ui.end_row();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            let c = centre(group);
+                            if ui.button("Stop").on_hover_text("Stops the centre of mass. Motion about it stays.").clicked() {
+                                commands.extend(group.iter().map(|p| Command::Edit { id: p.id, mass: p.mass, radius: p.radius, vx: p.vx - c.vx, vy: p.vy - c.vy }));
+                            }
+                            if ui.button("Delete").clicked() {
+                                commands.extend(group.iter().map(|p| Command::Remove(p.id)));
+                            }
+                        });
+                    });
+                });
+            }
+
             if menu {
                 egui::Window::new("MENU").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                     ui.set_width(330.0);
@@ -1027,19 +1164,13 @@ impl Sandbox {
                         style::section(ui, "WORLD");
                         ui.spacing_mut().slider_width = 190.0;
                         ui.add(egui::Slider::new(&mut new_theta, 0.3..=1.2).text("opening angle")).on_hover_text(
-                            "How readily distant groups of bodies are treated as one lump when there are too many to sum pair by pair: \
-                             smaller is more accurate and slower.",
+                            "How far away a group of bodies must be to count as one lump. Smaller: more accurate, slower.",
                         );
                         ui.checkbox(&mut new_tight, "Follow tight orbits").on_hover_text(
-                            "On: a body that is held tightly (a moon by its planet, a star close to a galaxy's core) takes shorter steps of its own, \
-                             as many as its orbit needs, while everything else takes the world's step. That costs as much as there are such bodies, \
-                             and the pace gives way if it is more than this machine can do. Off: every body takes the world's step, and whatever \
-                             turns faster than that drifts off its orbit or is flung away. A world of a couple of hundred bodies or fewer is \
-                             stepped whole: there every step is shortened instead.",
+                            "On: tightly bound bodies (a moon, a star near a core) take shorter steps of their own. Time slows if there are too many. \
+                             Off: one step for all; tight orbits drift or break up.",
                         );
-                        ui.checkbox(&mut new_leavers, "Escaping bodies disappear").on_hover_text(
-                            "On: a body that has left the crowd for good (moving outwards, too fast to ever be pulled back) fades out and is removed. Off: nothing is ever removed.",
-                        );
+                        ui.checkbox(&mut new_leavers, "Escaping bodies disappear").on_hover_text("On: bodies leaving for good fade out and are removed. Off: nothing is removed.");
                         ui.horizontal(|ui| {
                             ui.add(egui::TextEdit::singleline(save_name).desired_width(150.0).hint_text("name"));
                             let name: String = save_name.chars().filter(|c| c.is_alphanumeric() || "-_ ".contains(*c)).collect();
@@ -1085,10 +1216,10 @@ impl Sandbox {
             self.saves = list_saves();
         }
         if commands.iter().any(|c| matches!(c, Command::Remove(_))) {
-            self.select(None);
+            self.select(Vec::new());
         }
-        if let Some(id) = new_pick {
-            self.select(Some(id));
+        if new_pick.is_some() {
+            self.pick(new_pick, adding());
         }
         if let Some(pace) = new_speed {
             self.set_pace(pace);

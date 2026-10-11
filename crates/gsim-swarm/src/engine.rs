@@ -744,18 +744,18 @@ pub enum Part {
 impl Part {
     /// Each part, what to call it, and whether it is work for the ties.
     pub const ALL: [(Part, &'static str, bool); 12] = [
-        (Part::Kick, "first half kick", false),
-        (Part::Cluster, "sorting ties into clusters", true),
-        (Part::Own, "the ties' own steps", true),
-        (Part::Move, "moving the bodies", false),
-        (Part::Settle, "placing the tied bodies", true),
-        (Part::Sort, "sorting, building the tree", false),
+        (Part::Kick, "first kick", false),
+        (Part::Cluster, "ties: cluster", true),
+        (Part::Own, "ties: steps", true),
+        (Part::Move, "move", false),
+        (Part::Settle, "ties: place", true),
+        (Part::Sort, "sort, tree", false),
         (Part::Gravity, "gravity", false),
-        (Part::Find, "listing the new ties", true),
-        (Part::Close, "second half kick", false),
-        (Part::HandOver, "old ties to new", true),
-        (Part::Merge, "merging", false),
-        (Part::Leave, "looking for leavers", false),
+        (Part::Find, "ties: find", true),
+        (Part::Close, "second kick", false),
+        (Part::HandOver, "ties: hand over", true),
+        (Part::Merge, "merge", false),
+        (Part::Leave, "leavers", false),
     ];
 }
 
