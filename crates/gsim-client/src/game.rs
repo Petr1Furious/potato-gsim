@@ -181,6 +181,10 @@ pub(crate) const TURN_RATE: f64 = 2.85;
 pub(crate) const LABEL: f32 = 12.0;
 /// The closest the view zooms in, in metres per pixel.
 pub(crate) const MIN_MPP: f64 = 1.0e-6;
+/// What the wheel's movement is multiplied by before the zoom speed setting. A browser
+/// reports it in pixels, a hundred or so to a notch (as macOS does, whose default zoom
+/// speed allows for that); elsewhere a notch is one.
+const WHEEL: f32 = if cfg!(target_arch = "wasm32") { 0.02 } else { 1.0 };
 /// Seconds the self-destruct key has to be held.
 const DESTRUCT_HOLD: f64 = 1.5;
 
@@ -531,7 +535,7 @@ impl Game {
         self.had_ship = own.is_some();
 
         let pointer = !self.ui_has_pointer && !self.menu_open;
-        let wheel = mouse_wheel().1;
+        let wheel = mouse_wheel().1 * WHEEL;
         // While the chat is open the wheel belongs to it.
         if pointer && !self.chat.open && wheel != 0.0 {
             // Wheel units differ wildly between platforms (notches vs. pixel deltas), hence the
