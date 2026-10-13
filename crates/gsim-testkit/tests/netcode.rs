@@ -8,7 +8,7 @@ fn flying(i: usize, t: f64) -> Controls {
     let phase = t * (1.3 + i as f64 * 0.7);
     Controls {
         angle: ((phase * 9000.0) as i64).rem_euclid(65536) as u16,
-        thrust: if (phase as u64) % 3 == 0 { 0 } else { 60 + ((phase * 7.0) as u64 % 41) as u8 },
+        thrust: if (phase as u64).is_multiple_of(3) { 0 } else { 60 + ((phase * 7.0) as u64 % 41) as u8 },
         fire: None,
     }
 }
@@ -541,11 +541,11 @@ fn the_number_of_targets_follows_the_players_or_is_fixed() {
     };
     // One for every two players by default, and never none.
     let link = Link::new(20.0, 0.0, 0.0);
-    let ann = sim.add_client("ann", link.clone());
+    let ann = sim.add_client("ann", link);
     sim.run_with(1.0, idle);
     check(&sim, 1, "one player");
     let names = ["bob", "cat", "dan", "eve"];
-    let others: Vec<usize> = names.iter().map(|n| sim.add_client(n, link.clone())).collect();
+    let others: Vec<usize> = names.iter().map(|n| sim.add_client(n, link)).collect();
     sim.run_with(1.0, idle);
     check(&sim, 2, "five players");
     sim.disconnect(others[3]);

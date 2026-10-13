@@ -546,7 +546,7 @@ impl Labels {
     pub fn draw(mut self) {
         // Most important first (stable, so equal ranks keep their order); each label fades by
         // how much of it the ones before it cover.
-        self.items.sort_by(|a, b| b.rank.cmp(&a.rank));
+        self.items.sort_by_key(|item| std::cmp::Reverse(item.rank));
         let boxes: Vec<Rect> = FONT.with(|f| {
             let font = f.borrow();
             self.items

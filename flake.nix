@@ -39,6 +39,7 @@
             ]
             ++ clientLibs;
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath clientLibs;
+          RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };
       }
     );

@@ -568,7 +568,8 @@ impl Authority {
         // (victim, killer, body)
         let mut deaths: Vec<(PlayerId, Option<PlayerId>, Option<u32>)> = Vec::new();
         // Ship segments over this tick, for the proximity fuses.
-        let mut segs: Vec<(PlayerId, (f64, f64), (f64, f64))> = Vec::new();
+        type Point = (f64, f64);
+        let mut segs: Vec<(PlayerId, Point, Point)> = Vec::new();
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
             let before = (ship.p.x, ship.p.y);
@@ -645,7 +646,7 @@ impl Authority {
             self.event(Event::RoundOver { tick: next, next_round_tick });
         }
 
-        if next % rules.hash_interval_ticks.max(1) as Tick == 0 {
+        if next.is_multiple_of(rules.hash_interval_ticks.max(1) as Tick) {
             let hash = self.massive.hash();
             self.event(Event::Hash { tick: next, hash });
         }
@@ -653,13 +654,13 @@ impl Authority {
         let checks: Vec<(PlayerId, ShipState)> = self
             .players
             .values()
-            .filter(|p| (next + p.id as Tick) % interval == 0)
+            .filter(|p| (next + p.id as Tick).is_multiple_of(interval))
             .filter_map(|p| p.ship.map(|s| (p.id, s)))
             .collect();
         for (player, state) in checks {
             self.send(Target::All, ServerMsg::ShipCheck { tick: next, player, state });
         }
-        if next % 256 == 0 {
+        if next.is_multiple_of(256) {
             for p in self.players.values_mut() {
                 p.timeline.prune_before(next);
             }
@@ -771,7 +772,7 @@ impl Authority {
         }
         // Gone (annihilated or escaped), or (checked once a second) drifting out of play, or
         // the same body as another objective after a merge.
-        let check = tick % rules.tick_hz as Tick == 0;
+        let check = tick.is_multiple_of(rules.tick_hz as Tick);
         let frame = SystemFrame::of(&self.massive.kinematics());
         for k in (0..self.objectives.len()).rev() {
             let slot = self.objectives[k].slot;
@@ -853,7 +854,7 @@ impl Authority {
             self.event(Event::Objectives { tick, objectives });
         }
         // How things stand, a few times a second (and once more when there is nothing left).
-        if playing && tick % 10 == 0 && (!self.objectives.is_empty() || self.progress_sent) {
+        if playing && tick.is_multiple_of(10) && (!self.objectives.is_empty() || self.progress_sent) {
             let holds = self.players.values().filter_map(|p| p.hold.map(|(slot, held)| (p.id, slot, held))).collect();
             let objectives = self.objectives.clone();
             self.send(Target::All, ServerMsg::Progress { objectives, holds });

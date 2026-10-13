@@ -77,26 +77,6 @@ pub fn fingerprint(public: &[u8; 32]) -> String {
     to_hex(&public[..4])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signatures_bind_key_nonce_and_name() {
-        let (a, b) = (Identity::generate(), Identity::generate());
-        let nonce = random_bytes();
-        let sig = a.sign(&nonce, "ann");
-        assert!(verify(&a.public(), &nonce, "ann", &sig));
-        assert!(!verify(&b.public(), &nonce, "ann", &sig), "another key");
-        assert!(!verify(&a.public(), &random_bytes(), "ann", &sig), "another challenge (replay)");
-        assert!(!verify(&a.public(), &nonce, "bob", &sig), "another name");
-        assert!(!verify(&a.public(), &nonce, "ann", &sig[..63]), "truncated");
-        let again = Identity::from_secret(a.secret());
-        assert_eq!(again.public(), a.public());
-        assert_eq!(from_hex(&to_hex(&a.public())), Some(a.public()));
-    }
-}
-
 impl Identity {
     /// A key derived from a label. Anyone who knows the label can recreate it, so this is
     /// only for bots and tests, never for people.
@@ -117,5 +97,25 @@ impl Identity {
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Identity({})", fingerprint(&self.public()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signatures_bind_key_nonce_and_name() {
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let nonce = random_bytes();
+        let sig = a.sign(&nonce, "ann");
+        assert!(verify(&a.public(), &nonce, "ann", &sig));
+        assert!(!verify(&b.public(), &nonce, "ann", &sig), "another key");
+        assert!(!verify(&a.public(), &random_bytes(), "ann", &sig), "another challenge (replay)");
+        assert!(!verify(&a.public(), &nonce, "bob", &sig), "another name");
+        assert!(!verify(&a.public(), &nonce, "ann", &sig[..63]), "truncated");
+        let again = Identity::from_secret(a.secret());
+        assert_eq!(again.public(), a.public());
+        assert_eq!(from_hex(&to_hex(&a.public())), Some(a.public()));
     }
 }

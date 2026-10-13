@@ -382,7 +382,7 @@ impl MassiveState {
                 events.push(MergeEvent { survivor: None, absorbed: vec![i as u32] });
             }
         }
-        if rules.escape_radius > 0.0 && (self.tick + 1) % rules.escape_check_ticks.max(1) as Tick == 0 {
+        if rules.escape_radius > 0.0 && (self.tick + 1).is_multiple_of(rules.escape_check_ticks.max(1) as Tick) {
             self.remove_escapers(rules, &mut events);
         }
         if !events.is_empty() {

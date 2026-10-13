@@ -425,7 +425,7 @@ impl World {
                 Some(step_particle(p, (0.0, 0.0), rules.shell_radius, &row.view(), rules, scratch))
             });
         }
-        self.shells.retain(|_, s| !s.track.dies_at.is_some_and(|d| d <= target));
+        self.shells.retain(|_, s| s.track.dies_at.is_none_or(|d| d > target));
         if target > self.head {
             self.head = target;
         }

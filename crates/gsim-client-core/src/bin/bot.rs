@@ -50,7 +50,7 @@ fn main() {
             controls.thrust = if seed & 3 == 0 { 0 } else { 40 + (seed >> 24) as u8 % 61 };
             next_change = now + 0.15 + (seed >> 16 & 0xff) as f64 / 400.0;
         }
-        controls.fire = (!args.passive && (now * 2.0) as u64 % 3 == 0).then_some((controls.angle.wrapping_add(8000), 6000.0));
+        controls.fire = (!args.passive && ((now * 2.0) as u64).is_multiple_of(3)).then_some((controls.angle.wrapping_add(8000), 6000.0));
         net.update(controls);
         if let Some(r) = &net.session.rejected {
             eprintln!("rejected: {r}");

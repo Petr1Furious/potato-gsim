@@ -42,7 +42,8 @@ pub fn step_ms(name: &str, params: &Params, count: usize) -> Result<f64, String>
 /// everything fits, further out by no more than a factor each time).
 pub fn suggest(name: &str, params: &Params, budget_ms: f64) -> Result<usize, String> {
     // (bodies, ms a step)
-    let (mut fits, mut too_many): (Option<(f64, f64)>, Option<(f64, f64)>) = (None, None);
+    type Measured = Option<(f64, f64)>;
+    let (mut fits, mut too_many): (Measured, Measured) = (None, None);
     let mut count = 100_000.0f64;
     for _ in 0..3 {
         let ms = step_ms(name, params, count as usize)?;

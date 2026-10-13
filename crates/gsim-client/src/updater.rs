@@ -115,8 +115,8 @@ impl Updater {
                 }
                 set(Status::Downloading { percent: 0 });
                 let progress = |done: usize, total: usize| {
-                    if total > 0 {
-                        set(Status::Downloading { percent: (done * 100 / total).min(100) as u8 });
+                    if let Some(percent) = (done * 100).checked_div(total) {
+                        set(Status::Downloading { percent: percent.min(100) as u8 });
                     }
                 };
                 match fetch(&format!("{base}/{ASSET}"), progress) {

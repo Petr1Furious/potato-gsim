@@ -72,14 +72,14 @@ pub(crate) struct View {
 }
 
 impl View {
-    pub fn to_screen(&self, x: f64, y: f64) -> (f32, f32) {
+    pub fn to_screen(self, x: f64, y: f64) -> (f32, f32) {
         (
             ((x - self.cx) / self.mpp) as f32 + screen_width() * 0.5,
             ((y - self.cy) / self.mpp) as f32 + screen_height() * 0.5,
         )
     }
 
-    pub fn to_world(&self, sx: f32, sy: f32) -> (f64, f64) {
+    pub fn to_world(self, sx: f32, sy: f32) -> (f64, f64) {
         (
             self.cx + (sx - screen_width() * 0.5) as f64 * self.mpp,
             self.cy + (sy - screen_height() * 0.5) as f64 * self.mpp,
@@ -699,7 +699,7 @@ impl Game {
         }
         // Reference frame for trails and predictions: the selected body, if any.
         let ref_slot = self.selected;
-        let ref_now = ref_slot.map(|s| body(s));
+        let ref_now = ref_slot.map(&body);
         if settings.trails {
             let reference = if settings.trails_relative { ref_slot } else { None };
             draw_trails(&self.frames, &view, reference, ref_now, &row, world.my_id, ui);

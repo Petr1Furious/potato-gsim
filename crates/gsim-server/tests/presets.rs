@@ -61,9 +61,9 @@ fn solar_system_orbits_hold() {
             let d = dist(&s, moon, earth);
             moon_lo = moon_lo.min(d);
             moon_hi = moon_hi.max(d);
-            for i in 0..s.len() {
+            for (i, was) in start.iter().enumerate() {
                 if i != sun && i != moon {
-                    worst = worst.max(((dist(&s, i, sun) - start[i]) / start[i]).abs());
+                    worst = worst.max(((dist(&s, i, sun) - was) / was).abs());
                 }
             }
         }
