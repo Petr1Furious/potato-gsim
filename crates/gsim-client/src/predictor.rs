@@ -257,23 +257,17 @@ impl Doing {
     }
 }
 
-/// The share of a frame's time a page may spend on a prediction. (Of a frame at sixty a
-/// second at most: were it of however long frames take, a slow machine would only get slower.)
-#[cfg(target_arch = "wasm32")]
-const SHARE: f64 = 0.5;
-
 #[cfg(target_arch = "wasm32")]
 impl Predictor {
     pub fn new() -> Self {
         Self { doing: None, kept: None, latest: Paths::default() }
     }
 
-    /// Go on with the prediction under way, for a part of this frame. True when a new job
-    /// may be handed in.
-    pub fn poll(&mut self) -> bool {
+    /// Go on with the prediction under way for the `spare` seconds this frame has (and for a
+    /// millisecond at least: it has to get done). True when a new job may be handed in.
+    pub fn poll(&mut self, spare: f64) -> bool {
         if let Some(doing) = &mut self.doing {
-            let frame = (macroquad::time::get_frame_time() as f64).clamp(1.0 / 240.0, 1.0 / 60.0);
-            if let Some(paths) = doing.go(&mut self.kept, crate::fmt::now() + SHARE * frame) {
+            if let Some(paths) = doing.go(&mut self.kept, crate::fmt::now() + spare.clamp(0.001, 0.012)) {
                 (self.latest, self.doing) = (paths, None);
             }
         }
@@ -310,7 +304,8 @@ impl Predictor {
     }
 
     /// Collect a finished result, if any. Returns true when the worker is free for a new job.
-    pub fn poll(&mut self) -> bool {
+    /// (What the frame has to `spare` is nothing to a worker with a thread of its own.)
+    pub fn poll(&mut self, _spare: f64) -> bool {
         match self.rx.try_recv() {
             Ok(paths) => {
                 self.latest = paths;

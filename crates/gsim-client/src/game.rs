@@ -126,6 +126,10 @@ pub enum Outcome {
 
 pub struct Game {
     net: NetClient,
+    /// How long the display gives a frame (the shortest seen lately), and how much of that
+    /// a frame takes without its predictions (s).
+    period: f64,
+    busy: f64,
     _solo: Option<Solo>,
     view: View,
     settings_dirty: bool,
@@ -185,6 +189,9 @@ pub(crate) const MIN_MPP: f64 = 1.0e-6;
 /// reports it in pixels, a hundred or so to a notch (as macOS does, whose default zoom
 /// speed allows for that); elsewhere a notch is one.
 const WHEEL: f32 = if cfg!(target_arch = "wasm32") { 0.02 } else { 1.0 };
+/// Seconds of a frame kept clear of predictions, for what goes on after this screen is done
+/// with it: the window library sending the picture off, and the browser's own work.
+const SLACK: f64 = 0.0015;
 /// Seconds the self-destruct key has to be held.
 const DESTRUCT_HOLD: f64 = 1.5;
 
@@ -232,6 +239,8 @@ impl Game {
             last_mouse: mouse_position(),
             frames: VecDeque::new(),
             last_frame_tick: 0,
+            period: 0.0,
+            busy: 0.0,
             predictor: Predictor::new(),
             meter: fmt::Meter::default(),
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
@@ -253,6 +262,10 @@ impl Game {
     }
 
     pub fn frame(&mut self, settings: &mut Settings) -> Outcome {
+        let began = fmt::now();
+        // (Allowed to creep up, so that it follows a display that has become slower.)
+        let took = get_frame_time() as f64;
+        self.period = if self.period > 0.0 { (1.002 * self.period).min(took) } else { took };
         // To notice what this frame changes, by key or in the menu, and save it.
         let before = settings.clone();
         self.meter.frame(self.density.last_ms);
@@ -805,7 +818,10 @@ impl Game {
         }
 
         // --- predictions -----------------------------------------------------------------------
-        if self.predictor.poll() {
+        // What a frame has to spare, for a client that predicts between frames.
+        let spare = self.period - self.busy - SLACK;
+        let asked = fmt::now();
+        if self.predictor.poll(spare) {
             let ship = me_ship.filter(|t| t.crashed.is_none());
             let wanted = settings.prediction || settings.shell_prediction;
             match (ship, world.me()) {
@@ -831,6 +847,7 @@ impl Game {
                 _ => self.predictor.clear(),
             }
         }
+        let predicting = fmt::now() - asked;
         let paths = &self.predictor.latest;
         // A result computed for another reference frame would be drawn in the wrong place.
         let stale = paths.ref_slot != ref_slot;
@@ -1309,6 +1326,7 @@ impl Game {
         self.menu_open = menu;
         self.ui_has_pointer = has_ptr;
         self.ui_has_keyboard = has_kb;
+        self.busy += 0.1 * (fmt::now() - began - predicting - self.busy);
         if !matches!(outcome, Outcome::Continue) {
             self.net.disconnect();
         }
