@@ -1,0 +1,4 @@
+# The program for browsers calls functions that the page's scripts provide when it is loaded
+# (web/gsim.js, and the window library's own): the linker is not to look for them.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]

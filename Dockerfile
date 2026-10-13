@@ -5,6 +5,7 @@ FROM rust:1-slim-bookworm AS build
 RUN rustup target add wasm32-unknown-unknown
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
 COPY crates ./crates
 COPY web ./web
 COPY scripts/web.sh ./scripts/web.sh
