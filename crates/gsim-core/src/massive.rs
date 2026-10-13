@@ -1,6 +1,7 @@
 //! Gravitating bodies. Their evolution depends on nothing but their own previous state,
 //! so it is a pure function of (initial state, tick) and never needs to be rolled back.
 
+use crate::wide::{total, widest, Wide, LANES};
 use crate::{math, GameRules, Tick};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -69,13 +70,128 @@ pub struct MassiveState {
     bx: Vec<f64>,
     by: Vec<f64>,
     hit: Vec<bool>,
+    work: Work,
 }
 
-const PARALLEL_MIN_BODIES: usize = 192;
+/// From this many bodies on, the pieces of a force pass are shared out between threads.
+/// (Below it one thread is quick enough, and waking the others costs more processor time
+/// than they save.)
+const PARALLEL_MIN_BODIES: usize = 2000;
+/// A force pass is cut into pieces of this many bodies.
+const ROWS: usize = 64;
+
+/// Buffers a force pass works in, kept from one to the next.
+#[derive(Clone, Debug, Default)]
+struct Work {
+    /// What each piece adds to each body's acceleration.
+    x: Vec<f64>,
+    y: Vec<f64>,
+    /// A body's radius, or (for one that is gone) what makes every comparison false.
+    reach: Vec<f64>,
+}
+
+/// What a force pass reads.
+struct Sources<'a> {
+    x: &'a [f64],
+    y: &'a [f64],
+    mass: &'a [f64],
+    reach: &'a [f64],
+    alive: &'a [bool],
+    g: f64,
+    eps2: f64,
+}
+
+/// What two bodies `(dx, dy)` apart do to each other: the acceleration of the first, that
+/// of the second (to be taken away from it), and whether they overlap.
+#[inline(always)]
+fn pair<W: Wide>(dx: W, dy: W, reach: W, mass_i: W, mass_j: W, g: W, eps2: W) -> (W, W, W, W, W::Mask) {
+    let d2 = dx * dx + dy * dy;
+    // (Softening keeps the denominator positive.)
+    let inv = W::splat(1.0) / (d2 + eps2).sqrt();
+    let t = g * inv * inv * inv;
+    let (fi, fj) = (t * mass_j, t * mass_i);
+    (dx * fi, dy * fi, dx * fj, dy * fj, d2.le(reach * reach))
+}
+
+/// One piece of a force pass: the bodies from `first` on, [`ROWS`] of them, each with every
+/// body after it. Each pair is worked out once and pulls both ways.
+///
+/// `ax` and `ay` end up holding what these pairs add to every body's acceleration (nothing
+/// for the bodies before `first`, which are left alone), and `hits` the bodies found
+/// overlapping.
+#[inline(always)]
+fn piece_body<L: Wide>(s: &Sources, first: usize, ax: &mut [f64], ay: &mut [f64], hits: &mut Vec<u32>) {
+    let n = s.x.len();
+    ax[first..].fill(0.0);
+    ay[first..].fill(0.0);
+    for i in first..(first + ROWS).min(n) {
+        if !s.alive[i] {
+            continue;
+        }
+        let (xi, yi, mi, ri) = (s.x[i], s.y[i], s.mass[i], s.reach[i]);
+        // The body against those from `j` on: one of them, or eight. Returns what they do
+        // to it, having taken from them what it does to them.
+        #[inline(always)]
+        fn meet<W: Wide>(s: &Sources, at: (f64, f64, f64, f64), j: usize, ax: &mut [f64], ay: &mut [f64]) -> (W, W, bool) {
+            let (xi, yi, mi, ri) = (W::splat(at.0), W::splat(at.1), W::splat(at.2), W::splat(at.3));
+            let (dx, dy) = (W::load(&s.x[j..]) - xi, W::load(&s.y[j..]) - yi);
+            let (ix, iy, jx, jy, close) = pair(dx, dy, ri + W::load(&s.reach[j..]), mi, W::load(&s.mass[j..]), W::splat(s.g), W::splat(s.eps2));
+            (W::load(&ax[j..]) - jx).store(&mut ax[j..]);
+            (W::load(&ay[j..]) - jy).store(&mut ay[j..]);
+            (ix, iy, W::any(close))
+        }
+        let at = (xi, yi, mi, ri);
+        let (mut sx, mut sy) = ([0.0f64; LANES], [0.0f64; LANES]);
+        let mut near = false;
+        // Body `j` is always on lane `j % LANES`: singly up to a whole number of lanes, then
+        // all lanes at once, then singly again.
+        let whole = (i + 1).next_multiple_of(LANES).min(n);
+        for j in i + 1..whole {
+            let (ix, iy, close) = meet::<f64>(s, at, j, ax, ay);
+            sx[j % LANES] += ix;
+            sy[j % LANES] += iy;
+            near |= close;
+        }
+        let (mut wx, mut wy) = (L::load(&sx), L::load(&sy));
+        let mut j = whole;
+        while j + LANES <= n {
+            let (ix, iy, close) = meet::<L>(s, at, j, ax, ay);
+            wx = wx + ix;
+            wy = wy + iy;
+            near |= close;
+            j += LANES;
+        }
+        wx.store(&mut sx);
+        wy.store(&mut sy);
+        for j in j..n {
+            let (ix, iy, close) = meet::<f64>(s, at, j, ax, ay);
+            sx[j % LANES] += ix;
+            sy[j % LANES] += iy;
+            near |= close;
+        }
+        ax[i] += total(&sx);
+        ay[i] += total(&sy);
+        if near {
+            // Rare: which ones, then.
+            for j in i + 1..n {
+                let (dx, dy, reach) = (s.x[j] - xi, s.y[j] - yi, ri + s.reach[j]);
+                if dx * dx + dy * dy <= reach * reach {
+                    hits.extend([i as u32, j as u32]);
+                }
+            }
+        }
+    }
+}
+
+widest! {
+    fn piece(s: &Sources, first: usize, ax: &mut [f64], ay: &mut [f64], hits: &mut Vec<u32>) = piece_body
+}
 
 /// Acceleration on every live body plus a per-body "overlaps something" flag.
-/// Each output element is produced by one serial loop over `j`, so the result does not
-/// depend on how rayon splits the work.
+///
+/// The pass is cut into pieces of [`ROWS`] bodies, each worked through serially into sums
+/// of its own, and the pieces are added up in order: the result does not depend on how many
+/// threads there are, or on whether there are any.
 #[allow(clippy::too_many_arguments)]
 fn accelerations(
     x: &[f64],
@@ -88,54 +204,44 @@ fn accelerations(
     out_ax: &mut [f64],
     out_ay: &mut [f64],
     hit: &mut [bool],
+    work: &mut Work,
 ) {
     let n = x.len();
-    let one = |i: usize, ax: &mut f64, ay: &mut f64, h: &mut bool| {
-        *h = false;
-        if !alive[i] {
-            *ax = 0.0;
-            *ay = 0.0;
-            return;
-        }
-        let (xi, yi, ri) = (x[i], y[i], radius[i]);
-        let (mut sx, mut sy) = (0.0, 0.0);
-        let mut any_hit = false;
-        // Dead slots carry mass 0 and i == j gives dx = dy = 0, so neither needs a branch
-        // in the force sum (softening keeps the denominator positive).
-        for j in 0..n {
-            let dx = x[j] - xi;
-            let dy = y[j] - yi;
-            let d2raw = dx * dx + dy * dy;
-            let rr = ri + radius[j];
-            if d2raw <= rr * rr && j != i && alive[j] {
-                any_hit = true;
-            }
-            let d2 = d2raw + eps2;
-            let inv = 1.0 / d2.sqrt();
-            let f = g * mass[j] * inv * inv * inv;
-            sx += dx * f;
-            sy += dy * f;
-        }
-        *ax = sx;
-        *ay = sy;
-        *h = any_hit;
+    out_ax.fill(0.0);
+    out_ay.fill(0.0);
+    hit.fill(false);
+    if n == 0 {
+        return;
+    }
+    let pieces = n.div_ceil(ROWS);
+    work.x.resize(pieces * n, 0.0);
+    work.y.resize(pieces * n, 0.0);
+    work.reach.clear();
+    work.reach.extend(radius.iter().zip(alive).map(|(r, alive)| if *alive { *r } else { f64::NAN }));
+    let s = Sources { x, y, mass, reach: &work.reach, alive, g, eps2 };
+    let one = |(k, (ax, ay)): (usize, (&mut [f64], &mut [f64]))| {
+        let mut hits = Vec::new();
+        piece(&s, k * ROWS, ax, ay, &mut hits);
+        hits
     };
-    if n >= PARALLEL_MIN_BODIES {
-        out_ax
-            .par_iter_mut()
-            .zip(out_ay.par_iter_mut())
-            .zip(hit.par_iter_mut())
-            .enumerate()
-            .with_min_len(16)
-            .for_each(|(i, ((ax, ay), h))| one(i, ax, ay, h));
+    let hits: Vec<Vec<u32>> = if n >= PARALLEL_MIN_BODIES {
+        work.x.par_chunks_mut(n).zip(work.y.par_chunks_mut(n)).enumerate().map(one).collect()
     } else {
-        for i in 0..n {
-            let (mut ax, mut ay, mut h) = (0.0, 0.0, false);
-            one(i, &mut ax, &mut ay, &mut h);
-            out_ax[i] = ax;
-            out_ay[i] = ay;
-            hit[i] = h;
+        work.x.chunks_mut(n).zip(work.y.chunks_mut(n)).enumerate().map(one).collect()
+    };
+    for (k, (ax, ay)) in work.x.chunks(n).zip(work.y.chunks(n)).enumerate() {
+        for j in k * ROWS..n {
+            out_ax[j] += ax[j];
+            out_ay[j] += ay[j];
         }
+    }
+    for j in 0..n {
+        if !alive[j] {
+            (out_ax[j], out_ay[j]) = (0.0, 0.0);
+        }
+    }
+    for i in hits.into_iter().flatten() {
+        hit[i as usize] = true;
     }
 }
 
@@ -158,6 +264,7 @@ impl MassiveState {
             bx: vec![0.0; n],
             by: vec![0.0; n],
             hit: vec![false; n],
+            work: Work::default(),
         }
     }
 
@@ -178,6 +285,7 @@ impl MassiveState {
             bx: vec![0.0; n],
             by: vec![0.0; n],
             hit: vec![false; n],
+            work: Work::default(),
         }
     }
 
@@ -214,7 +322,7 @@ impl MassiveState {
         let eps2 = rules.softening * rules.softening;
         accelerations(
             &self.x, &self.y, &self.mass, &self.radius, &self.alive, rules.g, eps2,
-            &mut self.ax, &mut self.ay, &mut self.hit,
+            &mut self.ax, &mut self.ay, &mut self.hit, &mut self.work,
         );
         self.acc_valid = true;
     }
@@ -249,7 +357,7 @@ impl MassiveState {
         let eps2 = rules.softening * rules.softening;
         accelerations(
             &self.x, &self.y, &self.mass, &self.radius, &self.alive, rules.g, eps2,
-            &mut self.bx, &mut self.by, &mut self.hit,
+            &mut self.bx, &mut self.by, &mut self.hit, &mut self.work,
         );
         for i in 0..n {
             self.vx[i] += (self.ax[i] + self.bx[i]) * half_dt;

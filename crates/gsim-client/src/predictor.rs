@@ -1,10 +1,14 @@
 //! Background trajectory prediction. Exact prediction against a thousand bodies for twenty
 //! seconds ahead costs tens of milliseconds, so it runs off the render thread; the newest
 //! finished result is drawn, re-anchored to the reference body's current position.
+//!
+//! A ship that is coasting stays on the path predicted for it: then only the few ticks beyond
+//! the end of that path are worked out, not the whole of it again.
 
 use gsim_client_core::eph::EphReader;
 use gsim_core::predict::{predict_particle, predict_ship, Path};
-use gsim_core::{GameRules, InputTimeline, Particle, ShipInput, ShipState, Tick};
+use gsim_core::ship::step_ship;
+use gsim_core::{GameRules, InputTimeline, Particle, Scratch, ShipInput, ShipState, Tick};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
 pub struct Job {
@@ -86,12 +90,47 @@ fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
         .collect()
 }
 
-fn compute(job: &Job) -> Paths {
+/// The coasting path worked out last time, tick by tick from `start`.
+struct Coast {
+    reader: EphReader,
+    start: Tick,
+    states: Vec<ShipState>,
+    impact: Option<u32>,
+}
+
+/// Where the ship goes with its engine off. Picks up the path kept from last time if the
+/// ship is on it (to the bit: the prediction is what then happens).
+fn coast(job: &Job, kept: &mut Option<Coast>) -> Path {
+    let on = kept.as_ref().filter(|k| k.reader.same(&job.reader)).and_then(|k| {
+        let at = job.start.checked_sub(k.start)? as usize;
+        (k.states.get(at) == Some(&job.ship)).then_some(at)
+    });
+    let mut k = match (kept.take(), on) {
+        (Some(mut k), Some(at)) => {
+            k.states.drain(..at);
+            k.start = job.start;
+            k
+        }
+        _ => Coast { reader: job.reader.clone(), start: job.start, states: vec![job.ship], impact: None },
+    };
+    let mut scratch = Scratch::default();
+    while k.impact.is_none() && k.states.len() <= job.ticks as usize {
+        let Some(row) = job.reader.get(k.start + k.states.len() as Tick - 1) else { break };
+        let mut s = *k.states.last().unwrap();
+        k.impact = step_ship(&mut s, ShipInput::default(), &row.view(), &job.rules, &mut scratch);
+        k.states.push(s);
+    }
+    let path = Path { start_tick: k.start, points: k.states.iter().map(|s| (s.p.x, s.p.y)).collect(), impact: k.impact };
+    *kept = Some(k);
+    path
+}
+
+fn compute(job: &Job, kept: &mut Option<Coast>) -> Paths {
     let t0 = std::time::Instant::now();
     let mut out = Paths { ref_slot: job.ref_slot, ..Default::default() };
     let row_at = |t: Tick| job.reader.get(t);
     if job.show_ship {
-        let coast = predict_ship(job.ship, job.start, job.ticks, |_, _| ShipInput::default(), row_at, &job.rules);
+        let coast = coast(job, kept);
         out.coast_impact = coast.impact.is_some();
         out.coast = relative(job, &coast);
         if job.ref_slot.is_some() {
@@ -128,8 +167,9 @@ impl Predictor {
         std::thread::Builder::new()
             .name("gsim-predictor".into())
             .spawn(move || {
+                let mut kept = None;
                 while let Ok(job) = job_rx.recv() {
-                    if res_tx.send(compute(&job)).is_err() {
+                    if res_tx.send(compute(&job, &mut kept)).is_err() {
                         break;
                     }
                 }

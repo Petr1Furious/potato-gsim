@@ -13,3 +13,6 @@ renet_netcode.workspace = true
 [[bin]]
 name = "gsim-server"
 path = "src/main.rs"
+
+[dev-dependencies]
+rayon.workspace = true

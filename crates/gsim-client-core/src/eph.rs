@@ -106,6 +106,11 @@ impl EphReader {
     pub fn get(&self, tick: Tick) -> Option<Arc<EphRow>> {
         self.ring.read().unwrap().get(tick)
     }
+
+    /// Both read the same ephemeris (and not, say, the one from before a resync).
+    pub fn same(&self, other: &EphReader) -> bool {
+        Arc::ptr_eq(&self.ring, &other.ring)
+    }
 }
 
 impl Eph {

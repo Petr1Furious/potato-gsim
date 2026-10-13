@@ -1,6 +1,7 @@
 //! Massless test particles: they feel the massive bodies but exert nothing, so each one can
 //! be integrated, predicted and rolled back independently of everything else.
 
+use crate::wide::{total, widest, Wide, LANES};
 use crate::{GameRules, MassiveView};
 use serde::{Deserialize, Serialize};
 
@@ -12,36 +13,108 @@ pub struct Particle {
     pub vy: f64,
 }
 
-/// Reusable buffers (particle position relative to each body at the previous sub-step).
+/// Reusable buffers: the particle's position relative to each body at the previous sub-step,
+/// and at the one being worked out.
 #[derive(Default)]
 pub struct Scratch {
     rx: Vec<f64>,
     ry: Vec<f64>,
+    nx: Vec<f64>,
+    ny: Vec<f64>,
+}
+
+/// Bodies as a particle meets them: one, or eight side by side.
+#[derive(Clone, Copy)]
+struct Met<W: Wide> {
+    x: W,
+    y: W,
+    vx: W,
+    vy: W,
+    ax: W,
+    ay: W,
+    mass: W,
+    radius: W,
+    /// 1 for a body that is there, 0 for one that is gone.
+    alive: W,
+}
+
+impl<W: Wide> Met<W> {
+    /// Those from slot `j` on.
+    #[inline(always)]
+    fn at(view: &MassiveView, j: usize) -> Self {
+        Self {
+            x: W::load(&view.x[j..]),
+            y: W::load(&view.y[j..]),
+            vx: W::load(&view.vx[j..]),
+            vy: W::load(&view.vy[j..]),
+            ax: W::load(&view.ax[j..]),
+            ay: W::load(&view.ay[j..]),
+            mass: W::load(&view.mass[j..]),
+            radius: W::load(&view.radius[j..]),
+            alive: W::flags(&view.alive[j..]),
+        }
+    }
+}
+
+/// How a tick is cut finely enough for a particle: by how hard a body pulls, and by how
+/// fast the two pass each other.
+#[derive(Clone, Copy)]
+struct Fineness {
+    g: f64,
+    eps2: f64,
+    inv_eta2: f64,
+    inv_kappa2: f64,
+}
+
+/// The larger of two numbers that are not NaN.
+#[inline(always)]
+fn larger<W: Wide>(a: W, b: W) -> W {
+    W::pick(a.gt(b), a, b)
+}
+
+/// What bodies ask for. (Nothing, if they are gone.)
+#[inline(always)]
+fn asks<W: Wide>(p: &Particle, b: &Met<W>, f: &Fineness) -> W {
+    let (dx, dy) = (b.x - W::splat(p.x), b.y - W::splat(p.y));
+    let (rvx, rvy) = (W::splat(p.vx) - b.vx, W::splat(p.vy) - b.vy);
+    // One over the distance squared, and over the distance.
+    let inv2 = W::splat(1.0) / (dx * dx + dy * dy + W::splat(f.eps2));
+    let inv = inv2.sqrt();
+    let omega2 = W::splat(f.g) * b.mass.abs() * inv2 * inv;
+    let fly2 = (rvx * rvx + rvy * rvy) * inv2;
+    larger(omega2 * W::splat(f.inv_eta2), fly2 * W::splat(f.inv_kappa2)) * b.alive
+}
+
+#[inline(always)]
+fn need_body<L: Wide>(p: &Particle, view: &MassiveView, rules: &GameRules) -> f64 {
+    let f = Fineness {
+        g: rules.g,
+        eps2: rules.particle_softening * rules.particle_softening,
+        inv_eta2: 1.0 / (rules.substep_eta * rules.substep_eta),
+        inv_kappa2: 1.0 / (rules.substep_kappa * rules.substep_kappa),
+    };
+    let n = view.x.len();
+    // (The largest of them is the same in whatever order they are taken.)
+    let mut most = L::splat(0.0);
+    let mut j = 0;
+    while j + LANES <= n {
+        most = larger(most, asks(p, &Met::<L>::at(view, j), &f));
+        j += LANES;
+    }
+    let mut each = [0.0f64; LANES];
+    most.store(&mut each);
+    (j..n).map(|j| asks(p, &Met::<f64>::at(view, j), &f)).chain(each).fold(0.0, larger)
+}
+
+widest! {
+    fn need(p: &Particle, view: &MassiveView, rules: &GameRules) -> f64 = need_body
 }
 
 /// Number of sub-steps for this tick: the smallest power of two that resolves both the
 /// strongest gravitational time scale and the fastest relative fly-by. Uses only
 /// `* / sqrt` and comparisons, so every machine picks the same value.
 pub fn substeps(p: &Particle, view: &MassiveView, rules: &GameRules) -> u32 {
-    let eps2 = rules.particle_softening * rules.particle_softening;
-    let inv_eta2 = 1.0 / (rules.substep_eta * rules.substep_eta);
-    let inv_kappa2 = 1.0 / (rules.substep_kappa * rules.substep_kappa);
-    let mut need: f64 = 0.0;
-    for j in 0..view.x.len() {
-        if !view.alive[j] {
-            continue;
-        }
-        let dx = view.x[j] - p.x;
-        let dy = view.y[j] - p.y;
-        let d2 = dx * dx + dy * dy + eps2;
-        let d = d2.sqrt();
-        let omega2 = rules.g * view.mass[j].abs() / (d2 * d);
-        let rvx = p.vx - view.vx[j];
-        let rvy = p.vy - view.vy[j];
-        let fly2 = (rvx * rvx + rvy * rvy) / d2;
-        need = need.max(omega2 * inv_eta2).max(fly2 * inv_kappa2);
-    }
-    let target = rules.dt * rules.dt * need;
+    let target = rules.dt * rules.dt * need(p, view, rules);
     let mut n: u32 = 1;
     while n < rules.max_substeps && ((n as f64) * (n as f64)) < target {
         n *= 2;
@@ -49,9 +122,90 @@ pub fn substeps(p: &Particle, view: &MassiveView, rules: &GameRules) -> u32 {
     n
 }
 
-/// Gravity on the particle at `tau` seconds into the tick, with body positions following
-/// the same parabola the massive integrator uses. Also sweeps the particle's path relative
-/// to each body since the previous call and reports the lowest slot it touched.
+/// A particle at one moment of a tick, against the bodies.
+#[derive(Clone, Copy)]
+struct Moment {
+    px: f64,
+    py: f64,
+    /// Seconds into the tick.
+    tau: f64,
+    radius: f64,
+    g: f64,
+    eps2: f64,
+    /// The first moment of the tick: there is no earlier position to sweep from.
+    first: bool,
+}
+
+/// The particle relative to bodies, their pull on it (to be taken away), and whether it
+/// touched them on its way from where it was relative to them, `(r0x, r0y)`.
+#[inline(always)]
+fn against<W: Wide>(m: &Moment, b: &Met<W>, r0x: W, r0y: W) -> (W, W, W, W, W::Mask) {
+    let (zero, tau) = (W::splat(0.0), W::splat(m.tau));
+    // Bodies follow the same parabola the massive integrator uses.
+    let half_tau = W::splat(0.5 * m.tau);
+    let bx = b.x + tau * (b.vx + b.ax * half_tau);
+    let by = b.y + tau * (b.vy + b.ay * half_tau);
+    let (rx, ry) = (W::splat(m.px) - bx, W::splat(m.py) - by);
+    let d2 = rx * rx + ry * ry;
+    let reach = b.radius + W::splat(m.radius);
+    let reach2 = reach * reach;
+    let there = d2.le(reach2);
+    let hit = if m.first {
+        there
+    } else {
+        // The straight path from the earlier position: where it is nearest the body (at
+        // its start, at its end, or between), and whether that is within reach. Without
+        // dividing or branching: by the square of the path's length, all three ways at once.
+        let (sx, sy) = (rx - r0x, ry - r0y);
+        let ss = sx * sx + sy * sy;
+        let along = r0x * sx + r0y * sy;
+        let from2 = r0x * r0x + r0y * r0y;
+        let (start, end) = (zero.le(along), ss.le(zero - along));
+        let between = (from2 * ss - along * along).le(reach2 * ss);
+        let inside = W::or(W::and(end, there), W::and(W::not(end), between));
+        W::or(W::and(start, from2.le(reach2)), W::and(W::not(start), inside))
+    };
+    let inv = W::splat(1.0) / (d2 + W::splat(m.eps2)).sqrt();
+    let f = W::splat(m.g) * b.mass * inv * inv * inv;
+    (rx, ry, rx * f, ry * f, W::and(b.alive.gt(zero), hit))
+}
+
+/// Gravity on the particle at one moment, and whether it touched anything since the one
+/// before. Leaves its position relative to each body in `scratch.nx, ny`.
+#[inline(always)]
+fn pulls_body<L: Wide>(m: &Moment, view: &MassiveView, scratch: &mut Scratch) -> (f64, f64, bool) {
+    let n = view.x.len();
+    let (mut wx, mut wy) = (L::splat(0.0), L::splat(0.0));
+    let mut any = false;
+    let mut j = 0;
+    while j + LANES <= n {
+        let (rx, ry, fx, fy, touched) = against(m, &Met::<L>::at(view, j), L::load(&scratch.rx[j..]), L::load(&scratch.ry[j..]));
+        rx.store(&mut scratch.nx[j..]);
+        ry.store(&mut scratch.ny[j..]);
+        wx = wx + fx;
+        wy = wy + fy;
+        any |= L::any(touched);
+        j += LANES;
+    }
+    let (mut sx, mut sy) = ([0.0f64; LANES], [0.0f64; LANES]);
+    wx.store(&mut sx);
+    wy.store(&mut sy);
+    for j in j..n {
+        let (rx, ry, fx, fy, touched) = against(m, &Met::<f64>::at(view, j), scratch.rx[j], scratch.ry[j]);
+        (scratch.nx[j], scratch.ny[j]) = (rx, ry);
+        sx[j % LANES] += fx;
+        sy[j % LANES] += fy;
+        any |= touched;
+    }
+    (-total(&sx), -total(&sy), any)
+}
+
+widest! {
+    fn pulls(m: &Moment, view: &MassiveView, scratch: &mut Scratch) -> (f64, f64, bool) = pulls_body
+}
+
+/// Gravity on the particle at `tau` seconds into the tick. Also sweeps the particle's path
+/// relative to each body since the previous call and reports the lowest slot it touched.
 #[allow(clippy::too_many_arguments)]
 fn accel_and_sweep(
     px: f64,
@@ -63,45 +217,12 @@ fn accel_and_sweep(
     scratch: &mut Scratch,
     first: bool,
 ) -> (f64, f64, Option<u32>) {
-    let eps2 = rules.particle_softening * rules.particle_softening;
-    let half_tau = 0.5 * tau;
-    let (mut ax, mut ay) = (0.0, 0.0);
-    let mut hit = None;
-    for j in 0..view.x.len() {
-        if !view.alive[j] {
-            continue;
-        }
-        let bx = view.x[j] + tau * (view.vx[j] + view.ax[j] * half_tau);
-        let by = view.y[j] + tau * (view.vy[j] + view.ay[j] * half_tau);
-        // Particle relative to the body.
-        let rx = px - bx;
-        let ry = py - by;
-        let d2 = rx * rx + ry * ry;
-        let reach = view.radius[j] + radius;
-        let reach2 = reach * reach;
-        if hit.is_none() {
-            let touched = if first {
-                d2 <= reach2
-            } else {
-                let (r0x, r0y) = (scratch.rx[j], scratch.ry[j]);
-                let (sx, sy) = (rx - r0x, ry - r0y);
-                let ss = sx * sx + sy * sy;
-                let t = if ss > 0.0 { (-(r0x * sx + r0y * sy) / ss).clamp(0.0, 1.0) } else { 0.0 };
-                let (cx, cy) = (r0x + t * sx, r0y + t * sy);
-                cx * cx + cy * cy <= reach2
-            };
-            if touched {
-                hit = Some(j as u32);
-            }
-        }
-        scratch.rx[j] = rx;
-        scratch.ry[j] = ry;
-        let d2s = d2 + eps2;
-        let inv = 1.0 / d2s.sqrt();
-        let f = rules.g * view.mass[j] * inv * inv * inv;
-        ax -= rx * f;
-        ay -= ry * f;
-    }
+    let m = Moment { px, py, tau, radius, g: rules.g, eps2: rules.particle_softening * rules.particle_softening, first };
+    let (ax, ay, any) = pulls(&m, view, scratch);
+    // Rare: which one, then.
+    let hit = if any { (0..view.x.len()).find(|&j| against(&m, &Met::<f64>::at(view, j), scratch.rx[j], scratch.ry[j]).4).map(|j| j as u32) } else { None };
+    std::mem::swap(&mut scratch.rx, &mut scratch.nx);
+    std::mem::swap(&mut scratch.ry, &mut scratch.ny);
     (ax, ay, hit)
 }
 
@@ -116,8 +237,9 @@ pub fn step_particle(
     scratch: &mut Scratch,
 ) -> Option<u32> {
     let nb = view.x.len();
-    scratch.rx.resize(nb, 0.0);
-    scratch.ry.resize(nb, 0.0);
+    for list in [&mut scratch.rx, &mut scratch.ry, &mut scratch.nx, &mut scratch.ny] {
+        list.resize(nb, 0.0);
+    }
     let n = substeps(p, view, rules);
     let h = rules.dt / n as f64;
     let half_h = 0.5 * h;

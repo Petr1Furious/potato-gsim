@@ -118,16 +118,17 @@ fn negative_mass_repels() {
 
 #[test]
 fn hash_is_independent_of_thread_count() {
-    let bodies = cloud(400, 9);
+    // (Enough bodies for a force pass to be shared out between threads.)
+    let bodies = cloud(2100, 9);
     let mut hashes = Vec::new();
     let mut alive = Vec::new();
     for threads in [1usize, 2, 7, 16] {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-        let s = pool.install(|| run(&bodies, 150));
+        let s = pool.install(|| run(&bodies, 40));
         hashes.push(s.hash());
         alive.push(s.alive_count());
     }
-    assert!(alive[0] < 400, "scene should exercise merging");
+    assert!(alive[0] < 2100, "scene should exercise merging");
     assert!(hashes.iter().all(|h| *h == hashes[0]), "{hashes:x?}");
 }
 
@@ -307,6 +308,31 @@ fn prediction_is_bit_identical_to_what_then_happens() {
         assert_eq!(a.0.to_bits(), b.0.to_bits());
         assert_eq!(a.1.to_bits(), b.1.to_bits());
     }
+}
+
+/// The hot loops are written out for several kinds of vector instructions, and a machine runs
+/// the widest it has: all of them, and plain arrays, have to give the same bits, for bodies
+/// and for a ship among them.
+#[test]
+fn results_do_not_depend_on_the_vector_width() {
+    let (r, bodies) = (rules(), cloud(301, 9));
+    let mut seen = Vec::new();
+    for bits in [0, 128, 256, u32::MAX] {
+        gsim_core::wide::limit_vectors(bits);
+        let mut s = MassiveState::from_bodies(&bodies);
+        let mut ship = ShipState::new(Particle { x: 3.0e10, y: 1.0e9, vx: -4.0e4, vy: 2.0e3 }, &r);
+        let mut scratch = Scratch::default();
+        let mut crashed = None;
+        for t in 0..150u32 {
+            s.ensure_acc(&r);
+            let input = ShipInput { angle: (t * 431) as u16, thrust: (t % 60) as u8 };
+            crashed = crashed.or(step_ship(&mut ship, input, &s.view(), &r, &mut scratch).map(|slot| (t, slot)));
+            s.step(&r);
+        }
+        seen.push((s.hash(), ship.p.x.to_bits(), ship.p.y.to_bits(), ship.p.vx.to_bits(), ship.p.vy.to_bits(), crashed));
+    }
+    gsim_core::wide::limit_vectors(u32::MAX);
+    assert!(seen.iter().all(|one| *one == seen[0]), "{seen:x?}");
 }
 
 #[test]

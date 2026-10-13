@@ -890,6 +890,7 @@ dependencies = [
  "clap",
  "gsim-core",
  "gsim-proto",
+ "rayon",
  "renet",
  "renet_netcode",
 ]

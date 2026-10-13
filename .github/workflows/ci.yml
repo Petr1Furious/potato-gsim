@@ -47,6 +47,8 @@ jobs:
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
+      # Every platform has to compute the same bits: the self-test's hash is checked on each.
+      - run: cargo test --release --locked -p gsim-core
       - name: Build and package
         run: ./scripts/ci/package.sh "${{ matrix.name }}"
       - uses: actions/upload-artifact@v4
