@@ -1,14 +1,15 @@
 //! Background trajectory prediction. Exact prediction against a thousand bodies for twenty
 //! seconds ahead costs tens of milliseconds, so it runs off the render thread; the newest
 //! finished result is drawn, re-anchored to the reference body's current position. (A page in
-//! a browser has no other thread: there it runs between frames, and takes no more than a
-//! fifth of the time.)
+//! a browser has no other thread: there a prediction is worked out a little each frame, for
+//! a part of the frame's time, and shown when it is whole.)
 //!
 //! A ship that is coasting stays on the path predicted for it: then only the few ticks beyond
 //! the end of that path are worked out, not the whole of it again.
 
 use gsim_client_core::eph::EphReader;
-use gsim_core::predict::{predict_particle, predict_ship, Path};
+use gsim_core::particle::step_particle;
+use gsim_core::predict::Path;
 use gsim_core::ship::step_ship;
 use gsim_core::{GameRules, InputTimeline, Particle, Scratch, ShipInput, ShipState, Tick};
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,8 +61,8 @@ pub struct Predictor {
 
 #[cfg(target_arch = "wasm32")]
 pub struct Predictor {
-    /// When the next prediction may be made.
-    free_at: f64,
+    /// The prediction being worked out, if it is not finished.
+    doing: Option<Doing>,
     kept: Option<Coast>,
     pub latest: Paths,
 }
@@ -110,83 +111,177 @@ struct Coast {
     impact: Option<u32>,
 }
 
+/// Is it time to stop for now? (Never, without a time to stop at.)
+fn late(until: f64) -> bool {
+    until.is_finite() && crate::fmt::now() >= until
+}
+
 /// Where the ship goes with its engine off. Picks up the path kept from last time if the
-/// ship is on it (to the bit: the prediction is what then happens).
-fn coast(job: &Job, kept: &mut Option<Coast>) -> Path {
+/// ship is on it (to the bit: the prediction is what then happens). `None` if `until` came
+/// first: the next call goes on from there.
+fn coast(job: &Job, kept: &mut Option<Coast>, until: f64) -> Option<Path> {
     let on = kept.as_ref().filter(|k| k.reader.same(&job.reader)).and_then(|k| {
         let at = job.start.checked_sub(k.start)? as usize;
         (k.states.get(at) == Some(&job.ship)).then_some(at)
     });
-    let mut k = match (kept.take(), on) {
+    let k = match (kept.take(), on) {
         (Some(mut k), Some(at)) => {
             k.states.drain(..at);
             k.start = job.start;
-            k
+            kept.insert(k)
         }
-        _ => Coast { reader: job.reader.clone(), start: job.start, states: vec![job.ship], impact: None },
+        _ => kept.insert(Coast { reader: job.reader.clone(), start: job.start, states: vec![job.ship], impact: None }),
     };
     let mut scratch = Scratch::default();
     while k.impact.is_none() && k.states.len() <= job.ticks as usize {
+        if late(until) {
+            return None;
+        }
         let Some(row) = job.reader.get(k.start + k.states.len() as Tick - 1) else { break };
         let mut s = *k.states.last().unwrap();
         k.impact = step_ship(&mut s, ShipInput::default(), &row.view(), &job.rules, &mut scratch);
         k.states.push(s);
     }
-    let path = Path { start_tick: k.start, points: k.states.iter().map(|s| (s.p.x, s.p.y)).collect(), impact: k.impact };
-    *kept = Some(k);
-    path
+    Some(Path { start_tick: k.start, points: k.states.iter().map(|s| (s.p.x, s.p.y)).collect(), impact: k.impact })
 }
 
-fn compute(job: &Job, kept: &mut Option<Coast>) -> Paths {
-    let t0 = crate::fmt::now();
-    let mut out = Paths { ref_slot: job.ref_slot, ..Default::default() };
-    let row_at = |t: Tick| job.reader.get(t);
-    if job.show_ship {
-        let coast = coast(job, kept);
-        out.coast_impact = coast.impact.is_some();
-        out.coast = relative(job, &coast);
-        if job.ref_slot.is_some() {
-            // The next close approach, not the lowest point anywhere in the window: on a
-            // repeating orbit later passes are about as close and would win by a hair.
-            let d: Vec<f64> = out.coast.iter().map(|q| (q.0 * q.0 + q.1 * q.1).sqrt()).collect();
-            out.closest = (1..d.len().saturating_sub(1)).find(|&i| d[i] <= d[i - 1] && d[i] < d[i + 1]).map(|i| (i, d[i]));
-            out.farthest = (1..d.len().saturating_sub(1)).find(|&i| d[i] >= d[i - 1] && d[i] > d[i + 1]).map(|i| (i, d[i]));
-            out.returns = out.farthest.is_some_and(|(i, far)| {
-                let near = d[..i].iter().copied().fold(f64::MAX, f64::min);
-                d[i..].iter().any(|x| *x <= 0.5 * (near + far))
-            });
-        }
-        if job.held {
-            // The burn goes on until it has cost so much, and then the ship coasts.
-            let until = job.ship.fuel - job.burn_mmps;
-            let held = predict_ship(job.ship, job.start, job.ticks, |t, s| if s.fuel > until { job.timeline.at(t) } else { ShipInput::default() }, row_at, &job.rules);
-            out.held = relative(job, &held);
-        }
-    }
-    if let Some(p) = job.shell {
-        let life = job.rules.shell_lifetime_ticks.min(job.ticks);
-        let shell = predict_particle(p, job.rules.shell_radius, job.start, life, row_at, &job.rules);
-        out.shell = relative(job, &shell);
-    }
-    out.compute_ms = (crate::fmt::now() - t0) * 1e3;
-    out
+/// A path being worked out tick by tick, which can be left and gone on with.
+struct Walk<S> {
+    state: S,
+    path: Path,
+    done: bool,
 }
+
+impl<S> Walk<S> {
+    fn new(state: S, start: Tick, at: (f64, f64)) -> Self {
+        Self { state, path: Path { start_tick: start, points: vec![at], impact: None }, done: false }
+    }
+
+    /// Go on for up to `ticks` in all, or until the ephemeris runs out, something is hit
+    /// or it is `until`. True once there is no more to do. `step` advances the state by a
+    /// tick and says where it then is and what it ran into.
+    fn go(&mut self, job: &Job, ticks: u32, until: f64, mut step: impl FnMut(&mut S, Tick, &gsim_core::EphRow) -> ((f64, f64), Option<u32>)) -> bool {
+        while !self.done {
+            if late(until) {
+                return false;
+            }
+            let tick = self.path.start_tick + self.path.points.len() as Tick - 1;
+            let row = job.reader.get(tick).filter(|_| self.path.points.len() <= ticks as usize);
+            let Some(row) = row else { break };
+            let (at, hit) = step(&mut self.state, tick, &row);
+            self.path.points.push(at);
+            (self.path.impact, self.done) = (hit, hit.is_some());
+        }
+        self.done = true;
+        true
+    }
+}
+
+/// A prediction under way.
+struct Doing {
+    job: Job,
+    coast: Option<Path>,
+    held: Walk<ShipState>,
+    shell: Option<Walk<Particle>>,
+    /// Milliseconds worked on it so far.
+    spent: f64,
+}
+
+impl Doing {
+    fn new(job: Job) -> Self {
+        let held = Walk::new(job.ship, job.start, (job.ship.p.x, job.ship.p.y));
+        let shell = job.shell.map(|p| Walk::new(p, job.start, (p.x, p.y)));
+        Self { job, coast: None, held, shell, spent: 0.0 }
+    }
+
+    /// Work on it until `until` (seconds on [`crate::fmt::now`]): the paths, once whole.
+    fn go(&mut self, kept: &mut Option<Coast>, until: f64) -> Option<Paths> {
+        let t0 = crate::fmt::now();
+        let whole = self.paths(kept, until);
+        self.spent += (crate::fmt::now() - t0) * 1e3;
+        whole.map(|paths| Paths { compute_ms: self.spent, ..paths })
+    }
+
+    fn paths(&mut self, kept: &mut Option<Coast>, until: f64) -> Option<Paths> {
+        let job = &self.job;
+        let mut scratch = Scratch::default();
+        if job.show_ship {
+            if self.coast.is_none() {
+                self.coast = Some(coast(job, kept, until)?);
+            }
+            // The burn goes on until it has cost so much, and then the ship coasts.
+            let burning_until = job.ship.fuel - job.burn_mmps;
+            let whole = !job.held
+                || self.held.go(job, job.ticks, until, |s, tick, row| {
+                    let input = if s.fuel > burning_until { job.timeline.at(tick) } else { ShipInput::default() };
+                    let hit = step_ship(s, input, &row.view(), &job.rules, &mut scratch);
+                    ((s.p.x, s.p.y), hit)
+                });
+            if !whole {
+                return None;
+            }
+        }
+        if let Some(shell) = &mut self.shell {
+            let life = job.rules.shell_lifetime_ticks.min(job.ticks);
+            let whole = shell.go(job, life, until, |p, _, row| {
+                let hit = step_particle(p, (0.0, 0.0), job.rules.shell_radius, &row.view(), &job.rules, &mut scratch);
+                ((p.x, p.y), hit)
+            });
+            if !whole {
+                return None;
+            }
+        }
+        let mut out = Paths { ref_slot: job.ref_slot, ..Default::default() };
+        if let Some(coast) = &self.coast {
+            out.coast_impact = coast.impact.is_some();
+            out.coast = relative(job, coast);
+            if job.ref_slot.is_some() {
+                // The next close approach, not the lowest point anywhere in the window: on a
+                // repeating orbit later passes are about as close and would win by a hair.
+                let d: Vec<f64> = out.coast.iter().map(|q| (q.0 * q.0 + q.1 * q.1).sqrt()).collect();
+                out.closest = (1..d.len().saturating_sub(1)).find(|&i| d[i] <= d[i - 1] && d[i] < d[i + 1]).map(|i| (i, d[i]));
+                out.farthest = (1..d.len().saturating_sub(1)).find(|&i| d[i] >= d[i - 1] && d[i] > d[i + 1]).map(|i| (i, d[i]));
+                out.returns = out.farthest.is_some_and(|(i, far)| {
+                    let near = d[..i].iter().copied().fold(f64::MAX, f64::min);
+                    d[i..].iter().any(|x| *x <= 0.5 * (near + far))
+                });
+            }
+            if job.held {
+                out.held = relative(job, &self.held.path);
+            }
+        }
+        if let Some(shell) = &self.shell {
+            out.shell = relative(job, &shell.path);
+        }
+        Some(out)
+    }
+}
+
+/// The share of a frame's time a page may spend on a prediction. (Of a frame at sixty a
+/// second at most: were it of however long frames take, a slow machine would only get slower.)
+#[cfg(target_arch = "wasm32")]
+const SHARE: f64 = 0.5;
 
 #[cfg(target_arch = "wasm32")]
 impl Predictor {
     pub fn new() -> Self {
-        Self { free_at: 0.0, kept: None, latest: Paths::default() }
+        Self { doing: None, kept: None, latest: Paths::default() }
     }
 
-    /// True when a new job may be handed in.
+    /// Go on with the prediction under way, for a part of this frame. True when a new job
+    /// may be handed in.
     pub fn poll(&mut self) -> bool {
-        crate::fmt::now() >= self.free_at
+        if let Some(doing) = &mut self.doing {
+            let frame = (macroquad::time::get_frame_time() as f64).clamp(1.0 / 240.0, 1.0 / 60.0);
+            if let Some(paths) = doing.go(&mut self.kept, crate::fmt::now() + SHARE * frame) {
+                (self.latest, self.doing) = (paths, None);
+            }
+        }
+        self.doing.is_none()
     }
 
     pub fn submit(&mut self, job: Job) {
-        self.latest = compute(&job, &mut self.kept);
-        // A fifth of the time at most.
-        self.free_at = crate::fmt::now() + 4.0e-3 * self.latest.compute_ms;
+        self.doing = Some(Doing::new(job));
     }
 
     pub fn clear(&mut self) {
@@ -204,7 +299,8 @@ impl Predictor {
             .spawn(move || {
                 let mut kept = None;
                 while let Ok(job) = job_rx.recv() {
-                    if res_tx.send(compute(&job, &mut kept)).is_err() {
+                    let paths = Doing::new(job).go(&mut kept, f64::INFINITY).expect("nothing to stop for");
+                    if res_tx.send(paths).is_err() {
                         break;
                     }
                 }

@@ -1,4 +1,6 @@
 # The program for browsers calls functions that the page's scripts provide when it is loaded
-# (web/gsim.js, and the window library's own): the linker is not to look for them.
+# (web/gsim.js, and the window library's own): the linker is not to look for them. And it
+# uses a browser's vector instructions (every current one has them), which the simulation's
+# hot loops are written out for.
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "link-arg=--allow-undefined"]
+rustflags = ["-C", "link-arg=--allow-undefined", "-C", "target-feature=+simd128"]

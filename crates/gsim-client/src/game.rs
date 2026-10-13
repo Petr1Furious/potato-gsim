@@ -251,7 +251,7 @@ impl Game {
     pub fn frame(&mut self, settings: &mut Settings) -> Outcome {
         // To notice what this frame changes, by key or in the menu, and save it.
         let before = settings.clone();
-        self.meter.frame(0.0);
+        self.meter.frame(self.density.last_ms);
         let dt = get_frame_time().min(0.1);
         // HUD panels scale with the window; things drawn in the world (ship, dots, labels) only mildly.
         let hud = settings.ui_factor();
@@ -1069,7 +1069,7 @@ impl Game {
         let horizon = (paths.coast.len().max(1) - 1) as f64 / world.rules.tick_hz as f64;
         let predict_ms = paths.compute_ms;
         let net_lines: Vec<String> = vec![
-            format!("{} bodies   time x{:.0}   {:.0} fps   {}", alive_bodies, world.rules.time_scale(), self.meter.fps, if self.density.picture().2 { "GPU" } else { "CPU" }),
+            format!("{} bodies   time x{:.0}   {:.0} fps   draw {:.1} ms ({})", alive_bodies, world.rules.time_scale(), self.meter.fps, self.meter.ms, if self.density.picture().2 { "GPU" } else { "CPU" }),
             format!("tick {:.1}  head {}  ephemeris +{} ticks", tick_f, world.head, world.eph.end_tick().unwrap_or(0).saturating_sub(world.head)),
             format!("rtt {:.0} ms   input lead {} ticks ({:.0} ms)", rtt.unwrap_or(0.0) * 1e3, lead, lead as f64 * 1e3 / world.rules.tick_hz as f64),
             format!("world hash: {} checks, {} mismatches, {} resyncs", stats.hash_checks, stats.hash_mismatches, stats.resyncs),

@@ -528,12 +528,121 @@ mod arm {
 #[cfg(target_arch = "aarch64")]
 pub use arm::Neon;
 
+/// Eight numbers as four of a browser's vectors of two. (The page is built with them
+/// switched on: see `.cargo/config.toml`.)
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod web {
+    use super::{Wide, LANES};
+    use std::arch::wasm32::*;
+    use std::ops::{Add, Div, Mul, Sub};
+
+    #[derive(Clone, Copy)]
+    pub struct Simd128([v128; 4]);
+
+    macro_rules! each {
+        ($trait:ident, $name:ident, $op:ident) => {
+            impl $trait for Simd128 {
+                type Output = Self;
+
+                #[inline(always)]
+                fn $name(self, other: Self) -> Self {
+                    Self(std::array::from_fn(|k| $op(self.0[k], other.0[k])))
+                }
+            }
+        };
+    }
+    each!(Add, add, f64x2_add);
+    each!(Sub, sub, f64x2_sub);
+    each!(Mul, mul, f64x2_mul);
+    each!(Div, div, f64x2_div);
+
+    impl Wide for Simd128 {
+        type Mask = [v128; 4];
+
+        #[inline(always)]
+        fn splat(v: f64) -> Self {
+            Self([f64x2_splat(v); 4])
+        }
+
+        #[inline(always)]
+        fn load(from: &[f64]) -> Self {
+            let from = &from[..LANES];
+            // SAFETY: within a slice checked to hold eight.
+            Self(std::array::from_fn(|k| unsafe { v128_load(from.as_ptr().add(2 * k) as *const v128) }))
+        }
+
+        #[inline(always)]
+        fn store(self, to: &mut [f64]) {
+            let to = &mut to[..LANES];
+            for k in 0..4 {
+                // SAFETY: within a slice checked to hold eight.
+                unsafe { v128_store(to.as_mut_ptr().add(2 * k) as *mut v128, self.0[k]) };
+            }
+        }
+
+        #[inline(always)]
+        fn flags(from: &[bool]) -> Self {
+            let from: [bool; LANES] = from[..LANES].try_into().unwrap();
+            Self::load(&from.map(|flag| flag as u8 as f64))
+        }
+
+        #[inline(always)]
+        fn sqrt(self) -> Self {
+            Self(self.0.map(|v| f64x2_sqrt(v)))
+        }
+
+        #[inline(always)]
+        fn abs(self) -> Self {
+            Self(self.0.map(|v| f64x2_abs(v)))
+        }
+
+        #[inline(always)]
+        fn le(self, other: Self) -> Self::Mask {
+            std::array::from_fn(|k| f64x2_le(self.0[k], other.0[k]))
+        }
+
+        #[inline(always)]
+        fn gt(self, other: Self) -> Self::Mask {
+            std::array::from_fn(|k| f64x2_gt(self.0[k], other.0[k]))
+        }
+
+        #[inline(always)]
+        fn and(a: Self::Mask, b: Self::Mask) -> Self::Mask {
+            std::array::from_fn(|k| v128_and(a[k], b[k]))
+        }
+
+        #[inline(always)]
+        fn or(a: Self::Mask, b: Self::Mask) -> Self::Mask {
+            std::array::from_fn(|k| v128_or(a[k], b[k]))
+        }
+
+        #[inline(always)]
+        fn not(a: Self::Mask) -> Self::Mask {
+            a.map(|m| v128_not(m))
+        }
+
+        #[inline(always)]
+        fn any(a: Self::Mask) -> bool {
+            v128_any_true(v128_or(v128_or(a[0], a[1]), v128_or(a[2], a[3])))
+        }
+
+        #[inline(always)]
+        fn pick(mask: Self::Mask, a: Self, b: Self) -> Self {
+            Self(std::array::from_fn(|k| v128_bitselect(a.0[k], b.0[k], mask[k])))
+        }
+    }
+}
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub use web::Simd128;
+
 /// What every processor of the kind compiled for has.
 #[cfg(target_arch = "x86_64")]
 pub type Base = Sse2;
 #[cfg(target_arch = "aarch64")]
 pub type Base = Neon;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub type Base = Simd128;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", all(target_arch = "wasm32", target_feature = "simd128"))))]
 pub type Base = Plain;
 
 /// The widest vectors (in bits) the hot loops may be run with: for tests, which check that
@@ -599,6 +708,8 @@ pub fn kind() -> &'static str {
         "SSE2"
     } else if cfg!(target_arch = "aarch64") {
         "NEON"
+    } else if cfg!(all(target_arch = "wasm32", target_feature = "simd128")) {
+        "WebAssembly SIMD"
     } else {
         "plain arrays"
     }
