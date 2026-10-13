@@ -2,6 +2,7 @@
 
 use crate::density::ColorMode;
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 /// What the camera stays with in a world with a ship.
@@ -67,7 +68,9 @@ impl Default for Settings {
     }
 }
 
-fn path() -> Option<PathBuf> {
+/// Where what is kept between runs lives.
+#[cfg(not(target_arch = "wasm32"))]
+fn directory() -> Option<PathBuf> {
     let dir = if cfg!(target_os = "windows") {
         PathBuf::from(std::env::var_os("APPDATA")?)
     } else if cfg!(target_os = "macos") {
@@ -77,20 +80,69 @@ fn path() -> Option<PathBuf> {
     } else {
         PathBuf::from(std::env::var_os("HOME")?).join(".config")
     };
-    Some(dir.join("potato_gsim").join("settings.txt"))
+    Some(dir.join("potato_gsim"))
 }
 
+/// Something kept between runs under a name: a file in the settings directory.
+#[cfg(not(target_arch = "wasm32"))]
+fn kept(name: &str) -> Option<String> {
+    std::fs::read_to_string(directory()?.join(name)).ok()
+}
+
+/// `private`: nobody else on the machine may read it.
+#[cfg(not(target_arch = "wasm32"))]
+fn keep(name: &str, text: &str, private: bool) {
+    let Some(dir) = directory() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join(name);
+    if std::fs::write(&file, text).is_ok() && private {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+/// In a browser: the page's own storage (see `web/gsim.js`).
+#[cfg(target_arch = "wasm32")]
+mod page {
+    extern "C" {
+        /// Length of what is kept under a name, or -1; `gsim_store_take` then copies it out.
+        pub fn gsim_store_get(name: *const u8, len: usize) -> i32;
+        pub fn gsim_store_take(to: *mut u8);
+        pub fn gsim_store_set(name: *const u8, len: usize, text: *const u8, text_len: usize);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn kept(name: &str) -> Option<String> {
+    // SAFETY: the script reads `name` during the call and writes as many bytes as it said.
+    unsafe {
+        let len = page::gsim_store_get(name.as_ptr(), name.len());
+        let mut bytes = vec![0u8; usize::try_from(len).ok()?];
+        page::gsim_store_take(bytes.as_mut_ptr());
+        String::from_utf8(bytes).ok()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn keep(name: &str, text: &str, _private: bool) {
+    unsafe { page::gsim_store_set(name.as_ptr(), name.len(), text.as_ptr(), text.len()) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl Settings {
     /// Where the settings file lives: saved worlds go next to it.
     pub fn directory() -> Option<PathBuf> {
-        path().and_then(|p| p.parent().map(PathBuf::from))
+        directory()
     }
 }
 
 impl Settings {
     pub fn load() -> Self {
         let mut s = Self::default();
-        let text = path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        let text = kept("settings.txt").unwrap_or_default();
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
@@ -141,10 +193,6 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        let Some(p) = path() else { return };
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         let mut text = format!(
             "name={}\nserver={}\npreset={}\nmouse_aim={}\nfullscreen={}\nui_scale={}\nzoom_speed={}\nburn_preview={}\ngpu_drawing={}\n",
             self.name, self.server, self.preset, self.mouse_aim as u8, self.fullscreen as u8, self.ui_scale, self.zoom_speed, self.burn_preview, self.gpu as u8
@@ -171,7 +219,7 @@ impl Settings {
         for (world, count) in &self.measured {
             text.push_str(&format!("measured.{world}={count}\n"));
         }
-        let _ = std::fs::write(p, text);
+        keep("settings.txt", &text, false);
     }
 }
 
@@ -218,27 +266,15 @@ impl Settings {
 }
 
 impl Settings {
-    /// This player's key, created on first use and kept next to the settings file. Whoever
-    /// holds this file owns the player's names on every server, so it is written owner-only.
+    /// This player's key, created on first use and kept next to the settings. Whoever holds
+    /// it owns the player's names on every server, so nobody else may read it.
     pub fn identity(&self) -> gsim_proto::Identity {
         use gsim_proto::identity::{from_hex, to_hex};
-        let file = path().map(|p| p.with_file_name("identity.key"));
-        if let Some(secret) = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| from_hex(&s)) {
+        if let Some(secret) = kept("identity.key").and_then(|s| from_hex(&s)) {
             return gsim_proto::Identity::from_secret(secret);
         }
         let identity = gsim_proto::Identity::generate();
-        if let Some(file) = &file {
-            if let Some(dir) = file.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if std::fs::write(file, to_hex(&identity.secret())).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
-                }
-            }
-        }
+        keep("identity.key", &to_hex(&identity.secret()), true);
         identity
     }
 }

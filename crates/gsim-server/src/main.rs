@@ -23,6 +23,12 @@ struct Args {
     public_addr: Option<SocketAddr>,
     #[arg(long, env = "GSIM_MAX_CLIENTS", default_value_t = 32)]
     max_clients: usize,
+    /// TCP port for players in a browser (0 = none)
+    #[arg(long, env = "GSIM_WEB_PORT", default_value_t = gsim_proto::DEFAULT_PORT)]
+    web_port: u16,
+    /// Directory with the web client's files, handed out on that port
+    #[arg(long, env = "GSIM_WEB_DIR")]
+    web_dir: Option<PathBuf>,
     /// World preset (see --list-presets)
     #[arg(long, env = "GSIM_PRESET", default_value = "random")]
     preset: String,
@@ -97,6 +103,8 @@ fn main() {
         bind: SocketAddr::new(args.bind, args.port),
         public_addr: args.public_addr,
         max_clients: args.max_clients,
+        web: (args.web_port != 0).then(|| SocketAddr::new(args.bind, args.web_port)),
+        web_dir: args.web_dir,
         preset: args.preset,
         seed,
         time_scale: args.time_scale,

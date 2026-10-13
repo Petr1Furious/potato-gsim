@@ -50,6 +50,22 @@ pub fn verify(public: &[u8; 32], nonce: &[u8; 32], name: &str, signature: &[u8])
     key.verify(&message(nonce, name), &sig).is_ok()
 }
 
+/// In a browser the page's script is the source of randomness (`web/gsim.js`).
+#[cfg(target_arch = "wasm32")]
+mod web {
+    extern "C" {
+        fn gsim_random(ptr: *mut u8, len: usize);
+    }
+
+    fn fill(bytes: &mut [u8]) -> Result<(), getrandom::Error> {
+        // SAFETY: the script writes exactly `len` bytes at `ptr`.
+        unsafe { gsim_random(bytes.as_mut_ptr(), bytes.len()) };
+        Ok(())
+    }
+
+    getrandom::register_custom_getrandom!(fill);
+}
+
 pub fn random_bytes() -> [u8; 32] {
     let mut b = [0u8; 32];
     getrandom::getrandom(&mut b).expect("the operating system provides randomness");

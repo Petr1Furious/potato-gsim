@@ -26,8 +26,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      # The client for browsers has to keep building.
+      - run: ./scripts/web.sh
       # The determinism rules for the simulation core live in its clippy.toml.
       - run: cargo clippy -p gsim-core --lib --locked -- -D clippy::disallowed_methods
 

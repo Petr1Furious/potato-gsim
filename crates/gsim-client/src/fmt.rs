@@ -37,9 +37,14 @@ pub fn span(seconds: f64) -> String {
     if (value - value.round()).abs() < 0.05 { format!("{value:.0} {unit}") } else { format!("{value:.digits$} {unit}", digits = *digits as usize) }
 }
 
+/// Seconds on a clock that only goes forward (and that a browser has as well).
+pub fn now() -> f64 {
+    macroquad::miniquad::date::now()
+}
+
 /// Frame rate and a per-frame cost, averaged over half-second windows so the numbers can be read.
 pub struct Meter {
-    since: std::time::Instant,
+    since: f64,
     frames: u32,
     cost: f32,
     pub fps: f32,
@@ -49,7 +54,7 @@ pub struct Meter {
 
 impl Default for Meter {
     fn default() -> Self {
-        Self { since: std::time::Instant::now(), frames: 0, cost: 0.0, fps: 0.0, ms: 0.0 }
+        Self { since: now(), frames: 0, cost: 0.0, fps: 0.0, ms: 0.0 }
     }
 }
 
@@ -57,7 +62,7 @@ impl Meter {
     pub fn frame(&mut self, cost_ms: f32) {
         self.frames += 1;
         self.cost += cost_ms;
-        let span = self.since.elapsed().as_secs_f32();
+        let span = (now() - self.since) as f32;
         if span >= 0.5 {
             self.fps = self.frames as f32 / span;
             self.ms = self.cost / self.frames as f32;

@@ -191,6 +191,7 @@ impl ServerMsg {
 }
 
 /// Transport channel layout, identical on both ends.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn connection_config() -> renet::ConnectionConfig {
     use renet::{ChannelConfig, SendType};
     use std::time::Duration;

@@ -1,4 +1,4 @@
-//! Real-time driver: UDP transport plus the fixed-rate tick loop.
+//! Real-time driver: the UDP transport, the one for browsers, and the fixed-rate tick loop.
 
 use crate::authority::{Authority, TargetPlan};
 use crate::scenario::{self, Params};
@@ -7,6 +7,7 @@ use gsim_proto::*;
 use renet::{RenetServer, ServerEvent};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 use crate::state::ServerState;
+use crate::web::{Event, WebServer};
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +20,9 @@ pub struct ServerOptions {
     /// Address clients dial, if different from `bind` (NAT, containers).
     pub public_addr: Option<SocketAddr>,
     pub max_clients: usize,
+    /// Where browsers connect (TCP), if anywhere, and the web client's files to hand them.
+    pub web: Option<SocketAddr>,
+    pub web_dir: Option<PathBuf>,
     pub preset: String,
     pub seed: u64,
     pub time_scale: f64,
@@ -50,6 +54,8 @@ impl Default for ServerOptions {
             bind: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
             public_addr: None,
             max_clients: 32,
+            web: None,
+            web_dir: None,
             preset: "random".into(),
             seed: 1,
             time_scale: 86400.0,
@@ -116,11 +122,16 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
     };
     let mut transport = NetcodeServerTransport::new(config, socket).map_err(|e| e.to_string())?;
     let mut server = RenetServer::new(connection_config());
+    let mut web = match opts.web {
+        Some(bind) => Some(WebServer::bind(bind, opts.web_dir.clone(), opts.max_clients.clamp(1, 64))?),
+        None => None,
+    };
 
     let period = 1.0 / authority.rules.tick_hz as f64;
     if !opts.quiet {
         eprintln!(
-            "gsim-server listening on {local} | preset={} seed={} bodies={} | {} Hz, {:.0} sim-s per tick, time x{}",
+            "gsim-server listening on {local}{} | preset={} seed={} bodies={} | {} Hz, {:.0} sim-s per tick, time x{}",
+            opts.web.map_or(String::new(), |web| format!(" (browsers: tcp {web})")),
             opts.preset,
             opts.seed,
             authority.massive.len(),
@@ -166,6 +177,25 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             }
         }
         let tick_frac = authority.tick() as f64 + (debt / period).min(0.999);
+        for event in web.iter_mut().flat_map(|web| web.poll()) {
+            match event {
+                Event::Connected(conn, ip) => authority.connected(conn, Some(ip)),
+                Event::Disconnected(conn) => {
+                    if !opts.quiet {
+                        eprintln!("[disconnect] conn {conn} (browser)");
+                    }
+                    authority.disconnect(conn);
+                }
+                Event::Message(conn, bytes) => {
+                    if let Some(msg) = decode::<ClientMsg>(&bytes) {
+                        if let (ClientMsg::Hello { name, key, .. }, false) = (&msg, opts.quiet) {
+                            eprintln!("[hello] conn {conn} from a browser name={name:?} key={}", gsim_proto::identity::fingerprint(key));
+                        }
+                        authority.handle(conn, msg, tick_frac);
+                    }
+                }
+            }
+        }
         for client in server.clients_id() {
             for channel in [CH_RELIABLE, CH_UNRELIABLE] {
                 while let Some(bytes) = server.receive_message(client, channel) {
@@ -202,15 +232,22 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             for conn in out.to {
                 if server.is_connected(conn) {
                     server.send_message(conn, channel, bytes.clone());
+                } else if let Some(web) = &mut web {
+                    web.send(conn, &bytes);
                 }
             }
         }
         transport.send_packets(&mut server);
+        if let Some(web) = &mut web {
+            web.flush();
+        }
         closing.extend(authority.drain_kicks().into_iter().map(|c| (c, now + Duration::from_millis(400))));
         closing.retain(|(conn, at)| {
             let due = Instant::now() >= *at;
             if due && server.is_connected(*conn) {
                 server.disconnect(*conn);
+            } else if let (true, Some(web)) = (due, &mut web) {
+                web.close(*conn);
             }
             !due
         });
@@ -248,5 +285,8 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         std::thread::sleep(Duration::from_secs_f64(wait.max(0.0002)));
     }
     transport.disconnect_all(&mut server);
+    if let Some(web) = &mut web {
+        web.close_all();
+    }
     Ok(())
 }

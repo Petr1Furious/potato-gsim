@@ -10,7 +10,7 @@
 //!   the pieces are put together in order.
 //! - No clocks, no I/O, no randomness.
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 compile_error!("gsim-core relies on IEEE-754 double arithmetic without x87 excess precision");
 
 pub mod ephemeris;

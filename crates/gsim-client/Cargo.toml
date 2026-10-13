@@ -13,6 +13,9 @@ rayon.workspace = true
 clap.workspace = true
 macroquad = { version = "0.4", default-features = false }
 egui-macroquad = { version = "0.17", default-features = false }
+
+# Updating itself is for a program, not a page.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = "2"
 self-replace = "1"
 

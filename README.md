@@ -39,7 +39,7 @@ On NixOS prefix commands with `./x` (e.g. `./x cargo test --workspace`) or use `
 ### Docker
 
 ```sh
-mkdir -p data && docker compose up -d --build   # builds the image, runs it on 27777/udp
+mkdir -p data && docker compose up -d --build   # builds the image, runs it on 27777 (udp and tcp)
 docker logs -f potato-gsim          # one status line every 10 s
 ```
 
@@ -50,6 +50,23 @@ Every preset has named parameters (body count, sizes, masses, ...): `--list-pres
 them with their defaults and ranges. Set them with `--set key=value` (repeatable) or
 `GSIM_SET="count=400, spread=80Gm"`; lengths take the units `km`, `Mm`, `Gm` and `Tm`. A key
 the preset does not have, or a value outside its range, stops the server at start-up.
+
+### In a browser
+
+The server also listens on TCP (the same port number, `--web-port`, 0 to switch it off): it
+carries the game over WebSockets and, given the web client's files (`--web-dir`), hands out
+the page. The Docker image has them built in; the compose file publishes that port on the
+loopback address only, for a reverse proxy to put a name and HTTPS in front of it. The page
+joins the server it came from; it has no single player and does not update itself.
+
+```sh
+rustup target add wasm32-unknown-unknown
+scripts/web.sh                                   # the page, in target/web
+cargo run --release -p gsim-server -- --web-dir target/web
+```
+
+Behind an HTTPS proxy the page uses `wss://` by itself; the proxy has to pass WebSocket
+upgrades through.
 
 ## The game
 
@@ -241,10 +258,10 @@ machines, which is why it is single player only.
 |---|---|
 | `gsim-core` | Deterministic simulation: massive tier, ephemeris, particles, ships, prediction |
 | `gsim-proto` | Wire messages (postcard) and channel layout |
-| `gsim-server` | Authoritative world, presets, UDP driver, `gsim-server` binary |
+| `gsim-server` | Authoritative world, presets, UDP and WebSocket drivers, `gsim-server` binary |
 | `gsim-client-core` | Headless client: clock sync, replicas with per-ship rollback, `gsim-bot` |
 | `gsim-swarm` | Fast approximate engine for very large single-player worlds |
-| `gsim-client` | macroquad + egui game client |
+| `gsim-client` | macroquad + egui game client (also built for browsers; `web/` is its page) |
 | `gsim-testkit` | Virtual-time network lab (latency, jitter, loss) and netcode tests |
 
 ## Tests

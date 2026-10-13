@@ -16,20 +16,30 @@ use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
 use gsim_proto::{Objective, PlayerId};
+#[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
 use std::collections::VecDeque;
-use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    net::{SocketAddr, UdpSocket},
+    sync::atomic::{AtomicBool, Ordering},
+    thread::JoinHandle,
+};
 
 /// In-process server for solo play.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Solo {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
+/// (In a browser there is none: nobody can be handed one.)
+#[cfg(target_arch = "wasm32")]
+pub enum Solo {}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl Solo {
     pub fn start(preset: &str, seed: u64, params: &Params) -> Result<(Self, SocketAddr), String> {
         // Let the OS pick a free port, then hand it to the server.
@@ -52,6 +62,7 @@ impl Solo {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Solo {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -174,18 +185,21 @@ pub(crate) const MIN_MPP: f64 = 1.0e-6;
 const DESTRUCT_HOLD: f64 = 1.5;
 
 impl Game {
-    pub fn connect(addr: SocketAddr, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32) -> Result<Self, String> {
+    /// `server`: host or host:port (in a browser, nothing: the server the page came from).
+    pub fn connect(server: &str, settings: &Settings, solo: Option<Solo>, lookahead_seconds: f32) -> Result<Self, String> {
         let cfg = SessionConfig {
             name: settings.name.clone(),
             color: settings.ship_color,
             identity: settings.identity(),
-            threaded_eph: true,
+            // A page in a browser has the one thread: there the ephemeris is worked out a
+            // few rows a frame.
+            threaded_eph: cfg!(not(target_arch = "wasm32")),
             // Tick rate is only known after joining; 60 Hz is the server default.
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
-            inline_budget: 0,
+            inline_budget: 6,
         };
         Ok(Self {
-            net: NetClient::connect(addr, cfg)?,
+            net: NetClient::connect(server, cfg)?,
             _solo: solo,
             view: View { cx: 0.0, cy: 0.0, mpp: 1.0e9 },
             settings_dirty: false,
@@ -790,14 +804,14 @@ impl Game {
         if self.predictor.poll() {
             let ship = me_ship.filter(|t| t.crashed.is_none());
             let wanted = settings.prediction || settings.shell_prediction;
-            match (ship, world.eph.reader(), world.me()) {
-                (Some(track), Some(reader), Some(me)) if wanted => {
+            match (ship, world.me()) {
+                (Some(track), Some(me)) if wanted => {
                     let shell = own.filter(|_| settings.shell_prediction).and_then(|ship| {
                         let (angle, speed) = self.shell_aim(&ship, (mwx, mwy));
                         world.shell_muzzle(angle, speed)
                     });
                     self.predictor.submit(Job {
-                        reader,
+                        reader: world.eph.reader(),
                         rules: world.rules.clone(),
                         ship: *track.last(),
                         start: track.end(),

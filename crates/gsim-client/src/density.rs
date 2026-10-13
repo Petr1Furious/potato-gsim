@@ -137,7 +137,8 @@ pub struct Density {
     image: Image,
     texture: Option<Texture2D>,
     exposure: f32,
-    pool: rayon::ThreadPool,
+    /// Threads of its own for drawing. (None in a browser, which has the one.)
+    pool: Option<rayon::ThreadPool>,
     gpu: Option<Gpu>,
     gpu_wanted: bool,
     /// Where the world is between one of a thousand bodies or fewer (0), in which each
@@ -149,7 +150,7 @@ pub struct Density {
     /// The lingering light (rasteriser only; the graphics card keeps its own).
     trail: Vec<[f32; 4]>,
     trail_stale: bool,
-    last_frame: std::time::Instant,
+    last_frame: f64,
     /// Physical pixels across one body when the graphics card draws.
     dot: u32,
     notice: Option<String>,
@@ -201,9 +202,21 @@ pub fn simulation_threads(gpu: bool) -> usize {
     all.saturating_sub(if gpu { 1 } else { raster_threads() } + 1).max(2)
 }
 
+/// Run `work` on the drawing threads, if there are any.
+fn install<T: Send>(pool: &Option<rayon::ThreadPool>, work: impl FnOnce() -> T + Send) -> T {
+    match pool {
+        Some(pool) => pool.install(work),
+        None => work(),
+    }
+}
+
 impl Density {
+    fn threads(&self) -> usize {
+        self.pool.as_ref().map_or(1, |pool| pool.current_num_threads())
+    }
+
     pub fn new() -> Self {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(raster_threads()).thread_name(|i| format!("gsim-raster-{i}")).build().expect("raster threads");
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(raster_threads()).thread_name(|i| format!("gsim-raster-{i}")).build().ok();
         Self {
             w: 0,
             h: 0,
@@ -227,7 +240,7 @@ impl Density {
             long_exposure: false,
             trail: Vec::new(),
             trail_stale: false,
-            last_frame: std::time::Instant::now(),
+            last_frame: crate::fmt::now(),
             dot: 1,
             notice: None,
             vertices: Vec::new(),
@@ -261,8 +274,8 @@ impl Density {
 
     /// What share of lingering light survives this frame, and how strongly it is shown.
     fn linger(&mut self) -> Option<(f32, f32)> {
-        let frame = self.last_frame.elapsed().as_secs_f32().min(0.1);
-        self.last_frame = std::time::Instant::now();
+        let frame = ((crate::fmt::now() - self.last_frame) as f32).min(0.1);
+        self.last_frame = crate::fmt::now();
         self.long_exposure.then(|| ((-frame / TRAIL_SECONDS).exp(), TRAIL_STRENGTH))
     }
 
@@ -294,7 +307,7 @@ impl Density {
     /// holding them): find where each lands on screen as seen through `view`, moved by `tau`
     /// seconds along its velocity. Returns the bodies large enough to be drawn individually.
     pub fn project(&mut self, bodies: &Bodies, view: &View, tau: f64, mode: ColorMode) -> Vec<Big> {
-        let started = std::time::Instant::now();
+        let started = crate::fmt::now();
         self.resize();
         let (w, h, scale) = (self.w, self.h, self.scale);
         let n = bodies.len();
@@ -307,7 +320,7 @@ impl Density {
         let big_r = BIG_PX * scale;
         let crowd = self.crowd;
         let faintest = 0.5 * (0.02f32 / 0.5).powf(crowd);
-        let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
+        let chunk = n.div_ceil(self.threads() * 4).max(1024);
         let (pix, tint) = (&mut self.pix, &mut self.tint);
         let by_mass = table(|mass| {
             let (log, shine, heft) = (mass.log10(), style::shine(mass as f64), style::heft(mass as f64));
@@ -327,7 +340,7 @@ impl Density {
         // And where a speed falls on the palette, by its square.
         let by_speed = table(|v2| ((0.5 * v2.max(1.0).log10() - 3.3) / 1.5).clamp(0.0, 1.0));
         let (by_mass, by_speed) = (&by_mass, &by_speed);
-        let big = self.pool.install(|| {
+        let big = install(&self.pool, || {
             pix.par_chunks_mut(chunk)
                 .zip(tint.par_chunks_mut(chunk))
                 .enumerate()
@@ -397,7 +410,7 @@ impl Density {
 
         self.colors = colors;
         self.corner = (x0, y0, ppm);
-        self.last_ms = started.elapsed().as_secs_f32() * 1e3;
+        self.last_ms = (crate::fmt::now() - started) as f32 * 1e3;
         self.project_ms = self.last_ms;
         big
     }
@@ -405,7 +418,7 @@ impl Density {
     /// Second half, which no longer needs the bodies: turn what [`Density::project`] found
     /// into light, add the glow, tone-map and draw the picture over the whole screen.
     pub fn present(&mut self, flashes: &[Flash]) {
-        let started = std::time::Instant::now();
+        let started = crate::fmt::now();
         if self.gpu_wanted && self.gpu.is_none() {
             match Gpu::new() {
                 Ok(gpu) => self.gpu = Some(gpu),
@@ -417,7 +430,7 @@ impl Density {
         }
         if self.gpu.is_some() {
             self.present_gpu(flashes);
-            self.last_ms += started.elapsed().as_secs_f32() * 1e3;
+            self.last_ms += (crate::fmt::now() - started) as f32 * 1e3;
             return;
         }
         self.allocate();
@@ -426,10 +439,10 @@ impl Density {
         let (x0, y0, ppm) = self.corner;
         let colors = self.colors;
         // Each band of rows is owned by one task, which picks its bodies out of the list.
-        let bands = self.pool.current_num_threads();
+        let bands = self.threads();
         let rows = h.div_ceil(bands).max(1);
         let (pix, tint, auras) = (&self.pix, &self.tint, &self.auras);
-        self.pool.install(|| {
+        install(&self.pool, || {
             self.acc.par_chunks_mut(rows * w).enumerate().for_each(|(band, acc)| {
                 acc.fill([0.0; 4]);
                 let (first, last) = ((band * rows) as i32, (band * rows + acc.len() / w) as i32);
@@ -498,16 +511,16 @@ impl Density {
         // shared between the four small pixels around it according to where exactly it lies,
         // so the glow moves as smoothly as the body does instead of a small pixel at a time.
         let (gw, gh) = (w.div_ceil(GLOW_DIV) + 1, h.div_ceil(GLOW_DIV) + 1);
+        let bands = self.threads();
         let acc = &self.acc;
         let (glow, blur) = (&mut self.glow, &mut self.blur);
-        let bands = self.pool.current_num_threads();
         let glow_rows = gh.div_ceil(bands).max(1);
         // A body's position in the small image.
         let small = |v: usize| {
             let g = ((v as f32 + 0.5) / GLOW_DIV as f32 - 0.5).max(0.0);
             (g as usize, g.fract())
         };
-        self.pool.install(|| {
+        install(&self.pool, || {
             glow.par_chunks_mut(glow_rows * gw).enumerate().for_each(|(band, out)| {
                 out.fill([0.0; 4]);
                 let (first, last) = (band * glow_rows, band * glow_rows + out.len() / gw);
@@ -564,7 +577,7 @@ impl Density {
                 self.trail = vec![[0.0; 4]; self.acc.len()];
             }
             let (trail, acc) = (&mut self.trail, &self.acc);
-            self.pool.install(|| {
+            install(&self.pool, || {
                 trail.par_chunks_mut(w).zip(acc.par_chunks(w)).for_each(|(trail, acc)| {
                     for (t, a) in trail.iter_mut().zip(acc) {
                         for k in 0..4 {
@@ -589,7 +602,7 @@ impl Density {
         let bg = [style::BACKGROUND.r * 255.0, style::BACKGROUND.g * 255.0, style::BACKGROUND.b * 255.0];
         let span = [255.0 - bg[0], 255.0 - bg[1], 255.0 - bg[2]];
         let across = &self.across;
-        let (lit, light) = self.pool.install(|| {
+        let (lit, light) = install(&self.pool, || {
             self.image
                 .bytes
                 .par_chunks_mut(w * 4)
@@ -649,7 +662,7 @@ impl Density {
         }
         let params = DrawTextureParams { dest_size: Some(vec2(w as f32 * scale, h as f32 * scale)), ..Default::default() };
         draw_texture_ex(self.texture.as_ref().unwrap(), 0.0, 0.0, WHITE, params);
-        self.last_ms += started.elapsed().as_secs_f32() * 1e3;
+        self.last_ms += (crate::fmt::now() - started) as f32 * 1e3;
     }
 
     /// The GPU version of [`Density::present`]: hand the projected bodies to the graphics
@@ -662,9 +675,9 @@ impl Density {
         let colors = self.colors;
         let n = self.pix.len();
         self.vertices.resize(n, [0.0; 7]);
-        let chunk = n.div_ceil(self.pool.current_num_threads() * 4).max(1024);
+        let chunk = n.div_ceil(self.threads() * 4).max(1024);
         let (pix, tint, vertices) = (&self.pix, &self.tint, &mut self.vertices);
-        let grid = self.pool.install(|| {
+        let grid = install(&self.pool, || {
             vertices
                 .par_chunks_mut(chunk)
                 .zip(pix.par_chunks(chunk))
@@ -723,9 +736,9 @@ impl Density {
             let (bw, bh) = (((x1 + 1) * CELL).min(w) - left, ((y1 + 1) * CELL).min(h) - top);
             self.merged.clear();
             self.merged.resize(bw * bh, [0.0; 3]);
-            let rows = bh.div_ceil(self.pool.current_num_threads()).max(1);
+            let rows = bh.div_ceil(self.threads()).max(1);
             let (pix, tint, merged, vertices) = (&self.pix, &self.tint, &mut self.merged, &self.vertices);
-            self.vertices = self.pool.install(|| {
+            self.vertices = install(&self.pool, || {
                 merged.par_chunks_mut(rows * bw).enumerate().for_each(|(band, out)| {
                     let (first, last) = (top + band * rows, top + band * rows + out.len() / bw);
                     for (p, (shade, weight, size, _)) in pix.iter().zip(tint) {

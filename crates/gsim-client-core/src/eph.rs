@@ -8,7 +8,7 @@ use std::time::Duration;
 
 pub enum Eph {
     /// Rows are produced on demand by the caller (deterministic tests, bots).
-    Inline { prod: Box<EphProducer>, ring: EphRing },
+    Inline { prod: Box<EphProducer>, ring: Arc<RwLock<EphRing>> },
     /// A worker thread keeps the ring filled up to `want`.
     Threaded {
         ring: Arc<RwLock<EphRing>>,
@@ -23,7 +23,7 @@ impl Eph {
     pub fn new(snapshot: &MassiveSnapshot, rules: &GameRules, threaded: bool) -> Self {
         let mut prod = EphProducer::new(snapshot, rules.clone());
         if !threaded {
-            return Eph::Inline { prod: Box::new(prod), ring: EphRing::new() };
+            return Eph::Inline { prod: Box::new(prod), ring: Arc::new(RwLock::new(EphRing::new())) };
         }
         let ring = Arc::new(RwLock::new(EphRing::new()));
         let want = Arc::new(AtomicU64::new(snapshot.tick));
@@ -50,16 +50,14 @@ impl Eph {
 
     pub fn get(&self, tick: Tick) -> Option<Arc<EphRow>> {
         match self {
-            Eph::Inline { ring, .. } => ring.get(tick),
-            Eph::Threaded { ring, .. } => ring.read().unwrap().get(tick),
+            Eph::Inline { ring, .. } | Eph::Threaded { ring, .. } => ring.read().unwrap().get(tick),
         }
     }
 
     /// One past the newest available row (the snapshot tick if nothing is ready yet).
     pub fn end_tick(&self) -> Option<Tick> {
         match self {
-            Eph::Inline { ring, .. } => ring.end_tick(),
-            Eph::Threaded { ring, .. } => ring.read().unwrap().end_tick(),
+            Eph::Inline { ring, .. } | Eph::Threaded { ring, .. } => ring.read().unwrap().end_tick(),
         }
     }
 
@@ -67,6 +65,7 @@ impl Eph {
     pub fn request(&mut self, upto: Tick, budget: usize) {
         match self {
             Eph::Inline { prod, ring } => {
+                let mut ring = ring.write().unwrap();
                 let mut n = 0;
                 while prod.next_tick() < upto && n < budget {
                     ring.push(prod.next_row());
@@ -79,7 +78,7 @@ impl Eph {
 
     pub fn trim_before(&mut self, tick: Tick) {
         match self {
-            Eph::Inline { ring, .. } => ring.trim_before(tick),
+            Eph::Inline { ring, .. } => ring.write().unwrap().trim_before(tick),
             Eph::Threaded { trim, .. } => trim.store(tick, Ordering::Relaxed),
         }
     }
@@ -96,7 +95,7 @@ impl Drop for Eph {
     }
 }
 
-/// Cheap, thread-safe read access to a threaded ephemeris (e.g. for a prediction worker).
+/// Cheap, thread-safe read access to the ephemeris (e.g. for a prediction worker).
 #[derive(Clone)]
 pub struct EphReader {
     ring: Arc<RwLock<EphRing>>,
@@ -114,11 +113,9 @@ impl EphReader {
 }
 
 impl Eph {
-    /// `None` in inline mode, where the ephemeris lives on the caller's thread.
-    pub fn reader(&self) -> Option<EphReader> {
+    pub fn reader(&self) -> EphReader {
         match self {
-            Eph::Inline { .. } => None,
-            Eph::Threaded { ring, .. } => Some(EphReader { ring: ring.clone() }),
+            Eph::Inline { ring, .. } | Eph::Threaded { ring, .. } => EphReader { ring: ring.clone() },
         }
     }
 }

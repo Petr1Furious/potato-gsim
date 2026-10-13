@@ -108,7 +108,7 @@ pub fn launch(settings: &Settings, seed: u64, lookahead: f32) -> Result<Started,
         Ok(Started::Large(Box::new(Sandbox::start(setup, settings))))
     } else {
         let (server, addr) = Solo::start(name, seed, &params)?;
-        Ok(Started::Exact(Box::new(Game::connect(addr, settings, Some(server), lookahead)?)))
+        Ok(Started::Exact(Box::new(Game::connect(&addr.to_string(), settings, Some(server), lookahead)?)))
     }
 }
 

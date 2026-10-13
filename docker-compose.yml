@@ -9,6 +9,7 @@ services:
     user: "${GSIM_UID:-1000}:${GSIM_GID:-1000}"
     ports:
       - "27777:27777/udp"
+      - "127.0.0.1:27777:27777/tcp"   # players in a browser, through a reverse proxy (drop the address to serve http://<host>:27777 directly)
     volumes:
       # players.txt, whitelist.txt, banned-players.txt, banned-ips.txt
       - ./data:/data

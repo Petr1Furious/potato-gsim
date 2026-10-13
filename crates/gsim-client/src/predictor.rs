@@ -1,6 +1,8 @@
 //! Background trajectory prediction. Exact prediction against a thousand bodies for twenty
 //! seconds ahead costs tens of milliseconds, so it runs off the render thread; the newest
-//! finished result is drawn, re-anchored to the reference body's current position.
+//! finished result is drawn, re-anchored to the reference body's current position. (A page in
+//! a browser has no other thread: there it runs between frames, and takes no more than a
+//! fifth of the time.)
 //!
 //! A ship that is coasting stays on the path predicted for it: then only the few ticks beyond
 //! the end of that path are worked out, not the whole of it again.
@@ -9,6 +11,7 @@ use gsim_client_core::eph::EphReader;
 use gsim_core::predict::{predict_particle, predict_ship, Path};
 use gsim_core::ship::step_ship;
 use gsim_core::{GameRules, InputTimeline, Particle, Scratch, ShipInput, ShipState, Tick};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 
 pub struct Job {
@@ -47,10 +50,19 @@ pub struct Paths {
     pub compute_ms: f64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Predictor {
     tx: Sender<Job>,
     rx: Receiver<Paths>,
     busy: bool,
+    pub latest: Paths,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct Predictor {
+    /// When the next prediction may be made.
+    free_at: f64,
+    kept: Option<Coast>,
     pub latest: Paths,
 }
 
@@ -126,7 +138,7 @@ fn coast(job: &Job, kept: &mut Option<Coast>) -> Path {
 }
 
 fn compute(job: &Job, kept: &mut Option<Coast>) -> Paths {
-    let t0 = std::time::Instant::now();
+    let t0 = crate::fmt::now();
     let mut out = Paths { ref_slot: job.ref_slot, ..Default::default() };
     let row_at = |t: Tick| job.reader.get(t);
     if job.show_ship {
@@ -156,10 +168,33 @@ fn compute(job: &Job, kept: &mut Option<Coast>) -> Paths {
         let shell = predict_particle(p, job.rules.shell_radius, job.start, life, row_at, &job.rules);
         out.shell = relative(job, &shell);
     }
-    out.compute_ms = t0.elapsed().as_secs_f64() * 1e3;
+    out.compute_ms = (crate::fmt::now() - t0) * 1e3;
     out
 }
 
+#[cfg(target_arch = "wasm32")]
+impl Predictor {
+    pub fn new() -> Self {
+        Self { free_at: 0.0, kept: None, latest: Paths::default() }
+    }
+
+    /// True when a new job may be handed in.
+    pub fn poll(&mut self) -> bool {
+        crate::fmt::now() >= self.free_at
+    }
+
+    pub fn submit(&mut self, job: Job) {
+        self.latest = compute(&job, &mut self.kept);
+        // A fifth of the time at most.
+        self.free_at = crate::fmt::now() + 4.0e-3 * self.latest.compute_ms;
+    }
+
+    pub fn clear(&mut self) {
+        self.latest = Paths::default();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl Predictor {
     pub fn new() -> Self {
         let (tx, job_rx) = channel::<Job>();
@@ -214,7 +249,7 @@ mod tests {
         let state = MassiveState::from_bodies(&[body(1.0e11, 4.0e25, 1.2e7), body(1.0e11 + 5.0e7, 5.0e25, 1.3e7)]);
         let mut eph = Eph::new(&state.snapshot(), &rules, true);
         eph.request(40, 0);
-        let reader = eph.reader().unwrap();
+        let reader = eph.reader();
         while reader.get(39).is_none() {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }

@@ -2,7 +2,7 @@
 //! with the server. Exit code 0 means no hash mismatch occurred.
 
 use clap::Parser;
-use gsim_client_core::net::{resolve, NetClient};
+use gsim_client_core::net::NetClient;
 use gsim_client_core::{Controls, SessionConfig};
 use std::time::{Duration, Instant};
 
@@ -27,12 +27,8 @@ fn main() {
         eprintln!("self-test FAILED: {:#018x} != {:#018x}", gsim_core::selftest::compute(), gsim_core::selftest::GOLDEN);
         std::process::exit(2);
     }
-    let addr = resolve(&args.server).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1)
-    });
     // Bots use a key derived from their name: stable across runs, not secret.
-    let mut net = NetClient::connect(addr, SessionConfig::headless(&args.name)).unwrap_or_else(|e| {
+    let mut net = NetClient::connect(&args.server, SessionConfig::headless(&args.name)).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
     });

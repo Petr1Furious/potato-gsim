@@ -6,9 +6,13 @@ edition.workspace = true
 [dependencies]
 gsim-core.workspace = true
 gsim-proto.workspace = true
+
+# The transports are not for a browser, where the client only wants the presets' names.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 clap.workspace = true
 renet.workspace = true
 renet_netcode.workspace = true
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
 
 [[bin]]
 name = "gsim-server"
@@ -16,3 +20,4 @@ path = "src/main.rs"
 
 [dev-dependencies]
 rayon.workspace = true
+tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }

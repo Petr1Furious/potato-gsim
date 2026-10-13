@@ -26,7 +26,8 @@ pub fn resolve(addr: &str) -> Result<SocketAddr, String> {
 }
 
 impl NetClient {
-    pub fn connect(server: SocketAddr, cfg: SessionConfig) -> Result<Self, String> {
+    pub fn connect(server: &str, cfg: SessionConfig) -> Result<Self, String> {
+        let server = resolve(server)?;
         let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
         let auth = ClientAuthentication::Unsecure {

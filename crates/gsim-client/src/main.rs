@@ -1,3 +1,8 @@
+//! The game's client: a program, or (built for `wasm32`) a page in a browser, which joins
+//! servers and leaves out what a page cannot do: worlds of its own, and updating itself.
+
+// (A page uses a part of the code.)
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 // No console window behind the game on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
@@ -6,21 +11,25 @@ mod density;
 mod fmt;
 mod game;
 mod gpu;
+#[cfg(not(target_arch = "wasm32"))]
 mod menu;
 mod options;
-mod sandbox;
 mod predictor;
+#[cfg(not(target_arch = "wasm32"))]
+mod sandbox;
 mod settings;
 mod style;
+#[cfg(not(target_arch = "wasm32"))]
 mod updater;
 
 use clap::Parser;
 use egui_macroquad::egui;
 use game::{Game, Outcome};
-use menu::{Choice, SinglePlayer, Started};
-use sandbox::Sandbox;
-use gsim_client_core::net::resolve;
 use macroquad::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use menu::{Choice, SinglePlayer, Started};
+#[cfg(not(target_arch = "wasm32"))]
+use sandbox::Sandbox;
 use settings::Settings;
 
 /// What players see: window title, menu heading, app bundle.
@@ -81,18 +90,21 @@ fn main() {
         std::process::exit(if ok { 0 } else { 2 });
     }
     let mut settings = Settings::load();
-    // One thread per core in total, not one per core for the simulation alone: the picture
-    // needs some too, and fighting over them costs more frames than it gains steps.
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(density::simulation_threads(settings.gpu)).thread_name(|i| format!("gsim-sim-{i}")).build_global();
-    if args.bench {
-        println!("kernels: {}, {} simulation threads", gsim_swarm::Level::detect().name(), rayon::current_num_threads());
-        for sc in gsim_swarm::scenario::SCENARIOS {
-            match gsim_swarm::bench::suggest(sc.name, &Default::default(), 1000.0 / 60.0) {
-                Ok(count) => println!("{:10} about {count} bodies at 60 steps per second", sc.name),
-                Err(e) => println!("{:10} {e}", sc.name),
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // One thread per core in total, not one per core for the simulation alone: the picture
+        // needs some too, and fighting over them costs more frames than it gains steps.
+        let _ = rayon::ThreadPoolBuilder::new().num_threads(density::simulation_threads(settings.gpu)).thread_name(|i| format!("gsim-sim-{i}")).build_global();
+        if args.bench {
+            println!("kernels: {}, {} simulation threads", gsim_swarm::Level::detect().name(), rayon::current_num_threads());
+            for sc in gsim_swarm::scenario::SCENARIOS {
+                match gsim_swarm::bench::suggest(sc.name, &Default::default(), 1000.0 / 60.0) {
+                    Ok(count) => println!("{:10} about {count} bodies at 60 steps per second", sc.name),
+                    Err(e) => println!("{:10} {e}", sc.name),
+                }
             }
+            return;
         }
-        return;
     }
     if !ok {
         eprintln!("warning: simulation self-test failed; servers will refuse this build");
@@ -120,12 +132,15 @@ fn main() {
 
 enum Screen {
     Menu,
+    #[cfg(not(target_arch = "wasm32"))]
     Single,
     Settings,
     Game(Box<Game>),
+    #[cfg(not(target_arch = "wasm32"))]
     Sandbox(Box<Sandbox>),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<Started> for Screen {
     fn from(started: Started) -> Self {
         match started {
@@ -135,6 +150,7 @@ impl From<Started> for Screen {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn seed_or_random(seed: u64) -> u64 {
     if seed != 0 {
         return seed;
@@ -143,10 +159,13 @@ fn seed_or_random(seed: u64) -> u64 {
 }
 
 fn join(settings: &Settings, args: &Args) -> Result<Game, String> {
-    Game::connect(resolve(&settings.server)?, settings, None, args.lookahead)
+    // (A page joins the server it came from.)
+    let server = if cfg!(target_arch = "wasm32") { "" } else { settings.server.as_str() };
+    Game::connect(server, settings, None, args.lookahead)
 }
 
 /// `--solo <world> [--set key=value ...]`: the settings file is left alone.
+#[cfg(not(target_arch = "wasm32"))]
 fn solo(settings: &Settings, args: &Args, world: &str) -> Result<Started, String> {
     let mut settings = settings.clone();
     settings.preset = world.to_string();
@@ -182,11 +201,13 @@ async fn run(args: Args, mut settings: Settings) {
     #[cfg(target_os = "macos")]
     dock_icon();
     let mut message = String::new();
+    #[cfg(not(target_arch = "wasm32"))]
     let updater = updater::Updater::start(!args.no_update);
     // Closing the window or pressing Cmd+Q should still say goodbye to the server and
     // install a pending update, so take over the quit request.
     prevent_quit();
     let mut screen = Screen::Menu;
+    #[cfg(not(target_arch = "wasm32"))]
     let mut single = SinglePlayer::default();
     if let Some(server) = &args.connect {
         settings.server = server.clone();
@@ -194,7 +215,9 @@ async fn run(args: Args, mut settings: Settings) {
             Ok(g) => screen = Screen::Game(Box::new(g)),
             Err(e) => message = e,
         }
-    } else if let Some(world) = &args.solo {
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let (None, Some(world)) = (&args.connect, &args.solo) {
         match solo(&settings, &args, world) {
             Ok(started) => screen = started.into(),
             Err(e) => message = e,
@@ -221,6 +244,7 @@ async fn run(args: Args, mut settings: Settings) {
         let mut quit = false;
         let outcome = match &mut screen {
             Screen::Game(game) => game.frame(&mut settings),
+            #[cfg(not(target_arch = "wasm32"))]
             Screen::Sandbox(sandbox) => sandbox.frame(&mut settings),
             _ => Outcome::Continue,
         };
@@ -233,7 +257,9 @@ async fn run(args: Args, mut settings: Settings) {
             Outcome::Quit => quit = true,
         }
         match &mut screen {
-            Screen::Game(_) | Screen::Sandbox(_) => {}
+            Screen::Game(_) => {}
+            #[cfg(not(target_arch = "wasm32"))]
+            Screen::Sandbox(_) => {}
             Screen::Settings => {
                 clear_background(style::BACKGROUND);
                 let factor = settings.ui_factor();
@@ -253,6 +279,7 @@ async fn run(args: Args, mut settings: Settings) {
                     next = Some(Screen::Menu);
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             Screen::Single => {
                 clear_background(style::BACKGROUND);
                 let factor = settings.ui_factor();
@@ -293,7 +320,9 @@ async fn run(args: Args, mut settings: Settings) {
             }
             Screen::Menu => {
                 // Between games is the one moment a restart costs the player nothing.
+                #[cfg(not(target_arch = "wasm32"))]
                 let update = updater.status();
+                #[cfg(not(target_arch = "wasm32"))]
                 if update == updater::Status::Ready {
                     settings.save();
                     updater.apply(true);
@@ -321,23 +350,29 @@ async fn run(args: Args, mut settings: Settings) {
                                 });
                             });
                             style::section(ui, "MULTIPLAYER");
+                            #[cfg(not(target_arch = "wasm32"))]
                             ui.add(egui::TextEdit::singleline(&mut settings.server).desired_width(f32::INFINITY).hint_text("server address"));
                             ui.add_space(2.0);
                             if wide(ui, "Join server") {
                                 action = Some(join(&settings, &args));
                             }
-                            style::section(ui, "SINGLE PLAYER");
-                            if wide(ui, "Choose a world") {
-                                message.clear();
-                                next = Some(Screen::Single);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                style::section(ui, "SINGLE PLAYER");
+                                if wide(ui, "Choose a world") {
+                                    message.clear();
+                                    next = Some(Screen::Single);
+                                }
                             }
                             ui.add_space(10.0);
                             ui.separator();
-                            ui.columns(2, |columns| {
+                            // (A page is left by closing it.)
+                            ui.columns(if cfg!(target_arch = "wasm32") { 1 } else { 2 }, |columns| {
                                 if wide(&mut columns[0], "Settings") {
                                     message.clear();
                                     next = Some(Screen::Settings);
                                 }
+                                #[cfg(not(target_arch = "wasm32"))]
                                 if wide(&mut columns[1], "Quit") {
                                     quit = true;
                                 }
@@ -346,22 +381,25 @@ async fn run(args: Args, mut settings: Settings) {
                                 ui.add_space(6.0);
                                 ui.colored_label(egui::Color32::from_rgb(255, 140, 120), &message);
                             }
-                            let note = match &update {
-                                updater::Status::Disabled => format!("build {}", short(updater::build_version())),
-                                updater::Status::Checking => "checking for updates...".to_string(),
-                                updater::Status::UpToDate => format!("up to date ({})", short(updater::build_version())),
-                                updater::Status::Downloading { percent } => format!("downloading update... {percent} %"),
-                                updater::Status::Ready => "installing update...".to_string(),
-                                updater::Status::Failed(e) => e.clone(),
-                            };
-                            ui.add_space(6.0);
-                            // Wrapped: an error can be much longer than the menu is wide.
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(egui::RichText::new(note).small().color(style::c32(style::DIM)));
-                                if updater.can_check() && ui.small_button("check for updates").clicked() {
-                                    updater.check();
-                                }
-                            });
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                let note = match &update {
+                                    updater::Status::Disabled => format!("build {}", short(updater::build_version())),
+                                    updater::Status::Checking => "checking for updates...".to_string(),
+                                    updater::Status::UpToDate => format!("up to date ({})", short(updater::build_version())),
+                                    updater::Status::Downloading { percent } => format!("downloading update... {percent} %"),
+                                    updater::Status::Ready => "installing update...".to_string(),
+                                    updater::Status::Failed(e) => e.clone(),
+                                };
+                                ui.add_space(6.0);
+                                // Wrapped: an error can be much longer than the menu is wide.
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new(note).small().color(style::c32(style::DIM)));
+                                    if updater.can_check() && ui.small_button("check for updates").clicked() {
+                                        updater.check();
+                                    }
+                                });
+                            }
                         });
                 });
                 egui_macroquad::draw();
@@ -391,6 +429,7 @@ async fn run(args: Args, mut settings: Settings) {
                 game.leave();
             }
             // Install a finished download on the way out; the next start runs the new version.
+            #[cfg(not(target_arch = "wasm32"))]
             updater.apply(false);
             settings.save();
             break;
@@ -402,6 +441,7 @@ async fn run(args: Args, mut settings: Settings) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn short(version: &str) -> &str {
     version.get(..7).unwrap_or(version)
 }
@@ -425,4 +465,11 @@ fn gallery(ui: f32) {
         }
         y += r.max(8.0 * ui) + h * 0.05;
     }
+}
+
+/// The page's script (`web/gsim.js`) is told apart by this.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn gsim_crate_version() -> u32 {
+    1
 }
