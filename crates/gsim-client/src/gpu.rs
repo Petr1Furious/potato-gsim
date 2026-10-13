@@ -258,9 +258,13 @@ impl Gpu {
             },
         )
         .map_err(|e| format!("the tone-mapping shader did not compile: {e}"))?;
-        // Without this a vertex shader's point size is ignored on desktop OpenGL.
+        // Without this a vertex shader's point size is ignored on desktop OpenGL. (A browser
+        // always heeds it, and does not know the switch.)
         // SAFETY: plain state change on the thread that owns the GL context.
-        unsafe { miniquad::gl::glEnable(miniquad::gl::GL_PROGRAM_POINT_SIZE) };
+        #[cfg(not(target_arch = "wasm32"))]
+        unsafe {
+            miniquad::gl::glEnable(miniquad::gl::GL_PROGRAM_POINT_SIZE)
+        };
         let (vertices, indices) = Self::buffers(ctx, 1 << 16);
         let mut gpu = Self { points, blur, fade, tone, vertices, indices, capacity: 1 << 16, quad, targets: None };
         // Try the images now: a driver without float render targets shows here, not as a

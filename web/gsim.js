@@ -13,6 +13,15 @@
     const strings = {};
     let next_string = 1;
 
+    // Drawing into floating-point images is something a browser only does once asked:
+    // ask as soon as the window library gets its drawing context.
+    const context = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind, ...options) {
+        const gl = context.call(this, kind, ...options);
+        if (gl && kind === "webgl2") gl.getExtension("EXT_color_buffer_float");
+        return gl;
+    };
+
     miniquad_add_plugin({
         name: "gsim",
         version: 1,

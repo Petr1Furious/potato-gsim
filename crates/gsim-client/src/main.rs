@@ -125,6 +125,9 @@ fn main() {
         high_dpi: true,
         fullscreen: settings.fullscreen,
         sample_count: 4,
+        // In a browser: the newer WebGL, which can draw into floating-point images (what the
+        // glowing picture of the small bodies is made in).
+        platform: miniquad::conf::Platform { webgl_version: miniquad::conf::WebGLVersion::WebGL2, ..Default::default() },
         ..Default::default()
     };
     macroquad::Window::from_config(conf, run(args, settings));
