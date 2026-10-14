@@ -12,7 +12,10 @@ use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::IpAddr;
 
+mod bases;
 mod commands;
+
+pub use bases::DAMAGE;
 
 /// Transport-level connection handle.
 pub type ConnId = u64;
@@ -50,6 +53,8 @@ struct Player {
     god: bool,
     /// Watching, with no ship and no respawns.
     spectating: bool,
+    /// Only until the next round (out of this one, or joined while it was on).
+    benched: bool,
     /// Who `/r` answers.
     reply_to: Option<PlayerId>,
     /// (start tick, messages) of the current chat rate-limit window.
@@ -136,6 +141,11 @@ pub struct Authority {
     /// Everyone is an operator (solo play).
     pub op_all: bool,
     objective_enabled: bool,
+    mode: GameMode,
+    bases: Vec<bases::BaseState>,
+    /// (player, base owner) for every ship on a siege orbit.
+    sieges: Vec<(PlayerId, PlayerId)>,
+    bases_changed: bool,
 }
 
 impl Authority {
@@ -154,6 +164,10 @@ impl Authority {
             next_seed: None,
             op_all: false,
             objective_enabled: false,
+            mode: GameMode::Targets,
+            bases: Vec::new(),
+            sieges: Vec::new(),
+            bases_changed: false,
             massive: MassiveState::from_bodies(&scenario.bodies),
             rules,
             stats: Stats::default(),
@@ -239,6 +253,7 @@ impl Authority {
         self.addrs.remove(&conn);
         if let Some(id) = self.by_conn.remove(&conn) {
             self.players.remove(&id);
+            self.sieges.retain(|s| s.0 != id);
             self.event(Event::PlayerLeft { id });
         }
     }
@@ -326,11 +341,16 @@ impl Authority {
             self.disconnect(old);
             self.kicks.push(old);
         }
-        if self.players.is_empty() && self.round_ticks > 0 {
+        let id = self.next_player_id;
+        // A round of bases is between two or more: until there are two, every newcomer starts
+        // a new one (with a base of their own). Later ones watch it, unless they owned a base.
+        let bases = self.mode == GameMode::Bases;
+        let restart = bases && (self.bases.len() < 2 || self.players.is_empty());
+        if self.players.is_empty() && self.round_ticks > 0 && !restart {
             // First player on an empty server: start a fresh round for them.
             self.start_round();
         }
-        let id = self.next_player_id;
+        let watch = bases && !restart && !self.reclaim_base(id, &name).unwrap_or(false);
         self.next_player_id += 1;
         // Everyone already here learns about the newcomer; the newcomer learns everything
         // (itself included) from the snapshot.
@@ -347,22 +367,28 @@ impl Authority {
                 deaths: 0,
                 captures: 0,
                 hold: None,
-                respawn_tick: Some(self.tick() + 1),
+                respawn_tick: (!watch).then_some(self.tick() + 1),
                 next_fire_tick: 0,
                 magazine: Magazine::full(self.tick(), &self.rules),
                 last_seq: 0,
                 last_cmd_tick: 0,
                 fires: VecDeque::new(),
                 god: false,
-                spectating: false,
+                spectating: watch,
+                benched: watch,
                 reply_to: None,
                 chat_window: (0, 0),
                 last_mark: 0,
             },
         );
         self.by_conn.insert(conn, id);
-        let w = self.welcome(id);
-        self.send(Target::One(conn), ServerMsg::Welcome(Box::new(w)));
+        if restart {
+            // (Which welcomes everyone, the newcomer included.)
+            self.start_round();
+        } else {
+            let w = self.welcome(id);
+            self.send(Target::One(conn), ServerMsg::Welcome(Box::new(w)));
+        }
         let op = self.is_op(id);
         self.send(Target::One(conn), ServerMsg::Operator(op));
     }
@@ -371,6 +397,8 @@ impl Authority {
         let now = self.tick();
         Welcome {
             your_id,
+            mode: self.mode,
+            bases: self.base_list(),
             preset: self.preset.clone(),
             round: self.round,
             round_end_tick: self.round_end_tick,
@@ -526,7 +554,10 @@ impl Authority {
         let due: Vec<PlayerId> =
             self.players.values().filter(|p| !p.spectating && p.respawn_tick.is_some_and(|r| r <= t)).map(|p| p.id).collect();
         for id in due {
-            let state = self.spawn_state();
+            let state = match self.base_spawn(id) {
+                Some(state) => state,
+                None => self.spawn_state(),
+            };
             let p = self.players.get_mut(&id).unwrap();
             p.ship = Some(state);
             p.respawn_tick = None;
@@ -586,11 +617,14 @@ impl Authority {
         let gods: Vec<PlayerId> = self.players.values().filter(|p| p.god).map(|p| p.id).collect();
         let reach2 = (rules.shell_blast_radius + rules.ship_radius) * (rules.shell_blast_radius + rules.ship_radius);
         let mut gone: Vec<(ShellId, bool)> = Vec::new();
+        // (body, shooter) for every shell that struck a body.
+        let mut struck: Vec<(u32, PlayerId)> = Vec::new();
         for s in &mut self.shells {
             let before = (s.p.x, s.p.y);
             let hit = step_particle(&mut s.p, (0.0, 0.0), rules.shell_radius, &view, &rules, &mut self.scratch);
             let age = t + 1 - s.spawn_tick;
-            if hit.is_some() {
+            if let Some(body) = hit {
+                struck.push((body, s.owner));
                 gone.push((s.id, false));
                 continue;
             }
@@ -623,6 +657,16 @@ impl Authority {
             self.event(Event::ShellGone { tick: next, id, exploded });
         }
         let playing_now = self.next_round_tick.is_none();
+        if playing_now {
+            for (body, by) in struck {
+                self.damage_base(next, body, by, bases::DAMAGE.0);
+            }
+            for &(victim, _, body) in &deaths {
+                if let Some(body) = body {
+                    self.damage_base(next, body, victim, bases::DAMAGE.1);
+                }
+            }
+        }
         for (victim, killer, body) in deaths {
             let respawn_tick = next + rules.respawn_ticks as Tick;
             if let Some(p) = self.players.get_mut(&victim) {
@@ -637,17 +681,21 @@ impl Authority {
                 }
             }
             self.event(Event::ShipDied { tick: next, player: victim, killer, body, respawn_tick });
+            // Without a base standing there is no new ship.
+            if self.mode == GameMode::Bases && playing_now && !self.base_alive(victim) {
+                self.eliminate(victim);
+            }
         }
 
-        // --- objectives and rounds ---
+        // --- objectives, bases and rounds ---
         let playing = self.next_round_tick.is_none();
-        if self.objective_enabled {
-            self.tend_objectives(next, &merges, playing);
+        match self.mode {
+            GameMode::Targets if self.objective_enabled => self.tend_objectives(next, &merges, playing),
+            GameMode::Targets => {}
+            GameMode::Bases => self.tend_bases(next, playing),
         }
-        if playing && self.round_end_tick.is_some_and(|e| next >= e) {
-            let next_round_tick = next + self.intermission_ticks.max(1);
-            self.next_round_tick = Some(next_round_tick);
-            self.event(Event::RoundOver { tick: next, next_round_tick });
+        if self.next_round_tick.is_none() && self.round_end_tick.is_some_and(|e| next >= e) {
+            self.end_round(next, None);
         }
 
         if next.is_multiple_of(rules.hash_interval_ticks.max(1) as Tick) {
@@ -718,6 +766,7 @@ impl Authority {
         let tick = self.tick();
         let Some(p) = self.players.get_mut(&player).filter(|p| p.spectating != spectating) else { return };
         p.spectating = spectating;
+        p.benched = false;
         p.hold = None;
         if spectating {
             p.ship = None;
@@ -920,15 +969,29 @@ impl Authority {
         (!cands.is_empty()).then(|| cands[(self.rng.u64() % cands.len() as u64) as usize].0)
     }
 
+    /// Scores are final; the next world starts after the intermission.
+    fn end_round(&mut self, tick: Tick, winner: Option<PlayerId>) {
+        let next_round_tick = tick + self.intermission_ticks.max(1);
+        self.next_round_tick = Some(next_round_tick);
+        self.event(Event::RoundOver { tick, next_round_tick, winner });
+    }
+
     /// Replace the world, reset scores and hand everyone a fresh snapshot.
     fn start_round(&mut self) {
         let tick = self.tick();
         let seed = self.next_seed.take().unwrap_or_else(|| self.rng.u64());
-        let sc = match &self.generator {
+        let mut sc = match &self.generator {
             Some((preset, params)) => scenario::build(preset, seed, params).unwrap_or_else(|_| self.initial.clone()),
             None => self.initial.clone(),
         };
+        // Whoever sat out the last round plays again.
+        for p in self.players.values_mut().filter(|p| p.benched) {
+            (p.spectating, p.benched) = (false, false);
+        }
+        self.lay_bases(&mut sc);
+        self.sieges.clear();
         self.massive = MassiveState::from_bodies(&sc.bodies);
+        self.anchor_bases();
         // Ticks never restart: clients keep their clock across rounds.
         self.massive.tick = tick;
         self.rules.escape_radius = if self.rules.escape_radius > 0.0 { sc.escape_radius() } else { 0.0 };

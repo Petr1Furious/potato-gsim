@@ -192,6 +192,9 @@ impl Authority {
             p.respawn_tick = Some(respawn_tick);
         }
         self.event(Event::ShipDied { tick, player: id, killer: None, body: None, respawn_tick });
+        if self.mode == GameMode::Bases && playing && !self.base_alive(id) {
+            self.eliminate(id);
+        }
         Ok(())
     }
 
@@ -345,7 +348,7 @@ impl Authority {
                 };
                 let slot = self.find_body(body)?;
                 let j = slot as usize;
-                if self.massive.mass[j] <= 0.0 {
+                if self.massive.pull[j] <= 0.0 {
                     return Err("nothing can orbit a body with negative mass".into());
                 }
                 let mut placed = Vec::new();
@@ -353,7 +356,7 @@ impl Authority {
                     let Ok(old) = self.ship_of(id) else { continue };
                     let m = &self.massive;
                     let r = ORBIT_RADII * m.radius[j];
-                    let v = (self.rules.g * m.mass[j] / r).sqrt();
+                    let v = (self.rules.g * m.pull[j] / r).sqrt();
                     let p = Particle { x: m.x[j] + r, y: m.y[j], vx: m.vx[j], vy: m.vy[j] + v };
                     self.place_ship(id, ShipState { p, ..old });
                     placed.push(id);
@@ -387,6 +390,12 @@ impl Authority {
                 self.start_round();
                 let with = if settings.is_empty() { String::new() } else { format!(" ({settings})") };
                 self.announce(format!("{} switched the world to {preset}{with}", self.name_of(me)));
+                Ok(None)
+            }
+            "mode" => {
+                let mode = args.first().and_then(|w| GameMode::parse(w)).ok_or("")?;
+                self.set_mode(mode);
+                self.announce(format!("{} started a round of {}", self.name_of(me), mode.name()));
                 Ok(None)
             }
             "timescale" => {

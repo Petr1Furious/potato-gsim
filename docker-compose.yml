@@ -14,6 +14,7 @@ services:
       # players.txt, whitelist.txt, banned-players.txt, banned-ips.txt
       - ./data:/data
     environment:
+      GSIM_MODE: targets        # targets | bases
       GSIM_PRESET: random       # random | repulsor
       GSIM_SEED: "0"            # 0 = new world on every start
       GSIM_SET: ""              # preset parameters, e.g. "count=400, spread=80Gm" (gsim-server --list-presets)

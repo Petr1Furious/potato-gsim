@@ -63,6 +63,9 @@ struct Args {
     /// Seconds a target stays on one body before it moves on (0 = until it is captured)
     #[arg(long, env = "GSIM_TARGET_SECONDS", default_value_t = 90.0)]
     target_seconds: f64,
+    /// What rounds are about: targets (orbit marked bodies) or bases (destroy the others' bases)
+    #[arg(long, env = "GSIM_MODE", default_value = "targets", value_parser = |s: &str| gsim_proto::GameMode::parse(s).ok_or("targets or bases"))]
+    mode: gsim_proto::GameMode,
     /// Directory for player names, whitelist and ban lists
     #[arg(long, env = "GSIM_STATE_DIR", default_value = "data", global = true)]
     state_dir: PathBuf,
@@ -118,6 +121,7 @@ fn main() {
         target_seconds: args.target_seconds,
         state_dir: Some(args.state_dir.clone()),
         whitelist: args.whitelist,
+        mode: args.mode,
         op_all: false,
     };
     if !gsim_core::selftest::passes() {

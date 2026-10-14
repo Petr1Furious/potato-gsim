@@ -44,6 +44,8 @@ pub struct ServerOptions {
     pub state_dir: Option<PathBuf>,
     /// Only let whitelisted names in.
     pub whitelist: bool,
+    /// What rounds are about.
+    pub mode: GameMode,
     /// Treat every player as an operator (solo play).
     pub op_all: bool,
 }
@@ -69,6 +71,7 @@ impl Default for ServerOptions {
             target_seconds: 90.0,
             state_dir: None,
             whitelist: false,
+            mode: GameMode::Targets,
             op_all: false,
         }
     }
@@ -104,6 +107,7 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
     authority.op_all = opts.op_all;
     authority.set_rounds(ticks(opts.round_seconds), ticks(opts.intermission_seconds).max(1), Some((opts.preset.clone(), opts.params.clone())));
     authority.enable_objective();
+    authority.set_mode(opts.mode);
     Ok(authority)
 }
 

@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -76,6 +76,40 @@ pub struct PlayerInfo {
     pub spectating: bool,
 }
 
+/// What a round is about.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GameMode {
+    /// Orbit the marked bodies for points.
+    #[default]
+    Targets,
+    /// Every player has a base; the last one with a ship or a base left wins.
+    Bases,
+}
+
+impl GameMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            GameMode::Targets => "targets",
+            GameMode::Bases => "bases",
+        }
+    }
+
+    pub fn parse(word: &str) -> Option<Self> {
+        [GameMode::Targets, GameMode::Bases].into_iter().find(|m| m.name().eq_ignore_ascii_case(word))
+    }
+}
+
+/// A base's health when it is new.
+pub const BASE_HP: u32 = 6000;
+
+/// A player's base: a body that does not move. It is gone (a hulk) at 0 hp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Base {
+    pub owner: PlayerId,
+    pub slot: u32,
+    pub hp: u32,
+}
+
 /// A body to orbit for points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Objective {
@@ -96,6 +130,7 @@ pub struct ShellInfo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Welcome {
     pub your_id: PlayerId,
+    pub mode: GameMode,
     pub preset: String,
     pub round: u32,
     /// Tick at which the current round ends (`None`: endless).
@@ -104,6 +139,7 @@ pub struct Welcome {
     pub next_round_tick: Option<Tick>,
     /// The bodies to orbit for points.
     pub objectives: Vec<Objective>,
+    pub bases: Vec<Base>,
     pub rules: GameRules,
     pub massive: MassiveSnapshot,
     pub names: Vec<(u32, String)>,
@@ -132,8 +168,10 @@ pub enum Event {
     Objectives { tick: Tick, objectives: Vec<Objective> },
     /// `player` held an orbit around `target` long enough.
     Captured { tick: Tick, player: PlayerId, target: u32 },
-    /// Scores are final; a new world starts at `next_round_tick`.
-    RoundOver { tick: Tick, next_round_tick: Tick },
+    /// `by` brought the base of `owner` down to 0 hp.
+    BaseDestroyed { tick: Tick, owner: PlayerId, by: Option<PlayerId> },
+    /// Scores are final; a new world starts at `next_round_tick`. `winner`: the last player in play.
+    RoundOver { tick: Tick, next_round_tick: Tick, winner: Option<PlayerId> },
     /// Massive-tier hash at the start of `tick`.
     Hash { tick: Tick, hash: u64 },
 }
@@ -159,6 +197,9 @@ pub enum ServerMsg {
     /// Unreliable, a few times a second: how long each objective has left, and who has held
     /// a qualifying orbit around which body for how many ticks.
     Progress { objectives: Vec<Objective>, holds: Vec<(PlayerId, u32, u32)> },
+    /// Unreliable, a few times a second while bases change: their health, and who is besieging
+    /// whose base (player, base owner).
+    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, PlayerId)> },
     /// Unreliable safety net: authoritative ship state at the start of `tick`.
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }
@@ -190,7 +231,7 @@ impl ClientMsg {
 
 impl ServerMsg {
     pub fn reliable(&self) -> bool {
-        !matches!(self, ServerMsg::Pong { .. } | ServerMsg::ShipCheck { .. } | ServerMsg::Progress { .. })
+        !matches!(self, ServerMsg::Pong { .. } | ServerMsg::ShipCheck { .. } | ServerMsg::Progress { .. } | ServerMsg::Bases { .. })
     }
 }
 

@@ -151,6 +151,8 @@ pub enum EffectKind {
     ShellBlast,
     /// Somebody completed the orbit objective around the body at this spot.
     Captured,
+    /// A base went down here.
+    BaseDestroyed,
 }
 
 /// Something to draw for a moment (drifts with the velocity it had).
@@ -164,6 +166,7 @@ pub struct Effect {
 pub struct World {
     pub rules: GameRules,
     pub my_id: PlayerId,
+    pub mode: GameMode,
     pub preset: String,
     pub names: BTreeMap<u32, String>,
     pub eph: Eph,
@@ -182,6 +185,12 @@ pub struct World {
     /// The objective each player is on a qualifying orbit around, and for how many ticks (from
     /// the server, a few times a second).
     pub holds: BTreeMap<PlayerId, (u32, u32)>,
+    /// Every base, with its health as last heard.
+    pub bases: Vec<Base>,
+    /// (player, base owner) for every ship on a siege orbit.
+    pub sieges: Vec<(PlayerId, PlayerId)>,
+    /// The last player in play, once the round is over.
+    pub winner: Option<PlayerId>,
     scratch: Scratch,
 }
 
@@ -216,6 +225,7 @@ impl World {
         Self {
             rules: w.rules.clone(),
             my_id: w.your_id,
+            mode: w.mode,
             preset: w.preset.clone(),
             names: w.names.iter().cloned().collect(),
             eph: Eph::new(&w.massive, &w.rules, eph),
@@ -230,6 +240,9 @@ impl World {
             next_round_tick: w.next_round_tick,
             objectives: w.objectives.clone(),
             holds: BTreeMap::new(),
+            bases: w.bases.clone(),
+            sieges: Vec::new(),
+            winner: None,
         }
     }
 
@@ -247,6 +260,14 @@ impl World {
 
     pub fn is_target(&self, slot: u32) -> bool {
         self.objectives.iter().any(|o| o.slot == slot)
+    }
+
+    pub fn base_of(&self, player: PlayerId) -> Option<&Base> {
+        self.bases.iter().find(|b| b.owner == player)
+    }
+
+    pub fn base_on(&self, slot: u32) -> Option<&Base> {
+        self.bases.iter().find(|b| b.slot == slot)
     }
 
     pub fn body_name(&self, slot: u32) -> String {
@@ -292,7 +313,8 @@ impl World {
             }
             Event::Gamemode { tick, player, spectating } => {
                 let name = self.player_name(player).to_string();
-                self.say(tick, format!("{name} {}", if spectating { "is watching" } else { "is playing again" }));
+                let out = spectating && self.mode == GameMode::Bases && self.base_of(player).is_some_and(|b| b.hp == 0);
+                self.say(tick, format!("{name} {}", if out { "is out" } else if spectating { "is watching" } else { "is playing again" }));
                 if let Some(p) = self.players.get_mut(&player) {
                     p.spectating = spectating;
                     if spectating {
@@ -400,10 +422,35 @@ impl World {
                     p.captures += 1;
                 }
             }
-            Event::RoundOver { tick, next_round_tick } => {
+            Event::BaseDestroyed { tick, owner, by } => {
+                let whose = self.player_name(owner).to_string();
+                let text = match by {
+                    Some(by) => format!("{} destroyed {whose}'s base", self.player_name(by)),
+                    None => format!("{whose}'s base was destroyed"),
+                };
+                self.say(tick, text);
+                if let Some(b) = self.bases.iter_mut().find(|b| b.owner == owner) {
+                    b.hp = 0;
+                    let j = b.slot as usize;
+                    if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| j < r.x.len()) {
+                        let at = Particle { x: row.x[j], y: row.y[j], vx: 0.0, vy: 0.0 };
+                        self.effects.push_back(Effect { tick, at, kind: EffectKind::BaseDestroyed });
+                    }
+                }
+                if let Some(p) = by.and_then(|by| self.players.get_mut(&by)) {
+                    p.captures += 1;
+                }
+            }
+            Event::RoundOver { tick, next_round_tick, winner } => {
                 self.next_round_tick = Some(next_round_tick);
                 self.holds.clear();
-                self.say(tick, "Round over".to_string());
+                self.sieges.clear();
+                self.winner = winner;
+                let text = match winner {
+                    Some(w) => format!("{} wins the round", self.player_name(w)),
+                    None => "Round over".to_string(),
+                };
+                self.say(tick, text);
             }
             Event::Hash { .. } => {} // handled by the session
         }

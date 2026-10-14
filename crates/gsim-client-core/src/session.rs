@@ -185,6 +185,17 @@ impl Session {
                     w.holds = holds.into_iter().filter(|h| w.is_target(h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
                 }
             }
+            ServerMsg::Bases { bases, sieges } => {
+                if let Some(w) = self.world.as_mut() {
+                    // A late copy must not bring a fallen base back.
+                    for b in &mut w.bases {
+                        let hp = bases.iter().find(|new| new.slot == b.slot).map_or(b.hp, |new| new.hp);
+                        b.hp = if b.hp == 0 { 0 } else { hp };
+                        b.owner = bases.iter().find(|new| new.slot == b.slot).map_or(b.owner, |new| new.owner);
+                    }
+                    w.sieges = sieges;
+                }
+            }
             ServerMsg::ShipCheck { tick, player, state } => {
                 if let Some(w) = self.world.as_mut() {
                     self.stats.ship_checks += 1;

@@ -15,7 +15,7 @@ use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
-use gsim_proto::{Objective, PlayerId};
+use gsim_proto::{GameMode, Objective, PlayerId, BASE_HP};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -477,19 +477,33 @@ impl Game {
             };
             targets.sort_by(|a, b| far(a).total_cmp(&far(b)));
         }
+        // In a round of bases the standing enemy bases take the place of targets, nearest first.
+        let bases = world.mode == GameMode::Bases;
+        let mut enemy_bases: Vec<u32> = world.bases.iter().filter(|b| b.hp > 0 && b.owner != world.my_id && alive(b.slot)).map(|b| b.slot).collect();
+        if let Some(ship) = own {
+            let far = |slot: &u32| {
+                let b = body(*slot);
+                (b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)
+            };
+            enemy_bases.sort_by(|a, b| far(a).total_cmp(&far(b)));
+        }
+        let picks: Vec<u32> = if bases { enemy_bases.clone() } else { targets.iter().map(|o| o.slot).collect() };
         if std::mem::take(&mut self.pick_target) {
             // The nearest one, then the next one each time.
-            let after = self.selected.and_then(|s| targets.iter().position(|o| o.slot == s)).map_or(0, |i| i + 1);
-            let text = match targets.get(after % targets.len().max(1)) {
-                Some(o) => {
-                    self.selected = Some(o.slot);
+            let after = self.selected.and_then(|s| picks.iter().position(|p| *p == s)).map_or(0, |i| i + 1);
+            let text = match picks.get(after % picks.len().max(1)) {
+                Some(&slot) => {
+                    self.selected = Some(slot);
                     self.watch = None;
-                    format!("Selected {}", world.body_name(o.slot))
+                    format!("Selected {}", world.body_name(slot))
                 }
+                None if bases => "No enemy base".to_string(),
                 None => "No target".to_string(),
             };
             self.status = Some((text, get_time() + 2.0));
         }
+        // The enemy base the siege panel is about: the selected one, else the nearest.
+        let siege_of = self.selected.filter(|s| enemy_bases.contains(s)).or(enemy_bases.first().copied());
         // The one the panel is about: the one being held, else the selected, else the nearest.
         let holding = world.holds.get(&world.my_id).map(|h| h.0);
         let objective = holding.into_iter().chain(self.selected).find_map(|s| targets.iter().find(|o| o.slot == s)).or(targets.first()).copied();
@@ -773,13 +787,75 @@ impl Game {
             } else {
                 1.0
             };
-            if mass < 0.0 || shaped[j as usize] {
+            let base = world.base_on(j).is_some();
+            if (mass < 0.0 || shaped[j as usize]) && !base {
                 style::body(s, r_px, mass, j, fade, ui, style::light_from(s, star));
             }
-            if let Some(name) = world.names.get(&j).filter(|_| settings.body_names && self.selected != Some(j)) {
+            if let Some(name) = world.names.get(&j).filter(|_| settings.body_names && self.selected != Some(j) && !base) {
                 let size = LABEL * ui;
                 let below = s.1 + r_px.max(1.1 * ui).min(4000.0) + size;
                 labels.push(name.as_str(), s.0, below, size, style::alpha(style::DIM, fade), Rank::BodyName);
+            }
+        }
+
+        // --- bases ----------------------------------------------------------------------------
+        for b in &world.bases {
+            let j = b.slot as usize;
+            if !alive(b.slot) {
+                continue;
+            }
+            let at = body(b.slot);
+            let s = view.to_screen(at.x, at.y);
+            let radius = row.props.radius[j];
+            let r_px = (radius / view.mpp) as f32;
+            let owner = world.players.get(&b.owner);
+            let colour = owner.map_or(style::DIM, |p| style::rgb(p.color));
+            let name = owner.map_or("?", |p| p.name.as_str());
+            let mine = b.owner == world.my_id;
+            let health = b.hp as f32 / BASE_HP as f32;
+            if !view.on_screen(s, r_px.max(30.0 * ui)) {
+                // Off screen: an arrow to every standing base, one's own included.
+                if b.hp > 0 {
+                    // A ring on the arrow tells it from a ship's, and the label sits further in so
+                    // that it does not cover the owner's ship label when both point the same way.
+                    let label = edge_arrow(s, colour, ui);
+                    let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
+                    let (dx, dy) = (cx - label.0, cy - label.1);
+                    let k = 30.0 * ui / (dx * dx + dy * dy).sqrt().max(1.0);
+                    let (ex, ey) = (label.0 - dx * 34.0 / 30.0 * k, label.1 - dy * 34.0 / 30.0 * k);
+                    style::ring(ex, ey, 13.0 * ui, 1.5 * ui, style::alpha(colour, 0.8));
+                    let at_edge = (label.0 + dx * k, label.1 + dy * k);
+                    let mut lines = vec![if mine { "HOME".to_string() } else { format!("{} BASE", name.to_uppercase()) }];
+                    if let Some(ship) = own {
+                        lines.push(fmt::distance(((at.x - ship.x).powi(2) + (at.y - ship.y).powi(2)).sqrt()));
+                    }
+                    labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, colour, Rank::Target);
+                }
+                continue;
+            }
+            // Where a siege orbit has to stay, around the bases one can besiege.
+            let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
+            if b.hp > 0 && !mine && outer > 14.0 * ui && outer < 1.0e5 {
+                let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
+                let dashes = 72;
+                for k in 0..dashes {
+                    let a = k as f32 / dashes as f32 * std::f32::consts::TAU;
+                    style::arc(s.0, s.1, outer, a, a + 0.045, ui, style::alpha(colour, 0.3));
+                }
+                style::ring(s.0, s.1, inner, ui, style::alpha(colour, 0.2));
+            }
+            let besieged = world.sieges.iter().any(|x| x.1 == b.owner);
+            style::base(s, r_px, colour, health, besieged, b.slot, ui);
+            let top = r_px.max(6.0 * ui).min(4000.0) + 16.0 * ui;
+            if b.hp > 0 {
+                labels.push(if mine { "HOME".to_string() } else { name.to_uppercase() }, s.0, s.1 - top - 4.0 * ui, LABEL * ui, colour, Rank::Target);
+                // Health under the base.
+                let (w, h) = (44.0 * ui, 4.0 * ui);
+                let y = s.1 + top;
+                draw_rectangle(s.0 - w * 0.5, y, w, h, Color::from_rgba(24, 32, 46, 220));
+                draw_rectangle(s.0 - w * 0.5, y, w * health, h, if besieged { style::EMBER } else { colour });
+            } else {
+                labels.push(format!("{} · DOWN", name.to_uppercase()), s.0, s.1 - top, LABEL * ui, style::DIM, Rank::Target);
             }
         }
 
@@ -819,6 +895,16 @@ impl Game {
                         }
                     }
                     style::disc(s.0, s.1, 26.0 * ui, style::alpha(style::GOLD, 0.35 * (1.0 - (age as f32 / 0.4).min(1.0))));
+                }
+                EffectKind::BaseDestroyed => {
+                    // A flash, then three shock waves.
+                    style::disc(s.0, s.1, 60.0 * ui, style::alpha(WHITE, 0.5 * (1.0 - (age as f32 / 0.3).min(1.0))));
+                    for (k, c) in [style::EMBER, style::GOLD, WHITE].into_iter().enumerate() {
+                        let t = (age as f32 - 0.12 * k as f32) / 1.3;
+                        if (0.0..1.0).contains(&t) {
+                            style::ring(s.0, s.1, (20.0 + 220.0 * t) * ui, (5.0 - 4.0 * t) * ui, style::alpha(c, (1.0 - t) * (1.0 - t)));
+                        }
+                    }
                 }
                 EffectKind::ShipDestroyed => {
                     let r = (10.0 + 60.0 * age as f32) * ui;
@@ -1053,11 +1139,13 @@ impl Game {
         let reloading = fire_ready as f64 > tick_f;
         let shells_max = world.rules.shell_max;
         let (shells, next_shell) = me.map_or((0, 0.0), |m| (m.magazine.at(tick_f as Tick, &world.rules), m.magazine.next(tick_f as Tick, &world.rules)));
+        // In a round of bases the first column is the base's health, and the board is in that order.
+        let base_hp = |id: &PlayerId| world.base_of(*id).map_or(-1, |b| b.hp as i64);
         let mut scores: Vec<(String, i64, u32, u32, u32, bool, Color)> = world
             .players
             .iter()
             .filter(|(_, p)| !p.spectating)
-            .map(|(id, p)| (p.name.clone(), p.score(&world.rules), p.kills, p.deaths, p.captures, *id == world.my_id, style::rgb(p.color)))
+            .map(|(id, p)| (p.name.clone(), if bases { base_hp(id) } else { p.score(&world.rules) }, p.kills, p.deaths, p.captures, *id == world.my_id, style::rgb(p.color)))
             .collect();
         let watchers: Vec<(String, Color)> = world.players.values().filter(|p| p.spectating).map(|p| (p.name.clone(), style::rgb(p.color))).collect();
         scores.sort_by(|a, b| b.1.cmp(&a.1).then(a.3.cmp(&b.3)));
@@ -1085,6 +1173,26 @@ impl Game {
             targets.iter().filter(|o| objective.is_some_and(|t| t.slot != o.slot)).map(|o| (world.body_name(o.slot), timer(o))).collect();
         let limits = (world.rules.orbit_max_ecc, world.rules.orbit_min_peri_radii, world.rules.orbit_max_apo_radii);
         let capture_points = world.rules.capture_points;
+        // Bases: one's own, who is besieging it, and the enemy base one is going for.
+        let health = |b: &gsim_proto::Base| b.hp as f32 / BASE_HP as f32;
+        let home = world.base_of(world.my_id).map(health);
+        let besiegers: Vec<(String, Color)> = world
+            .sieges
+            .iter()
+            .filter(|x| x.1 == world.my_id)
+            .map(|x| (world.player_name(x.0).to_string(), world.players.get(&x.0).map_or(style::DIM, |p| style::rgb(p.color))))
+            .collect();
+        let siege = siege_of.and_then(|slot| world.base_on(slot)).map(|b| {
+            let owner = world.players.get(&b.owner);
+            let name = owner.map_or("?".to_string(), |p| p.name.to_uppercase());
+            let colour = owner.map_or(style::DIM, |p| style::rgb(p.color));
+            let j = b.slot as usize;
+            let state = own.map(|ship| orbit_status(&ship, &body(b.slot), row.props.pull[j], row.props.radius[j], &world.rules));
+            let on = world.sieges.iter().any(|x| x.0 == world.my_id && x.1 == b.owner);
+            (name, colour, health(b), state.map(|o| (o, row.props.radius[j])), on)
+        });
+        let out = spectating && bases && world.base_of(world.my_id).is_some_and(|b| b.hp == 0);
+        let winner = world.winner.map(|w| world.player_name(w).to_string());
         // What the chat box needs: names to complete and to highlight.
         let player_names: Vec<String> = world.players.values().map(|p| p.name.clone()).collect();
         let mut mentions: Vec<(String, Mention)> = world.players.iter().map(|(id, p)| (p.name.clone(), Mention::Player(*id))).collect();
@@ -1145,8 +1253,10 @@ impl Game {
                     ui.label(RichText::new(&title).small().color(dim).extra_letter_spacing(2.0));
                     match (intermission, round_left) {
                         (Some(left), _) => {
-                            let verdict = match scores.first() {
-                                Some(best) if best.1 > 0 => format!("{} wins with {}", best.0, best.1),
+                            let verdict = match (bases, &winner, scores.first()) {
+                                (true, Some(w), _) => format!("{w} wins"),
+                                (true, None, _) => "Nobody won".to_string(),
+                                (false, _, Some(best)) if best.1 > 0 => format!("{} wins with {}", best.0, best.1),
                                 _ => "Nobody scored".to_string(),
                             };
                             ui.label(RichText::new(verdict).heading().color(gold));
@@ -1226,18 +1336,68 @@ impl Game {
                 });
             }
 
+            // Bases: one's own, the one being attacked, and how the siege orbit is doing.
+            if bases && intermission.is_none() && (home.is_some() || siege.is_some()) {
+                Area::new(Id::new("bases")).fixed_pos([10.0, below]).interactable(false).show(ctx, |ui| {
+                    style::panel().show(ui, |ui| {
+                        ui.set_width(230.0);
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        match home {
+                            Some(h) if h > 0.0 => {
+                                let colour = if besiegers.is_empty() { style::GOOD } else { style::EMBER };
+                                style::gauge(ui, "HOME", &format!("{:.0} %", h * 100.0), h, colour);
+                            }
+                            Some(_) => {
+                                style::caption(ui, "HOME");
+                                ui.label(RichText::new("destroyed: no more ships").color(bad));
+                            }
+                            None => {}
+                        }
+                        if !besiegers.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("UNDER SIEGE").small().color(bad).extra_letter_spacing(1.0));
+                                for (name, colour) in &besiegers {
+                                    ui.label(RichText::new(name).small().color(style::c32(*colour)));
+                                }
+                            });
+                        }
+                        if let Some((name, colour, h, state, on)) = &siege {
+                            style::section(ui, if *on { "SIEGE · ON" } else { "SIEGE" });
+                            style::gauge(ui, name, &format!("{:.0} %", h * 100.0), *h, *colour);
+                            if let Some((o, r)) = state.filter(|(o, _)| o.bound) {
+                                ui.horizontal(|ui| {
+                                    let mark = |ui: &mut egui::Ui, what: &str, ok: bool| {
+                                        ui.label(RichText::new(what).small().color(if ok { good } else { bad }).extra_letter_spacing(1.0));
+                                    };
+                                    mark(ui, "ECC", o.ecc <= limits.0);
+                                    mark(ui, "LOW", o.peri / r >= limits.1);
+                                    mark(ui, "HIGH", o.apo / r <= limits.2);
+                                });
+                            }
+                        }
+                    });
+                });
+            }
+
             // Top right: standings and what just happened.
             Area::new(Id::new("score")).anchor(Align2::RIGHT_TOP, [-10.0, 10.0]).interactable(false).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
                     egui::Grid::new("scores").num_columns(5).spacing([14.0, 3.0]).show(ui, |ui| {
-                        for head in ["PLAYER", "PTS", "ORB", "K", "D"] {
+                        let heads = if bases { ["PLAYER", "BASE", "KO", "K", "D"] } else { ["PLAYER", "PTS", "ORB", "K", "D"] };
+                        for head in heads {
                             style::caption(ui, head);
                         }
                         ui.end_row();
                         for (name, score, k, d, caps, mine, colour) in &scores {
                             let name = RichText::new(name).color(style::c32(*colour));
                             ui.label(if *mine { name.underline() } else { name });
-                            ui.label(RichText::new(score.to_string()).color(style::c32(style::TEXT)).strong());
+                            let first = match (bases, *score) {
+                                (false, s) => s.to_string(),
+                                (true, hp) if hp > 0 => format!("{:.0}%", 100.0 * hp as f32 / BASE_HP as f32),
+                                (true, 0) => "down".to_string(),
+                                (true, _) => "-".to_string(),
+                            };
+                            ui.label(RichText::new(first).color(style::c32(style::TEXT)).strong());
                             for n in [caps, k, d] {
                                 ui.label(RichText::new(n.to_string()).color(dim));
                             }
@@ -1270,7 +1430,7 @@ impl Game {
                             style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
                         }
                         None if spectating => {
-                            style::caption(ui, "WATCHING");
+                            style::caption(ui, if out { "OUT · WATCHING" } else { "WATCHING" });
                             ui.label(RichText::new("Space: next player").color(dim));
                         }
                         None => {

@@ -473,6 +473,18 @@ fn gallery(ui: f32) {
         }
         y += r.max(8.0 * ui) + h * 0.05;
     }
+    // Bases: health from full to fallen, under siege, at two sizes.
+    let colours = [[230, 80, 230], [90, 200, 255], [255, 190, 60]];
+    let cases = [(1.0, false), (0.6, false), (0.6, true), (0.2, true), (0.0, false)];
+    for (k, size) in [8.0, 30.0].into_iter().enumerate() {
+        y += 40.0 * ui;
+        for (col, (health, siege)) in cases.iter().enumerate() {
+            let x = w / (cases.len() as f32 + 1.0) * (col as f32 + 1.0);
+            let colour = style::rgb(colours[(col + k) % colours.len()]);
+            style::base((x, y), size * ui, colour, *health, *siege, col as u32, ui);
+        }
+        y += 40.0 * ui;
+    }
 }
 
 /// The page's script (`web/gsim.js`) is told apart by this.

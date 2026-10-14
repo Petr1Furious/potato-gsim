@@ -146,6 +146,72 @@ pub fn ring(x: f32, y: f32, r: f32, thickness: f32, color: Color) {
     draw_poly_lines(x, y, sides(r), r, 0.0, thickness, color);
 }
 
+/// Part of a ring, from angle `a0` to `a1` (radians; screen y points down, so positive is
+/// clockwise).
+pub fn arc(x: f32, y: f32, r: f32, a0: f32, a1: f32, thickness: f32, color: Color) {
+    let n = ((a1 - a0).abs() * r / 3.0).clamp(3.0, 96.0) as usize;
+    let at = |k: usize| {
+        let a = a0 + (a1 - a0) * k as f32 / n as f32;
+        (x + r * a.cos(), y + r * a.sin())
+    };
+    for k in 0..n {
+        let (p, q) = (at(k), at(k + 1));
+        draw_line(p.0, p.1, q.0, q.1, thickness, color);
+    }
+}
+
+/// A player's base: a glowing core in their colour inside a slowly turning shield whose
+/// segments go dark as it loses health; under siege the shield flickers red. A fallen base is
+/// a dark hulk among the scattered pieces of its shield.
+pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, slot: u32, ui: f32) {
+    let time = get_time() as f32;
+    let r = r.max(6.0 * ui).min(1.0e5);
+    const SEGMENTS: usize = 12;
+    let span = std::f32::consts::TAU / SEGMENTS as f32;
+    let shield = r + 6.0 * ui;
+    if health <= 0.0 {
+        disc(s.0, s.1, r, Color::new(0.09, 0.09, 0.11, 1.0));
+        ring(s.0, s.1, r, 1.5 * ui, Color::new(0.30, 0.30, 0.34, 1.0));
+        // Some pieces are gone, the rest have drifted out a little; always the same ones.
+        for k in 0..SEGMENTS {
+            let h = (slot as usize * 7 + k * 5) % 11;
+            if h < 4 {
+                continue;
+            }
+            let a = k as f32 * span + 0.2 * (h as f32 - 5.0) / 5.0;
+            let out = shield + (h as f32 - 4.0) * 1.2 * ui;
+            arc(s.0, s.1, out, a, a + 0.55 * span, 2.0 * ui, alpha(mix(colour, DIM, 0.75), 0.45));
+        }
+        return;
+    }
+    let pulse = 0.5 + 0.5 * (time * 2.0 + slot as f32).sin();
+    // A wide soft glow, then the core: dark at the rim, bright in the middle.
+    for k in 1..=5 {
+        disc(s.0, s.1, r + (4.0 + 5.0 * k as f32) * ui, alpha(colour, 0.035 + 0.015 * pulse));
+    }
+    disc(s.0, s.1, r, mix(BACKGROUND, colour, 0.25));
+    for (k, f) in [(0.8, 0.45), (0.55, 0.7), (0.3, 1.0)] {
+        disc(s.0, s.1, r * k, mix(BACKGROUND, colour, f));
+    }
+    disc(s.0, s.1, (r * 0.12).max(1.5 * ui), alpha(WHITE, 0.6 + 0.4 * pulse));
+    // The shield: lit segments for the health left.
+    let lit = (health.clamp(0.0, 1.0) * SEGMENTS as f32).ceil() as usize;
+    let flicker = besieged && (time * 14.0).sin() > 0.0;
+    let on = if flicker { EMBER } else { colour };
+    let turn = time * 0.35;
+    for k in 0..SEGMENTS {
+        let a = turn + k as f32 * span;
+        let c = if k < lit { alpha(on, 0.9) } else { alpha(colour, 0.12) };
+        arc(s.0, s.1, shield, a, a + 0.78 * span, 2.5 * ui, c);
+    }
+    // A thin outer ring of ticks turning the other way.
+    let ticks = shield + 5.0 * ui;
+    for k in 0..24 {
+        let a = -turn * 0.6 + k as f32 * span / 2.0;
+        arc(s.0, s.1, ticks, a, a + 0.12, 1.0 * ui, alpha(colour, 0.35));
+    }
+}
+
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1.0)
 }

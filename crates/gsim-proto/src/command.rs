@@ -89,6 +89,7 @@ pub const COMMANDS: &[Command] = &[
         params: &[req("player|body", Arg::PlayerOrBody), opt("body", Arg::Body)],
     },
     Command { name: "preset", help: "start a new round in another world", op: true, params: &[req("preset", Arg::Preset), opt("key=value ...", Arg::Settings)] },
+    Command { name: "mode", help: "start a new round with targets or with bases", op: true, params: &[req("targets|bases", Arg::Word(&["targets", "bases"]))] },
     Command { name: "timescale", help: "simulated seconds per second; starts a new round", op: true, params: &[req("factor", Arg::Number)] },
     Command { name: "target", help: "make a body a target", op: true, params: &[req("body", Arg::Body)] },
     Command {
