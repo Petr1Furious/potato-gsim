@@ -149,5 +149,7 @@ pub fn scrolled(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let room = (ui.ctx().screen_rect().height() - 130.0).max(120.0);
     // A bar with a lane of its own: the floating kind is drawn over the right end of the rows.
     ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-    egui::ScrollArea::vertical().max_height(room).show(ui, body);
+    // (As tall as that from the first frame, if there is that much to show: left to find
+    // its height by itself in a window that fits its contents, it gains a row a frame.)
+    egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room).show(ui, body);
 }
