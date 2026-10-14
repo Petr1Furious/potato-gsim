@@ -25,11 +25,66 @@
         return gl;
     };
 
+    // The keyboard, as the window library's script (gl.js) gets it wrong:
+    //  - Pasting: it hands the game a paste key press before the browser has said what is
+    //    being pasted. Here the key press waits for the browser's paste, which then brings
+    //    the text along.
+    //  - On a Mac, Cmd: the script passes on Ctrl only. Here a key pressed with Cmd is passed on
+    //    as pressed with Ctrl, which is what the game's interface takes for "command". (A Mac
+    //    also never tells of a key let go while Cmd is down: those are let go with it.)
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    const held_with_cmd = new Set();
+    const as_ctrl = (event) => new KeyboardEvent(event.type, { code: event.code, key: event.key, ctrlKey: true, shiftKey: event.shiftKey, altKey: event.altKey, repeat: event.repeat });
+    window.addEventListener("keydown", function (event) {
+        if (!event.isTrusted || event.target !== canvas) return;
+        const command = event.ctrlKey || (mac && event.metaKey);
+        if (command && event.code === "KeyV") {
+            // (Not stopped from happening: only from reaching the script. The paste follows.)
+            event.stopImmediatePropagation();
+        } else if (mac && event.metaKey && !event.ctrlKey && event.code !== "MetaLeft" && event.code !== "MetaRight") {
+            event.stopImmediatePropagation();
+            held_with_cmd.add(event.code);
+            canvas.dispatchEvent(as_ctrl(event));
+        }
+    }, true);
+    window.addEventListener("keyup", function (event) {
+        if (!event.isTrusted || !mac) return;
+        if (event.code === "MetaLeft" || event.code === "MetaRight") {
+            for (const code of held_with_cmd) canvas.dispatchEvent(new KeyboardEvent("keyup", { code: code, ctrlKey: true }));
+            held_with_cmd.clear();
+        } else if (held_with_cmd.delete(event.code)) {
+            event.stopImmediatePropagation();
+            canvas.dispatchEvent(as_ctrl(event));
+        }
+    }, true);
+    window.addEventListener("paste", function (event) {
+        if (!wasm_exports) return;
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        const pasted = (event.clipboardData || window.clipboardData).getData("text");
+        if (!pasted) return;
+        const len = new TextEncoder().encode(pasted).length;
+        const at = wasm_exports.allocate_vec_u8(len);
+        stringToUTF8(pasted, new Uint8Array(wasm_memory.buffer, at, len), 0, len);
+        wasm_exports.on_clipboard_paste(at, len);
+        // The paste key press, now that there is something to paste. (V is 86.)
+        wasm_exports.key_down(86, SAPP_MODIFIER_CTRL, false);
+        wasm_exports.key_up(86, SAPP_MODIFIER_CTRL);
+    }, true);
+
     miniquad_add_plugin({
         name: "gsim",
         version: 1,
         register_plugin: function (imports) {
             const env = imports.env;
+
+            // What the interface copies (Ctrl or Cmd + C, a selection) goes on the browser's
+            // clipboard at once: the script would only hand it over at the next copy.
+            const set_clipboard = env.sapp_set_clipboard;
+            env.sapp_set_clipboard = function (ptr, len) {
+                set_clipboard(ptr, len);
+                if (navigator.clipboard) navigator.clipboard.writeText(text(ptr, len)).catch(() => {});
+            };
 
             env.gsim_ws_open = function (ptr, len) {
                 // Nothing named: the server this page came from, next to the page.
