@@ -198,6 +198,13 @@ impl Pacer {
         self.reach = if grown > wanted { self.reach + 0.15 * (wanted - self.reach) } else { grown };
     }
 
+    /// Already where a world whose steps take `step_s` would settle, instead of working up to it
+    /// from short steps (for measuring what steps cost).
+    pub fn warmed(step_s: f64) -> Self {
+        let step_s = step_s.clamp(0.002, LONGEST_STEP);
+        Self { step_s, base_s: step_s, reach: step_s, last: 0.0 }
+    }
+
     /// How much real time's worth a step is being made to cover (s).
     pub fn reach(&self) -> f64 {
         self.reach

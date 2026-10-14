@@ -10,5 +10,5 @@ fn main() {
     for count in counts {
         println!("{name} {count:>9} bodies: {:6.2} ms per step", bench::step_ms(name, &Params::new(), count).unwrap());
     }
-    println!("{name}: about {} bodies fit a 60 Hz step", bench::suggest(name, &Params::new(), 1000.0 / 60.0 * 0.8).unwrap());
+    println!("{name}: about {} bodies fit a {} ms step", bench::suggest(name, &Params::new(), bench::STEP_BUDGET_MS).unwrap(), bench::STEP_BUDGET_MS);
 }

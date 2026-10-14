@@ -11,9 +11,6 @@ use gsim_swarm::scenario as large;
 use std::collections::BTreeMap;
 use std::thread::JoinHandle;
 
-/// Share of a 60 Hz step the suggested body count may take, leaving room for drawing.
-const BUDGET_MS: f64 = 1000.0 / 60.0 * 0.7;
-
 /// One tunable of either kind of world.
 struct Spec {
     key: &'static str,
@@ -145,7 +142,7 @@ impl SinglePlayer {
         let threads = crate::density::simulation_threads(settings.gpu);
         let handle = std::thread::Builder::new().name("gsim-measure".into()).spawn(move || {
             let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().map_err(|e| e.to_string())?;
-            pool.install(|| gsim_swarm::bench::suggest(name, &params, BUDGET_MS))
+            pool.install(|| gsim_swarm::bench::suggest(name, &params, gsim_swarm::bench::STEP_BUDGET_MS))
         });
         self.measuring = handle.ok().map(|h| (name.to_string(), h));
     }

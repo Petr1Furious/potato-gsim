@@ -103,8 +103,8 @@ fn main() {
         if args.bench {
             println!("kernels: {}, {} simulation threads", gsim_swarm::Level::detect().name(), rayon::current_num_threads());
             for sc in gsim_swarm::scenario::SCENARIOS {
-                match gsim_swarm::bench::suggest(sc.name, &Default::default(), 1000.0 / 60.0) {
-                    Ok(count) => println!("{:10} about {count} bodies at 60 steps per second", sc.name),
+                match gsim_swarm::bench::suggest(sc.name, &Default::default(), gsim_swarm::bench::STEP_BUDGET_MS) {
+                    Ok(count) => println!("{:10} about {count} bodies at {:.0} steps per second", sc.name, 1000.0 / gsim_swarm::bench::STEP_BUDGET_MS),
                     Err(e) => println!("{:10} {e}", sc.name),
                 }
             }
