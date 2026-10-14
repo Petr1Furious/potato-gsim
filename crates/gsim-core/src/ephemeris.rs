@@ -46,6 +46,7 @@ impl EphRow {
             radius: &self.props.radius,
             alive: &self.props.alive,
             pull: &self.props.pull,
+            fixed: &self.props.fixed,
         }
     }
 }

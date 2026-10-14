@@ -1,16 +1,20 @@
 //! The bases mode. Every player owns a base: a body that never moves, pushes other bodies
-//! away and pulls ships and shells in like a gas giant. Ships respawn around their own base
+//! away and pulls ships and shells in like a small gas giant (within its reach). Ships respawn around their own base
 //! while it stands; enemy shells, rams and siege orbits wear it down. A player whose base is
 //! gone is out once their ship is lost, and the last player in play wins the round.
 
 use super::*;
 
-/// What ships and shells feel: Jupiter.
-const BASE_PULL: f64 = 1.898e27;
-/// What other bodies feel: a push, enough to clear the neighbourhood of a base but (unlike a
-/// whole Jupiter of it) not to blow the world apart over a round.
-const BASE_MASS: f64 = -1.0e26;
-const BASE_RADIUS: f64 = 6.99e7;
+/// What ships and shells feel: about a third of Saturn, near the base (see [`REACH_RADII`]).
+const BASE_PULL: f64 = 2.0e26;
+/// What other bodies feel: a push, enough to clear the neighbourhood of a base but not to
+/// blow the world apart over a round.
+const BASE_MASS: f64 = -1.0e25;
+const BASE_RADIUS: f64 = 5.0e7;
+/// Ships feel a base in full this many base radii out, then less and less (to nothing at 1.41
+/// times as far): a ship circling some planet far away is not dragged off its orbit by bases
+/// the planet does not feel the same way. The siege band and the spawn orbit are well inside.
+const REACH_RADII: f64 = 100.0;
 /// Ships appear on a circular orbit this many base radii out: outside the siege band of an
 /// enemy, and a cheap burn away from leaving.
 const SPAWN_RADII: f64 = 40.0;
@@ -37,11 +41,14 @@ impl Authority {
     /// around the centre. Called with the new world's bodies, before it is built.
     pub(super) fn lay_bases(&mut self, sc: &mut Scenario) {
         self.bases.clear();
-        if self.mode != GameMode::Bases {
+        let bases = self.mode == GameMode::Bases;
+        self.rules.base_reach = if bases { REACH_RADII * BASE_RADIUS } else { 0.0 };
+        if !bases {
             return;
         }
         let owners: Vec<(PlayerId, String)> = self.players.values().filter(|p| !p.spectating).map(|p| (p.id, p.name.clone())).collect();
-        let (ring, n) = (sc.spawn_r.0, owners.len().max(1) as f64);
+        // Out where ships of the targets mode would spawn, as far apart as the world allows.
+        let (ring, n) = (sc.spawn_r.1, owners.len().max(1) as f64);
         let phase = self.rng.angle();
         for (k, (owner, name)) in owners.into_iter().enumerate() {
             let a = phase + std::f64::consts::TAU * k as f64 / n;

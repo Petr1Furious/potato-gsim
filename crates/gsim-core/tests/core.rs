@@ -410,3 +410,27 @@ fn a_base_stays_put_pushes_bodies_and_pulls_ships() {
     step_ship(&mut ship, ShipInput::default(), &fresh.view(), &r, &mut Scratch::default());
     assert!(ship.p.vx < 0.0, "a ship is pulled towards a base, not pushed");
 }
+
+#[test]
+fn a_base_pulls_ships_only_within_its_reach() {
+    let mut r = rules();
+    let mut s = MassiveState::from_bodies(&[body(0.0, 0.0, 0.0, 0.0, -2.0e26, 5.0e7)]);
+    s.anchor(0, 2.0e26);
+    s.ensure_acc(&r);
+    // How much one tick changes a particle at rest at `x`.
+    let kick = |x: f64, r: &GameRules| {
+        let mut p = Particle { x, y: 0.0, vx: 0.0, vy: 0.0 };
+        step_particle(&mut p, (0.0, 0.0), 1.0, &s.view(), r, &mut Scratch::default());
+        p.vx
+    };
+    let everywhere = [kick(1.0e9, &r), kick(1.3e9, &r), kick(3.0e9, &r)];
+    r.base_reach = 1.0e9;
+    let near = kick(0.9e9, &r);
+    r.base_reach = 0.0;
+    assert_eq!(near, kick(0.9e9, &r), "in full within the reach");
+    r.base_reach = 1.0e9;
+    let fading = kick(1.3e9, &r);
+    assert!(fading < 0.0 && fading > everywhere[1], "less beyond it: {fading} vs {}", everywhere[1]);
+    assert_eq!(kick(3.0e9, &r), 0.0, "and nothing far away");
+    assert!(everywhere.iter().all(|k| *k < 0.0));
+}

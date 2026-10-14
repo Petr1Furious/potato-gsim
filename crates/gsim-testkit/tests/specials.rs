@@ -1,6 +1,7 @@
 //! Special bodies in the bases mode: where they appear, what they give, and their comeback.
 
 use gsim_client_core::{Controls, Session};
+use gsim_core::objective::orbit_status;
 use gsim_core::{math, Body, Magazine, Particle, ShipState};
 use gsim_proto::{GameMode, PlayerId, SpecialKind, BASE_HP, REPAIR_HP};
 use gsim_server::scenario::{radius_from_mass, Scenario};
@@ -184,5 +185,30 @@ fn more_players_more_specials() {
     let specials = sim.server.specials();
     for kind in SpecialKind::ALL {
         assert_eq!(specials.iter().filter(|s| s.kind == kind).count(), 2, "{kind:?} with four players");
+    }
+}
+
+#[test]
+fn orbits_around_specials_keep_their_shape() {
+    // In a generated world, where the bases would drag a ship off a planet they do not pull
+    // the same way, if they reached that far.
+    for kind in SpecialKind::ALL {
+        let sc = gsim_server::scenario::build("random", 7, &Default::default()).unwrap();
+        let mut sim = Sim::new(sc, 7);
+        sim.server.set_rounds(0, 600, None);
+        sim.server.set_mode(GameMode::Bases);
+        let a = sim.add_client("ann", LINK);
+        sim.add_client("bob", LINK);
+        sim.run_with(1.0, idle);
+        let ann = sim.player_id(a).unwrap();
+        let slot = take(&mut sim, ann, kind) as usize;
+        // (Taking it changes nothing about the orbit: keep circling a while longer.)
+        sim.run_with(8.0, idle);
+        let m = &sim.server.massive;
+        assert!(m.alive[slot], "{kind:?}: the planet itself is gone");
+        let s = sim.server.ship(ann).expect("still circling").p;
+        let body = Particle { x: m.x[slot], y: m.y[slot], vx: m.vx[slot], vy: m.vy[slot] };
+        let o = orbit_status(&s, &body, m.pull[slot], m.radius[slot], &sim.server.rules);
+        assert!(o.bound && o.ecc < 0.03, "{kind:?}: {o:?}");
     }
 }

@@ -54,6 +54,8 @@ pub struct MassiveView<'a> {
     pub alive: &'a [bool],
     /// The mass ships and shells feel (see [`MassiveState::pull`]).
     pub pull: &'a [f64],
+    /// Bodies that never move (bases); ships feel them only within `GameRules::base_reach`.
+    pub fixed: &'a [bool],
 }
 
 /// Slots are stable for the lifetime of a match: merged bodies are tombstoned
@@ -366,6 +368,7 @@ impl MassiveState {
             radius: &self.radius,
             alive: &self.alive,
             pull: &self.pull,
+            fixed: &self.fixed,
         }
     }
 
@@ -653,6 +656,7 @@ impl MassiveState {
             radius: &self.radius,
             alive: &self.alive,
             pull: &self.pull,
+            fixed: &self.fixed,
         }
     }
 

@@ -69,7 +69,7 @@ const fn field(spread: f64, mass_max: f64, rotation: f64, star_mass: f64) -> [Pa
     ]
 }
 
-const RANDOM: [ParamSpec; 6] = field(5.0e10, 5.0e25, 0.7, 0.0);
+const RANDOM: [ParamSpec; 6] = field(2.0e10, 5.0e24, 0.7, 0.0);
 const REPULSOR: [ParamSpec; 7] = [
     RANDOM[0],
     RANDOM[1],

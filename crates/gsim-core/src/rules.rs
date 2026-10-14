@@ -67,6 +67,10 @@ pub struct GameRules {
     /// A target moves on to another body after this many ticks (0 = never). The count stands
     /// still while a ship is on a qualifying orbit around it.
     pub target_ticks: u32,
+    /// Ships and shells feel a fixed body (a base) in full up to this distance from it, less
+    /// and less beyond, and not at all from 1.41 times as far (0 = everywhere). Orbits around
+    /// bodies far from the bases are then left alone.
+    pub base_reach: f64,
 }
 
 impl GameRules {
@@ -116,6 +120,7 @@ impl GameRules {
             kill_points: 2,
             death_points: 1,
             target_ticks: secs(90.0),
+            base_reach: 0.0,
         }
     }
 

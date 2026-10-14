@@ -124,7 +124,9 @@ fn matching(pool: Vec<String>, partial: &str, quoted: bool) -> Vec<String> {
 fn command_line(input: &str, ctx: &Context) -> Analysis {
     let mut a = Analysis::default();
     let ws = words(input);
-    let trailing_space = input.ends_with(char::is_whitespace);
+    // A space inside an open quote belongs to the name being typed.
+    let open_quote = input.matches('"').count() % 2 == 1;
+    let trailing_space = input.ends_with(char::is_whitespace) && !open_quote;
     let Some(first) = ws.first() else { return a };
 
     // Still typing the command name.
@@ -353,6 +355,12 @@ mod tests {
         assert_eq!(an("/orbit s").suggestions, ["Saturn", "Sun"]);
         assert_eq!(an("/tp \"an").suggestions, ["\"Ann Droid\""]);
         assert_eq!(apply("/tp \"an", 4, "\"Ann Droid\""), "/tp \"Ann Droid\"");
+        // A space inside the quote is part of the name.
+        let a = an("/tp \"ann ");
+        assert_eq!((a.suggestions, a.start, a.error), (vec!["\"Ann Droid\"".to_string()], 4, None));
+        assert_eq!(suffix("/tp \"ann ", 4, "\"Ann Droid\""), Some("Droid\""));
+        assert_eq!(an("/tp \"Ann D").suggestions, ["\"Ann Droid\""]);
+        assert_eq!(an("/msg \"Ann Droid\" ").usage, None, "closed: on to the message");
         assert_eq!(an("/orbit \"Ann Droid\" sa").suggestions, ["Saturn"]);
 
         // Nothing to suggest: the grey hint lists what is still expected from here.

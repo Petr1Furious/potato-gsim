@@ -36,12 +36,14 @@ struct Met<W: Wide> {
     radius: W,
     /// 1 for a body that is there, 0 for one that is gone.
     alive: W,
+    /// One over the squared reach of a base, 0 for any other body (see `GameRules::base_reach`).
+    fade: W,
 }
 
 impl<W: Wide> Met<W> {
     /// Those from slot `j` on.
     #[inline(always)]
-    fn at(view: &MassiveView, j: usize) -> Self {
+    fn at(view: &MassiveView, j: usize, fade: f64) -> Self {
         Self {
             x: W::load(&view.x[j..]),
             y: W::load(&view.y[j..]),
@@ -53,6 +55,7 @@ impl<W: Wide> Met<W> {
             mass: W::load(&view.pull[j..]),
             radius: W::load(&view.radius[j..]),
             alive: W::flags(&view.alive[j..]),
+            fade: W::flags(&view.fixed[j..]) * W::splat(fade),
         }
     }
 }
@@ -99,12 +102,12 @@ fn need_body<L: Wide>(p: &Particle, view: &MassiveView, rules: &GameRules) -> f6
     let mut most = L::splat(0.0);
     let mut j = 0;
     while j + LANES <= n {
-        most = larger(most, asks(p, &Met::<L>::at(view, j), &f));
+        most = larger(most, asks(p, &Met::<L>::at(view, j, 0.0), &f));
         j += LANES;
     }
     let mut each = [0.0f64; LANES];
     most.store(&mut each);
-    (j..n).map(|j| asks(p, &Met::<f64>::at(view, j), &f)).chain(each).fold(0.0, larger)
+    (j..n).map(|j| asks(p, &Met::<f64>::at(view, j, 0.0), &f)).chain(each).fold(0.0, larger)
 }
 
 widest! {
@@ -135,6 +138,8 @@ struct Moment {
     eps2: f64,
     /// The first moment of the tick: there is no earlier position to sweep from.
     first: bool,
+    /// One over the squared reach of a base.
+    fade: f64,
 }
 
 /// The particle relative to bodies, their pull on it (to be taken away), and whether it
@@ -167,7 +172,10 @@ fn against<W: Wide>(m: &Moment, b: &Met<W>, r0x: W, r0y: W) -> (W, W, W, W, W::M
         W::or(W::and(start, from2.le(reach2)), W::and(W::not(start), inside))
     };
     let inv = W::splat(1.0) / (d2 + W::splat(m.eps2)).sqrt();
-    let f = W::splat(m.g) * b.mass * inv * inv * inv;
+    // Beyond its reach a base pulls less and less, down to nothing (from 2 reach² on).
+    let (one, k) = (W::splat(1.0), W::splat(2.0) - d2 * b.fade);
+    let k = W::pick(k.gt(one), one, W::pick(zero.gt(k), zero, k));
+    let f = W::splat(m.g) * b.mass * inv * inv * inv * k;
     (rx, ry, rx * f, ry * f, W::and(b.alive.gt(zero), hit))
 }
 
@@ -180,7 +188,7 @@ fn pulls_body<L: Wide>(m: &Moment, view: &MassiveView, scratch: &mut Scratch) ->
     let mut any = false;
     let mut j = 0;
     while j + LANES <= n {
-        let (rx, ry, fx, fy, touched) = against(m, &Met::<L>::at(view, j), L::load(&scratch.rx[j..]), L::load(&scratch.ry[j..]));
+        let (rx, ry, fx, fy, touched) = against(m, &Met::<L>::at(view, j, m.fade), L::load(&scratch.rx[j..]), L::load(&scratch.ry[j..]));
         rx.store(&mut scratch.nx[j..]);
         ry.store(&mut scratch.ny[j..]);
         wx = wx + fx;
@@ -192,7 +200,7 @@ fn pulls_body<L: Wide>(m: &Moment, view: &MassiveView, scratch: &mut Scratch) ->
     wx.store(&mut sx);
     wy.store(&mut sy);
     for j in j..n {
-        let (rx, ry, fx, fy, touched) = against(m, &Met::<f64>::at(view, j), scratch.rx[j], scratch.ry[j]);
+        let (rx, ry, fx, fy, touched) = against(m, &Met::<f64>::at(view, j, m.fade), scratch.rx[j], scratch.ry[j]);
         (scratch.nx[j], scratch.ny[j]) = (rx, ry);
         sx[j % LANES] += fx;
         sy[j % LANES] += fy;
@@ -218,10 +226,11 @@ fn accel_and_sweep(
     scratch: &mut Scratch,
     first: bool,
 ) -> (f64, f64, Option<u32>) {
-    let m = Moment { px, py, tau, radius, g: rules.g, eps2: rules.particle_softening * rules.particle_softening, first };
+    let fade = if rules.base_reach > 0.0 { 1.0 / (rules.base_reach * rules.base_reach) } else { 0.0 };
+    let m = Moment { px, py, tau, radius, g: rules.g, eps2: rules.particle_softening * rules.particle_softening, first, fade };
     let (ax, ay, any) = pulls(&m, view, scratch);
     // Rare: which one, then.
-    let hit = if any { (0..view.x.len()).find(|&j| against(&m, &Met::<f64>::at(view, j), scratch.rx[j], scratch.ry[j]).4).map(|j| j as u32) } else { None };
+    let hit = if any { (0..view.x.len()).find(|&j| against(&m, &Met::<f64>::at(view, j, m.fade), scratch.rx[j], scratch.ry[j]).4).map(|j| j as u32) } else { None };
     std::mem::swap(&mut scratch.rx, &mut scratch.nx);
     std::mem::swap(&mut scratch.ry, &mut scratch.ny);
     (ax, ay, hit)

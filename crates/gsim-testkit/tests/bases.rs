@@ -111,7 +111,7 @@ fn shells_rams_and_sieges_wear_a_base_down() {
     let (mut sim, a, _, ann, bob) = duel(2);
 
     // A shell dropped straight onto bob's base from outside the siege band.
-    let r = 6.0e9;
+    let r = 4.0e9;
     let p = orbit_around(&sim, bob, r);
     place(&mut sim, ann, p);
     let speed = 8000.0f64;
@@ -247,7 +247,7 @@ fn shells_and_rams_hurt_ones_own_base_too() {
     let (shell, ram, _) = DAMAGE;
     let (mut sim, a, _, ann, _) = duel(7);
     // A shell dropped straight onto ann's own base.
-    let p = orbit_around(&sim, ann, 6.0e9);
+    let p = orbit_around(&sim, ann, 4.0e9);
     place(&mut sim, ann, p);
     let speed = 8000.0f64;
     let angle = math::dir_to_angle(-(speed * speed - p.vy * p.vy).sqrt(), -p.vy);
