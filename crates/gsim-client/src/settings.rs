@@ -265,15 +265,49 @@ impl Settings {
     }
 }
 
+/// What a copied player starts with: the rest is `<key>:<colour>:<name>`, the first two in hex.
+const PLAYER_PREFIX: &str = "gsim1:";
+
 impl Settings {
-    /// Use another key from now on: one copied from another copy of the game (the program or
-    /// a browser), which then plays as the same player. False if `secret` is not a key.
-    pub fn adopt_identity(&self, secret: &str) -> bool {
-        use gsim_proto::identity::{from_hex, to_hex};
-        let Some(secret) = from_hex(secret) else { return false };
-        keep("identity.key", &to_hex(&secret), true);
+    /// This player in one line, to be copied into the game elsewhere (the program, a browser):
+    /// the key, the ship's colour and the name.
+    pub fn exported(&self) -> String {
+        use gsim_proto::identity::to_hex;
+        format!("{PLAYER_PREFIX}{}:{}:{}", to_hex(&self.identity().secret()), to_hex(&self.ship_color), self.name)
+    }
+
+    /// Become the player in `text` (see [`player`]). Their key is used from the next game on.
+    /// False if `text` is not a player.
+    pub fn adopt(&mut self, text: &str) -> bool {
+        let Some(Copied { secret, color, name }) = player(text) else { return false };
+        keep("identity.key", &gsim_proto::identity::to_hex(&secret), true);
+        if let Some(color) = color {
+            self.ship_color = gsim_proto::visible_color(color);
+        }
+        if let Some(name) = name.filter(|name| !name.is_empty()) {
+            self.name = name;
+        }
         true
     }
+}
+
+/// A player copied from the game elsewhere.
+pub struct Copied {
+    pub secret: [u8; 32],
+    pub color: Option<[u8; 3]>,
+    pub name: Option<String>,
+}
+
+/// The player in `text`: a line from [`Settings::exported`], or a bare key (with no name or
+/// colour to go with it).
+pub fn player(text: &str) -> Option<Copied> {
+    use gsim_proto::identity::from_hex;
+    let text = text.trim();
+    let Some(rest) = text.strip_prefix(PLAYER_PREFIX) else { return Some(Copied { secret: from_hex(text)?, color: None, name: None }) };
+    let mut parts = rest.splitn(3, ':');
+    let (secret, color, name) = (from_hex(parts.next()?)?, parts.next()?, parts.next()?);
+    let color = u32::from_str_radix(color, 16).ok().filter(|_| color.len() == 6)?;
+    Some(Copied { secret, color: Some([(color >> 16) as u8, (color >> 8) as u8, color as u8]), name: Some(gsim_proto::clean_name(name)) })
 }
 
 impl Settings {
@@ -287,5 +321,24 @@ impl Settings {
         let identity = gsim_proto::Identity::generate();
         keep("identity.key", &to_hex(&identity.secret()), true);
         identity
+    }
+}
+
+#[cfg(test)]
+mod copied_players {
+    use super::*;
+
+    #[test]
+    fn a_copied_player_brings_key_colour_and_name() {
+        let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let Copied { secret, color, name } = player(&format!(" gsim1:{key}:ff8040:Ann: the second ")).unwrap();
+        assert_eq!(gsim_proto::identity::to_hex(&secret), key);
+        assert_eq!(color, Some([0xff, 0x80, 0x40]));
+        assert_eq!(name.as_deref(), Some("Ann: the second"));
+        // A bare key, as copied before: only the key.
+        assert!(player(key).is_some_and(|p| p.color.is_none() && p.name.is_none()));
+        for wrong in ["", "gsim1:", "gsim1:abc:ff8040:Ann", &format!("gsim1:{key}:ff80:Ann"), &format!("gsim1:{key}:ff8040"), "Ann"] {
+            assert!(player(wrong).is_none(), "{wrong:?}");
+        }
     }
 }

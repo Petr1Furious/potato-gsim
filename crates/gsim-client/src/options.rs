@@ -100,7 +100,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     );
     }
     if world == World::Any {
-        player_key(ui, settings);
+        transfer(ui, settings);
     }
     style::section(ui, "GRAPHICS");
     ui.checkbox(&mut settings.gpu, "GPU drawing").on_hover_text(
@@ -157,10 +157,11 @@ fn copy(ui: &egui::Ui, text: &str) {
     ui.ctx().copy_text(text.to_string());
 }
 
-/// The player's key: what makes them the same player in the program and in a browser, or on
-/// another machine. Copied out of one and pasted into the other.
-fn player_key(ui: &mut egui::Ui, settings: &Settings) {
-    use gsim_proto::identity::{fingerprint, from_hex, to_hex};
+/// The player as a whole (name, ship colour and key: the key is what makes them the same
+/// player in the program and in a browser, or on another machine), copied out of one copy of
+/// the game and pasted into another.
+fn transfer(ui: &mut egui::Ui, settings: &mut Settings) {
+    use gsim_proto::identity::fingerprint;
     style::section(ui, "PLAYER KEY");
     // (What is shown and what has been typed, kept from frame to frame.)
     let (shown_id, entry_id) = (ui.id().with("key shown"), ui.id().with("key entry"));
@@ -168,22 +169,25 @@ fn player_key(ui: &mut egui::Ui, settings: &Settings) {
     let mut entry = ui.data_mut(|d| d.get_temp::<String>(entry_id)).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.label(format!("key {shown}")).on_hover_text(
-            "Your names on servers belong to this key. Copy it into the game elsewhere (the program, a browser) to play there as the same player.",
+            "Your names on servers belong to this key. Copy it, with your name and colour, into the game elsewhere (the program, a browser) to play there as the same player.",
         );
-        if ui.small_button("Copy").on_hover_text("Anyone with your key can play as you: keep it to yourself.").clicked() {
-            copy(ui, &to_hex(&settings.identity().secret()));
+        if ui.small_button("Copy").on_hover_text("Your name, colour and key. Anyone with your key can play as you: keep it to yourself.").clicked() {
+            copy(ui, &settings.exported());
         }
     });
-    let valid = from_hex(&entry).is_some();
+    let mut adopted = false;
     ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut entry).desired_width(200.0).hint_text("paste a key here"));
-        if ui.add_enabled(valid, egui::Button::new("Use")).on_hover_text("Play as the player that key belongs to, from the next game on. Your current key is replaced.").clicked() && settings.adopt_identity(&entry) {
-            entry.clear();
-            ui.data_mut(|d| d.remove::<String>(shown_id));
-            return;
-        }
-        ui.data_mut(|d| d.insert_temp(shown_id, shown.clone()));
+        ui.add(egui::TextEdit::singleline(&mut entry).desired_width(200.0).hint_text("paste a copied player"));
+        let valid = crate::settings::player(&entry).is_some();
+        let use_it = ui.add_enabled(valid, egui::Button::new("Use")).on_hover_text("Become that player: their name and colour now, their key from the next game on. Your current key is replaced.");
+        adopted = use_it.clicked() && settings.adopt(&entry);
     });
+    if adopted {
+        entry.clear();
+        ui.data_mut(|d| d.remove::<String>(shown_id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(shown_id, shown));
+    }
     ui.data_mut(|d| d.insert_temp(entry_id, entry));
 }
 
