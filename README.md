@@ -8,13 +8,13 @@ running 86 400x faster than real time.
 ```sh
 # Server (default: 1000-body random field, 10-minute rounds, UDP 27777)
 cargo run --release -p gsim-server -- --preset random
-cargo run --release -p gsim-server -- --preset disc --set count=400 --set spread=80Gm
+cargo run --release -p gsim-server -- --preset repulsor --set count=400 --set spread=80Gm
 cargo run --release -p gsim-server -- --list-presets     # every preset with its parameters
 
 # Client (macOS / Linux / Windows; no extra system packages needed on macOS)
 cargo run --release -p gsim-client                       # menu
 cargo run --release -p gsim-client -- --connect my.host  # join directly
-cargo run --release -p gsim-client -- --solo solar       # single player, in-process server
+cargo run --release -p gsim-client -- --solo random      # single player, in-process server
 cargo run --release -p gsim-client -- --solo galaxy --set count=300000   # large-scale sandbox
 cargo run --release -p gsim-client -- --bench            # how many bodies this machine holds
 cargo run --release -p gsim-client -- --selftest         # check this machine can stay in sync
@@ -71,8 +71,8 @@ upgrades through.
 ## The game
 
 You fly a ship with a 20 km/s delta-v budget (it refills after a few seconds of coasting)
-through a system of moving, merging bodies (try the `disc` or `solar` presets for orbital
-speeds several times that budget). Score by:
+through a system of moving, merging bodies (a heavier `star_mass` makes orbital speeds
+several times that budget). Score by:
 
 - **Holding an orbit** around a marked target body for 10 s (+5): eccentricity at most 0.5,
   lowest point at least 1.5 body radii, highest point within 60. The top-left panel shows
@@ -273,8 +273,8 @@ cargo test --workspace
 - `gsim-core`: merges and negative-mass annihilation, thread-count-independent hashes,
   snapshot continuity, low-orbit stability, anti-tunnelling, prediction equals reality
   bit for bit, golden self-test.
-- `gsim-server`: every preset runs; the solar system keeps all orbits (and the Moon) for two
-  simulated years; the figure-eight returns to its start; the runaway pair accelerates.
+- `gsim-server`: every preset runs, at its defaults and at the extremes of its parameters;
+  the repulsor's negative bodies stay finite.
 - `gsim-swarm`: forces against exact sums on every instruction set the machine has, the
   pairwise and precise modes, a moon and a planet around a pair of stars on steps of their
   own, close passes that fling nothing away, merges conserving mass and

@@ -70,7 +70,6 @@ const fn field(spread: f64, mass_max: f64, rotation: f64, star_mass: f64) -> [Pa
 }
 
 const RANDOM: [ParamSpec; 6] = field(5.0e10, 5.0e25, 0.7, 0.0);
-const DISC: [ParamSpec; 6] = field(6.0e10, 2.0e26, 1.0, 5.0e29);
 const REPULSOR: [ParamSpec; 7] = [
     RANDOM[0],
     RANDOM[1],
@@ -83,45 +82,7 @@ const REPULSOR: [ParamSpec; 7] = [
 
 pub const PRESETS: &[Preset] = &[
     Preset { name: "random", about: "Rotating field of many bodies that clump and merge (default)", params: &RANDOM },
-    Preset { name: "disc", about: "A star ringed by a crowded disc of orbiting bodies", params: &DISC },
-    Preset {
-        name: "solar",
-        about: "Sun, eight planets and the Moon",
-        params: &[
-            log("star_mass", "Sun mass", "Mass of the Sun; the planets are put on circular orbits around it", "kg", SUN_MASS, 2.0e29, 5.0e30),
-            log("scale", "Orbit scale", "Multiplies every orbit radius, the Moon's included", "", 1.0, 0.2, 5.0),
-            count("moons", "Moon", "1 gives Earth its Moon, 0 leaves it out", 1.0, 0.0, 1.0),
-        ],
-    },
-    Preset {
-        name: "binary",
-        about: "Two stars with a shared debris ring",
-        params: &[
-            log("star_mass", "Star mass", "Mass of each of the two stars", "kg", 1.15e30, 1.0e29, 1.0e31),
-            log("separation", "Separation", "Distance between the stars; the debris ring scales with it", "m", 2.8e11, 4.0e10, 2.0e12),
-            count("debris", "Debris", "Bodies in the ring around both stars", 300.0, 0.0, 4000.0),
-        ],
-    },
-    Preset {
-        name: "figure8",
-        about: "Three equal stars chasing each other along a figure-eight",
-        params: &[
-            log("star_mass", "Star mass", "Mass of each of the three stars", "kg", 1.0e30, 1.0e28, 1.0e31),
-            log("size", "Size", "Half-width of the figure-eight; the spectators' orbits scale with it", "m", 1.0e11, 2.0e10, 1.0e12),
-            count("spectators", "Spectators", "Featherweight bodies orbiting outside the dance", 60.0, 0.0, 4000.0),
-        ],
-    },
     Preset { name: "repulsor", about: "Random field where a quarter of the bodies have negative mass", params: &REPULSOR },
-    Preset {
-        name: "runaway",
-        about: "Star system crossed by a self-accelerating positive/negative pair",
-        params: &[
-            log("star_mass", "Star mass", "Mass of the central star", "kg", 1.5e30, 1.0e29, 1.0e31),
-            count("planets", "Planets", "Planets on widening orbits around the star", 9.0, 0.0, 12.0),
-            count("debris", "Debris", "Small bodies in the belt between the planets", 120.0, 0.0, 4000.0),
-            log("pair_mass", "Pair mass", "Mass of each half of the runaway pair (one positive, one negative)", "kg", 2.0e27, 1.0e24, 1.0e29),
-        ],
-    },
 ];
 
 pub fn preset(name: &str) -> Option<&'static Preset> {
@@ -228,24 +189,13 @@ fn body(x: f64, y: f64, vx: f64, vy: f64, mass: f64, radius: f64) -> Body {
     Body { x, y, vx, vy, mass, radius }
 }
 
-/// Body on a counter-clockwise circular orbit of radius `r` around a central mass at rest.
-fn orbiting(central_mass: f64, r: f64, phase: f64, mass: f64, radius: f64) -> Body {
-    let v = (G * central_mass / r).sqrt();
-    let (s, c) = phase.sin_cos();
-    body(r * c, r * s, -v * s, v * c, mass, radius)
-}
-
 pub fn build(preset: &str, seed: u64, params: &Params) -> Result<Scenario, String> {
     validate(preset, params)?;
     let v = Values { preset: known_preset(preset)?, params };
     let mut rng = Rng::new(seed);
     let mut sc = match preset {
-        "random" | "disc" => random_field(&mut rng, &v, 0.0),
+        "random" => random_field(&mut rng, &v, 0.0),
         "repulsor" => random_field(&mut rng, &v, v.get("negative")),
-        "solar" => solar(&mut rng, &v),
-        "binary" => binary(&mut rng, &v),
-        "figure8" => figure8(&mut rng, &v),
-        "runaway" => runaway(&mut rng, &v),
         other => unreachable!("preset {other} is in the table but has no generator"),
     };
     debug_assert!(sc.bodies.len() <= MAX_BODIES);
@@ -311,112 +261,6 @@ fn remove_net_momentum(bodies: &mut [Body]) {
         b.vx -= px / m;
         b.vy -= py / m;
     }
-}
-
-const SUN_MASS: f64 = 1.98847e30;
-const SUN_RADIUS: f64 = 6.9634e8;
-/// name, orbit radius (m), mass (kg), radius (m)
-const PLANETS: &[(&str, f64, f64, f64)] = &[
-    ("Mercury", 5.790905e10, 3.3011e23, 2.4397e6),
-    ("Venus", 1.08208e11, 4.8675e24, 6.0518e6),
-    ("Earth", 1.49598e11, 5.97237e24, 6.371e6),
-    ("Mars", 2.27939e11, 6.4171e23, 3.3895e6),
-    ("Jupiter", 7.7857e11, 1.8982e27, 6.9911e7),
-    ("Saturn", 1.43353e12, 5.6834e26, 5.8232e7),
-    ("Uranus", 2.87246e12, 8.6810e25, 2.5362e7),
-    ("Neptune", 4.49506e12, 1.02413e26, 2.4622e7),
-];
-
-fn solar(rng: &mut Rng, v: &Values) -> Scenario {
-    let (sun, scale, moons) = (v.get("star_mass"), v.get("scale"), v.count("moons"));
-    let mut bodies = vec![body(0.0, 0.0, 0.0, 0.0, sun, SUN_RADIUS)];
-    let mut names = vec![(0, "Sun".to_string())];
-    for (name, r, mass, radius) in PLANETS {
-        let planet = orbiting(sun, *r * scale, rng.angle(), *mass, *radius);
-        names.push((bodies.len() as u32, name.to_string()));
-        bodies.push(planet);
-        if *name == "Earth" && moons > 0 {
-            // Scaled with the orbits, the Moon stays as deep inside Earth's Hill sphere.
-            let d = 3.844e8 * scale;
-            let mut moon = orbiting(*mass, d, rng.angle(), 7.342e22, 1.7371e6);
-            moon.x += planet.x;
-            moon.y += planet.y;
-            moon.vx += planet.vx;
-            moon.vy += planet.vy;
-            names.push((bodies.len() as u32, "Moon".to_string()));
-            bodies.push(moon);
-        }
-    }
-    remove_net_momentum(&mut bodies);
-    Scenario { name: String::new(), bodies, names, spawn_r: (1.7e11 * scale, 2.1e11 * scale) }
-}
-
-fn binary(rng: &mut Rng, v: &Values) -> Scenario {
-    let m = v.get("star_mass");
-    let half = v.get("separation") / 2.0;
-    // The ring was laid out for stars 1.4e11 m from the centre.
-    let k = half / 1.4e11;
-    // Equal masses on a common circular orbit: v^2 / half = G m / (2 half)^2.
-    let speed = (G * m / (4.0 * half)).sqrt();
-    let mut bodies = vec![
-        body(-half, 0.0, 0.0, -speed, m, 6.5e8),
-        body(half, 0.0, 0.0, speed, m, 6.5e8),
-    ];
-    for _ in 0..v.count("debris") {
-        let mass = rng.log_range(2.0e22, 4.0e25);
-        let r = rng.range(4.5e11 * k, 2.0e12 * k);
-        bodies.push(orbiting(2.0 * m, r, rng.angle(), mass, radius_from_mass(mass)));
-    }
-    let names = vec![(0, "Castor".to_string()), (1, "Pollux".to_string())];
-    Scenario { name: String::new(), bodies, names, spawn_r: (5.0e11 * k, 8.0e11 * k) }
-}
-
-fn figure8(rng: &mut Rng, v: &Values) -> Scenario {
-    // Chenciner-Montgomery choreography in units G = m = 1, scaled to stellar sizes.
-    let (m, l) = (v.get("star_mass"), v.get("size"));
-    // The spectators' orbits were laid out for a size of 1e11 m.
-    let k = l / 1.0e11;
-    let vu = (G * m / l).sqrt();
-    let (x1, y1) = (0.97000436 * l, -0.24308753 * l);
-    let (v3x, v3y) = (-0.93240737 * vu, -0.86473146 * vu);
-    let mut bodies = vec![
-        body(x1, y1, -0.5 * v3x, -0.5 * v3y, m, 7.0e8),
-        body(-x1, -y1, -0.5 * v3x, -0.5 * v3y, m, 7.0e8),
-        body(0.0, 0.0, v3x, v3y, m, 7.0e8),
-    ];
-    // Featherweight spectators: scenery that cannot disturb the dance.
-    for _ in 0..v.count("spectators") {
-        let mass = rng.log_range(1.0e14, 1.0e17);
-        let r = rng.range(3.5e11 * k, 9.0e11 * k);
-        bodies.push(orbiting(3.0 * m, r, rng.angle(), mass, 2.0e6 + rng.f64() * 6.0e6));
-    }
-    let names = vec![(0, "Alpha".to_string()), (1, "Beta".to_string()), (2, "Gamma".to_string())];
-    Scenario { name: String::new(), bodies, names, spawn_r: (3.0e11 * k, 4.5e11 * k) }
-}
-
-fn runaway(rng: &mut Rng, v: &Values) -> Scenario {
-    let star = v.get("star_mass");
-    let mut bodies = vec![body(0.0, 0.0, 0.0, 0.0, star, 6.5e8)];
-    let mut names = vec![(0, "Anchor".to_string())];
-    for i in 0..v.count("planets") as i32 {
-        let mass = rng.log_range(5.0e23, 2.0e27);
-        let r = 6.0e10 * 1.55f64.powi(i);
-        bodies.push(orbiting(star, r, rng.angle(), mass, radius_from_mass(mass)));
-    }
-    for _ in 0..v.count("debris") {
-        let mass = rng.log_range(1.0e19, 1.0e22);
-        let r = rng.range(3.0e11, 4.2e11);
-        bodies.push(orbiting(star, r, rng.angle(), mass, radius_from_mass(mass)));
-    }
-    // A positive body is repelled by its negative twin, which in turn is attracted to it:
-    // the pair accelerates forever along the line joining them.
-    let m = v.get("pair_mass");
-    let (sep, y) = (2.5e9, 2.6e11);
-    names.push((bodies.len() as u32, "Hare".to_string()));
-    bodies.push(body(-9.0e11, y, 0.0, 0.0, m, radius_from_mass(m)));
-    names.push((bodies.len() as u32, "Hound".to_string()));
-    bodies.push(body(-9.0e11 - sep, y, 0.0, 0.0, -m, radius_from_mass(m)));
-    Scenario { name: String::new(), bodies, names, spawn_r: (1.2e11, 2.2e11) }
 }
 
 impl Scenario {

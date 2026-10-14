@@ -229,13 +229,12 @@ fn world_control() {
     assert!(errors(&sim.clients[a].session).last().unwrap().starts_with("usage: /targets"));
     assert_eq!(sim.server.target_plan, TargetPlan::PerPlayers(4));
 
-    say(&mut sim, a, "/preset solar seed=7");
+    say(&mut sim, a, "/preset repulsor seed=7");
     sim.run_with(1.5, idle);
-    assert_eq!(sim.server.massive.len(), 10);
+    assert_eq!(sim.server.massive.len(), 1000);
     let w = sim.clients[b].session.world.as_ref().unwrap();
-    assert_eq!(w.preset, "solar");
-    assert_eq!(w.names.get(&0).map(String::as_str), Some("Sun"));
-    assert!(system(&sim.clients[b].session).iter().any(|l| l == "ann switched the world to solar (seed=7)"));
+    assert_eq!(w.preset, "repulsor");
+    assert!(system(&sim.clients[b].session).iter().any(|l| l == "ann switched the world to repulsor (seed=7)"));
     say(&mut sim, a, "/preset nowhere");
     assert!(errors(&sim.clients[a].session).last().unwrap().starts_with("unknown preset"));
 
@@ -278,20 +277,20 @@ fn presets_take_settings() {
     assert_eq!(last_error(&sim), "expected key=value, got '7'");
     say(&mut sim, a, "/preset random seed=x");
     assert_eq!(last_error(&sim), "seed='x' is not a whole number");
-    say(&mut sim, a, "/preset solar count=50");
-    assert!(last_error(&sim).starts_with("preset solar has no parameter 'count'"));
+    say(&mut sim, a, "/preset random negative=0.5");
+    assert!(last_error(&sim).starts_with("preset random has no parameter 'negative'"));
     assert_eq!((sim.server.round(), sim.server.massive.len()), (round, 50));
 
     // Settings last for the following rounds, until the next /preset puts the defaults back.
-    say(&mut sim, a, "/preset disc count=40 spread=80Gm");
+    say(&mut sim, a, "/preset repulsor count=40 spread=80Gm");
     say(&mut sim, a, "/round new");
     sim.run_with(1.5, idle);
     assert_eq!(sim.server.massive.len(), 40);
-    assert_eq!(sim.clients[b].session.world.as_ref().unwrap().preset, "disc");
-    say(&mut sim, a, "/preset binary");
+    assert_eq!(sim.clients[b].session.world.as_ref().unwrap().preset, "repulsor");
+    say(&mut sim, a, "/preset random");
     sim.run_with(1.5, idle);
-    assert_eq!(sim.server.massive.len(), 302);
-    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "ann switched the world to binary");
+    assert_eq!(sim.server.massive.len(), 1000);
+    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "ann switched the world to random");
     assert_eq!(sim.clients[b].session.stats.hash_mismatches, 0);
 }
 
