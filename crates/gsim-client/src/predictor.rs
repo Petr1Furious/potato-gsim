@@ -34,7 +34,7 @@ pub struct Job {
 }
 
 /// Paths as offsets from the reference body at each point's own tick (absolute if none).
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Paths {
     pub ref_slot: Option<u32>,
     pub coast: Vec<(f64, f64)>,
@@ -57,14 +57,21 @@ pub struct Predictor {
     rx: Receiver<Paths>,
     busy: bool,
     pub latest: Paths,
+    /// Predictions finished so far.
+    pub made: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
 pub struct Predictor {
-    /// The prediction being worked out, if it is not finished.
+    /// While the worker beside the page makes the predictions: how many it has been asked
+    /// for and not answered yet.
+    remote: Option<u32>,
+    /// Otherwise, the prediction being worked out here, if it is not finished.
     doing: Option<Doing>,
     kept: Option<Coast>,
     pub latest: Paths,
+    /// Predictions finished so far.
+    pub made: u64,
 }
 
 fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
@@ -104,7 +111,7 @@ fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
 }
 
 /// The coasting path worked out last time, tick by tick from `start`.
-struct Coast {
+pub struct Coast {
     reader: EphReader,
     start: Tick,
     states: Vec<ShipState>,
@@ -178,7 +185,7 @@ impl<S> Walk<S> {
 }
 
 /// A prediction under way.
-struct Doing {
+pub struct Doing {
     job: Job,
     coast: Option<Path>,
     held: Walk<ShipState>,
@@ -188,14 +195,14 @@ struct Doing {
 }
 
 impl Doing {
-    fn new(job: Job) -> Self {
+    pub fn new(job: Job) -> Self {
         let held = Walk::new(job.ship, job.start, (job.ship.p.x, job.ship.p.y));
         let shell = job.shell.map(|p| Walk::new(p, job.start, (p.x, p.y)));
         Self { job, coast: None, held, shell, spent: 0.0 }
     }
 
     /// Work on it until `until` (seconds on [`crate::fmt::now`]): the paths, once whole.
-    fn go(&mut self, kept: &mut Option<Coast>, until: f64) -> Option<Paths> {
+    pub fn go(&mut self, kept: &mut Option<Coast>, until: f64) -> Option<Paths> {
         let t0 = crate::fmt::now();
         let whole = self.paths(kept, until);
         self.spent += (crate::fmt::now() - t0) * 1e3;
@@ -260,21 +267,39 @@ impl Doing {
 #[cfg(target_arch = "wasm32")]
 impl Predictor {
     pub fn new() -> Self {
-        Self { doing: None, kept: None, latest: Paths::default() }
+        Self { remote: crate::worker::working().then_some(0), doing: None, kept: None, latest: Paths::default(), made: 0 }
     }
 
     /// Go on with the prediction under way for the `spare` seconds this frame has (and for a
     /// millisecond at least: it has to get done). True when a new job may be handed in.
     pub fn poll(&mut self, spare: f64) -> bool {
+        if !crate::worker::working() {
+            self.remote = None;
+        }
+        if let Some(asked) = &mut self.remote {
+            for answer in crate::worker::answers() {
+                *asked = asked.saturating_sub(1);
+                if let Some(paths) = answer {
+                    (self.latest, self.made) = (paths, self.made + 1);
+                }
+            }
+            // One being made and the next waiting: the worker goes from one to the next.
+            return *asked < 2;
+        }
         if let Some(doing) = &mut self.doing {
             if let Some(paths) = doing.go(&mut self.kept, crate::fmt::now() + spare.clamp(0.001, 0.012)) {
-                (self.latest, self.doing) = (paths, None);
+                (self.latest, self.doing, self.made) = (paths, None, self.made + 1);
             }
         }
         self.doing.is_none()
     }
 
     pub fn submit(&mut self, job: Job) {
+        if let Some(asked) = &mut self.remote {
+            crate::worker::predict(&job);
+            *asked += 1;
+            return;
+        }
         self.doing = Some(Doing::new(job));
     }
 
@@ -300,7 +325,7 @@ impl Predictor {
                 }
             })
             .expect("spawn predictor thread");
-        Self { tx, rx, busy: false, latest: Paths::default() }
+        Self { tx, rx, busy: false, latest: Paths::default(), made: 0 }
     }
 
     /// Collect a finished result, if any. Returns true when the worker is free for a new job.
@@ -308,7 +333,7 @@ impl Predictor {
     pub fn poll(&mut self, _spare: f64) -> bool {
         match self.rx.try_recv() {
             Ok(paths) => {
-                self.latest = paths;
+                (self.latest, self.made) = (paths, self.made + 1);
                 self.busy = false;
             }
             Err(TryRecvError::Empty) => {}
@@ -338,7 +363,7 @@ mod tests {
         let body = |x: f64, mass: f64, radius: f64| Body { x, y: 5.0e10, vx: 0.0, vy: 0.0, mass, radius };
         // Slot 0 (light) falls into slot 1 (heavy) within a few ticks, far from the origin.
         let state = MassiveState::from_bodies(&[body(1.0e11, 4.0e25, 1.2e7), body(1.0e11 + 5.0e7, 5.0e25, 1.3e7)]);
-        let mut eph = Eph::new(&state.snapshot(), &rules, true);
+        let mut eph = Eph::new(&state.snapshot(), &rules, gsim_client_core::eph::Source::Thread);
         eph.request(40, 0);
         let reader = eph.reader();
         while reader.get(39).is_none() {

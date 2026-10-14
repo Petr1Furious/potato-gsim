@@ -6,9 +6,33 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Where the ephemeris is worked out.
+#[derive(Clone, Copy, Debug)]
+pub enum Source {
+    /// By the caller, at most `budget` rows each time it asks (tests, bots, and a page in a
+    /// browser that has nothing better).
+    Inline { budget: usize },
+    /// On a thread of its own.
+    Thread,
+    /// Somewhere else entirely, which this hands rows over from (a worker beside a page in a
+    /// browser). `None` from it: nowhere after all, and the caller does the work.
+    Fed(fn(&MassiveSnapshot, &GameRules) -> Option<Box<dyn Feed>>),
+}
+
+/// Rows worked out somewhere else.
+pub trait Feed {
+    /// The rows up to (not including) `upto` are wanted; those before `keep` no longer are.
+    fn want(&mut self, upto: Tick, keep: Tick);
+    /// The rows that have arrived since the last call, in order.
+    fn arrived(&mut self) -> Vec<EphRow>;
+}
+
 pub enum Eph {
     /// Rows are produced on demand by the caller (deterministic tests, bots).
     Inline { prod: Box<EphProducer>, ring: Arc<RwLock<EphRing>> },
+    /// Rows come from elsewhere.
+    Fed { feed: Box<dyn Feed>, ring: Arc<RwLock<EphRing>>, keep: Tick },
+
     /// A worker thread keeps the ring filled up to `want`.
     Threaded {
         ring: Arc<RwLock<EphRing>>,
@@ -20,9 +44,13 @@ pub enum Eph {
 }
 
 impl Eph {
-    pub fn new(snapshot: &MassiveSnapshot, rules: &GameRules, threaded: bool) -> Self {
+    pub fn new(snapshot: &MassiveSnapshot, rules: &GameRules, source: Source) -> Self {
+        let feed = if let Source::Fed(start) = source { start(snapshot, rules) } else { None };
+        if let Some(feed) = feed {
+            return Eph::Fed { feed, ring: Arc::new(RwLock::new(EphRing::new())), keep: 0 };
+        }
         let mut prod = EphProducer::new(snapshot, rules.clone());
-        if !threaded {
+        if !matches!(source, Source::Thread) {
             return Eph::Inline { prod: Box::new(prod), ring: Arc::new(RwLock::new(EphRing::new())) };
         }
         let ring = Arc::new(RwLock::new(EphRing::new()));
@@ -50,14 +78,14 @@ impl Eph {
 
     pub fn get(&self, tick: Tick) -> Option<Arc<EphRow>> {
         match self {
-            Eph::Inline { ring, .. } | Eph::Threaded { ring, .. } => ring.read().unwrap().get(tick),
+            Eph::Inline { ring, .. } | Eph::Fed { ring, .. } | Eph::Threaded { ring, .. } => ring.read().unwrap().get(tick),
         }
     }
 
     /// One past the newest available row (the snapshot tick if nothing is ready yet).
     pub fn end_tick(&self) -> Option<Tick> {
         match self {
-            Eph::Inline { ring, .. } | Eph::Threaded { ring, .. } => ring.read().unwrap().end_tick(),
+            Eph::Inline { ring, .. } | Eph::Fed { ring, .. } | Eph::Threaded { ring, .. } => ring.read().unwrap().end_tick(),
         }
     }
 
@@ -72,6 +100,16 @@ impl Eph {
                     n += 1;
                 }
             }
+            Eph::Fed { feed, ring, keep } => {
+                feed.want(upto, *keep);
+                let mut ring = ring.write().unwrap();
+                for row in feed.arrived() {
+                    // (Only what follows on from what is there.)
+                    if ring.end_tick().is_none_or(|end| end == row.tick) {
+                        ring.push(row);
+                    }
+                }
+            }
             Eph::Threaded { want, .. } => want.store(upto, Ordering::Relaxed),
         }
     }
@@ -79,6 +117,10 @@ impl Eph {
     pub fn trim_before(&mut self, tick: Tick) {
         match self {
             Eph::Inline { ring, .. } => ring.write().unwrap().trim_before(tick),
+            Eph::Fed { ring, keep, .. } => {
+                *keep = tick;
+                ring.write().unwrap().trim_before(tick);
+            }
             Eph::Threaded { trim, .. } => trim.store(tick, Ordering::Relaxed),
         }
     }
@@ -115,7 +157,7 @@ impl EphReader {
 impl Eph {
     pub fn reader(&self) -> EphReader {
         match self {
-            Eph::Inline { ring, .. } | Eph::Threaded { ring, .. } => EphReader { ring: ring.clone() },
+            Eph::Inline { ring, .. } | Eph::Fed { ring, .. } | Eph::Threaded { ring, .. } => EphReader { ring: ring.clone() },
         }
     }
 }

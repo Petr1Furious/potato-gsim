@@ -184,7 +184,7 @@ pub struct World {
 }
 
 impl World {
-    pub fn from_welcome(w: &Welcome, threaded_eph: bool) -> Self {
+    pub fn from_welcome(w: &Welcome, eph: crate::eph::Source) -> Self {
         let tick = w.massive.tick;
         let players = w
             .players
@@ -215,7 +215,7 @@ impl World {
             my_id: w.your_id,
             preset: w.preset.clone(),
             names: w.names.iter().cloned().collect(),
-            eph: Eph::new(&w.massive, &w.rules, threaded_eph),
+            eph: Eph::new(&w.massive, &w.rules, eph),
             players,
             shells,
             head: tick,

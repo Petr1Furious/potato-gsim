@@ -863,6 +863,7 @@ dependencies = [
  "macroquad",
  "rayon",
  "self-replace",
+ "serde",
  "tar",
  "ureq",
  "winresource",

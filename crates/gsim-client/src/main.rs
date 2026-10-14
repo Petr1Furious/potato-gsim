@@ -19,6 +19,8 @@ mod predictor;
 mod sandbox;
 mod settings;
 mod style;
+#[cfg(target_arch = "wasm32")]
+mod worker;
 #[cfg(not(target_arch = "wasm32"))]
 mod updater;
 
@@ -82,6 +84,9 @@ struct Args {
 }
 
 fn main() {
+    // (In a browser, the worker beside the page has a program to load: the sooner the better.)
+    #[cfg(target_arch = "wasm32")]
+    worker::start();
     let args = Args::parse();
     let got = gsim_core::selftest::compute();
     let ok = got == gsim_core::selftest::GOLDEN;

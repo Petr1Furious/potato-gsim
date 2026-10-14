@@ -2,6 +2,7 @@
 //! future, and verifies that the local world matches the server's.
 
 use crate::clock::TickClock;
+use crate::eph::Source;
 use crate::world::World;
 use gsim_core::{selftest, ShipInput, Tick};
 use gsim_proto::*;
@@ -14,17 +15,15 @@ pub struct SessionConfig {
     pub color: [u8; 3],
     /// The key that proves who we are; the server ties our name to it.
     pub identity: Identity,
-    /// Compute the ephemeris on a worker thread (GUI) or inline (tests, bots).
-    pub threaded_eph: bool,
+    /// Where the ephemeris is worked out.
+    pub eph: Source,
     /// How far ahead of the present the ephemeris is kept (ticks). Bounds prediction length.
     pub lookahead_ticks: u32,
-    /// Inline mode: rows computed per update at most.
-    pub inline_budget: usize,
 }
 
 impl SessionConfig {
     pub fn headless(name: &str) -> Self {
-        Self { name: name.into(), color: [255, 255, 255], identity: Identity::insecure_from_label(name), threaded_eph: false, lookahead_ticks: 8, inline_budget: 4000 }
+        Self { name: name.into(), color: [255, 255, 255], identity: Identity::insecure_from_label(name), eph: Source::Inline { budget: 4000 }, lookahead_ticks: 8 }
     }
 }
 
@@ -202,7 +201,7 @@ impl Session {
         // round number is just the next world.
         let same_world = self.world.as_ref().is_some_and(|old| old.round == w.round);
         let resync = self.world.is_some();
-        let mut world = World::from_welcome(w, self.cfg.threaded_eph);
+        let mut world = World::from_welcome(w, self.cfg.eph);
         if resync {
             self.stats.resyncs += same_world as u64;
             self.awaiting_resync = false;
@@ -272,7 +271,9 @@ impl Session {
         }
 
         let present = clock.server_tick(now).max(0.0).floor() as Tick;
-        w.eph.request(present + 2 + self.cfg.lookahead_ticks as Tick, self.cfg.inline_budget);
+        // (Rows fed from elsewhere that turn out to be worked out here after all: a few a frame.)
+        let budget = if let Source::Inline { budget } = self.cfg.eph { budget } else { 6 };
+        w.eph.request(present + 2 + self.cfg.lookahead_ticks as Tick, budget);
         w.advance_to(present + 1, &mut self.stats);
         let synced = clock.synced();
         self.check_hashes();

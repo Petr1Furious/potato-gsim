@@ -130,6 +130,8 @@ pub struct Game {
     /// a frame takes without its predictions (s).
     period: f64,
     busy: f64,
+    /// Predictions finished a second, and when and at how many that was last worked out.
+    predicting: (f64, f64, u64),
     _solo: Option<Solo>,
     view: View,
     settings_dirty: bool,
@@ -202,12 +204,13 @@ impl Game {
             name: settings.name.clone(),
             color: settings.ship_color,
             identity: settings.identity(),
-            // A page in a browser has the one thread: there the ephemeris is worked out a
-            // few rows a frame.
-            threaded_eph: cfg!(not(target_arch = "wasm32")),
+            // On a thread of its own; in a browser, in the worker beside the page.
+            #[cfg(not(target_arch = "wasm32"))]
+            eph: gsim_client_core::eph::Source::Thread,
+            #[cfg(target_arch = "wasm32")]
+            eph: gsim_client_core::eph::Source::Fed(crate::worker::feed),
             // Tick rate is only known after joining; 60 Hz is the server default.
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
-            inline_budget: 6,
         };
         Ok(Self {
             net: NetClient::connect(server, cfg)?,
@@ -241,6 +244,7 @@ impl Game {
             last_frame_tick: 0,
             period: 0.0,
             busy: 0.0,
+            predicting: (0.0, 0.0, 0),
             predictor: Predictor::new(),
             meter: fmt::Meter::default(),
             lookahead_ticks: (lookahead_seconds.clamp(2.0, 60.0) * 60.0) as u32,
@@ -1089,6 +1093,11 @@ impl Game {
         let title =format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round);
         let horizon = (paths.coast.len().max(1) - 1) as f64 / world.rules.tick_hz as f64;
         let predict_ms = paths.compute_ms;
+        let (rate, since, made) = self.predicting;
+        if now - since >= 1.0 {
+            self.predicting = ((self.predictor.made - made) as f64 / (now - since), now, self.predictor.made);
+        }
+        let per_second = rate;
         let net_lines: Vec<String> = vec![
             format!("{} bodies   time x{:.0}   {:.0} fps   draw {:.1} ms ({})", alive_bodies, world.rules.time_scale(), self.meter.fps, self.meter.ms, if self.density.picture().2 { "GPU" } else { "CPU" }),
             format!("tick {:.1}  head {}  ephemeris +{} ticks", tick_f, world.head, world.eph.end_tick().unwrap_or(0).saturating_sub(world.head)),
@@ -1098,7 +1107,7 @@ impl Game {
             format!("my inputs: {} sent, {} re-timed by server", stats.cmds_sent, stats.retimed_cmds),
             format!("remote inputs in my past: {}  (ship replays {})", stats.late_remote_inputs, stats.rollbacks),
             format!("net {:.1} kB/s up, {:.1} kB/s down", bytes.0 / 1e3, bytes.1 / 1e3),
-            format!("prediction {horizon:.1} s ahead, computed in {predict_ms:.0} ms"),
+            format!("prediction {horizon:.1} s ahead, computed in {predict_ms:.0} ms, {per_second:.0} a second"),
         ];
         let status = self.status.as_ref().filter(|s| s.1 > get_time()).map(|s| s.0.clone());
         let fuel_max = world.rules.fuel_max_mmps;

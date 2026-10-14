@@ -1,5 +1,6 @@
 // What the game asks of the page beyond a canvas to draw on: a socket to the server,
-// randomness, a clock, and somewhere to keep the player's settings and key.
+// randomness, a clock, somewhere to keep the player's settings and key, and a worker beside
+// the page (web/worker.js) to work out what lies ahead.
 "use strict";
 (function () {
     const bytes = (ptr, len) => new Uint8Array(wasm_memory.buffer, ptr, len);
@@ -9,6 +10,8 @@
     let socket = null, state = 2, inbox = [];
     // What `gsim_store_get` found, until `gsim_store_take` copies it out.
     let found = null;
+    // The worker: 0 while it loads, 1 once ready, 2 if it failed; and what it has sent.
+    let worker = null, worker_state = 2, from_worker = [];
     // Strings handed over by the interface library (it opens links through them).
     const strings = {};
     let next_string = 1;
@@ -58,6 +61,35 @@
                 socket = null;
                 state = 2;
             };
+
+            env.gsim_worker_start = function () {
+                try {
+                    worker = new Worker("worker.js");
+                } catch (refused) {
+                    return 0;
+                }
+                worker_state = 0;
+                worker.onmessage = function (event) {
+                    if (event.data === "ready") worker_state = 1;
+                    else if (event.data === "failed") worker_state = 2;
+                    else from_worker.push(new Uint8Array(event.data));
+                };
+                worker.onerror = () => { worker_state = 2; };
+                return 1;
+            };
+            env.gsim_worker_state = () => worker_state;
+            env.gsim_worker_send = function (ptr, len) {
+                // (A copy, handed over whole: the game's memory moves on.)
+                const copy = bytes(ptr, len).slice();
+                if (worker) worker.postMessage(copy.buffer, [copy.buffer]);
+            };
+            env.gsim_worker_next = () => from_worker.length > 0 ? from_worker[0].length : -1;
+            env.gsim_worker_take = function (ptr) {
+                const message = from_worker.shift();
+                bytes(ptr, message.length).set(message);
+            };
+            // (The worker's own way of answering: nothing to the page.)
+            env.gsim_worker_post = () => {};
 
             env.gsim_now = () => performance.now() / 1000;
             env.gsim_random = (ptr, len) => { crypto.getRandomValues(bytes(ptr, len)); };
