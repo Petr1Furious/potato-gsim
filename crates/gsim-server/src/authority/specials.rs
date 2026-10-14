@@ -121,11 +121,11 @@ impl Authority {
         let rules = self.rules.clone();
         let Some(p) = self.players.get_mut(&player) else { return };
         match special.kind {
-            SpecialKind::Armoury => p.magazine = Magazine::armoury(tick, &rules),
-            SpecialKind::Armour => p.armour = true,
-            SpecialKind::Shipyard => {
+            SpecialKind::Ammo => p.magazine = Magazine::ammo(tick, &rules),
+            SpecialKind::Shield => p.shield = true,
+            SpecialKind::Repair => {
                 if let Some(b) = self.bases.iter_mut().find(|b| b.owner == player && b.hp > 0) {
-                    b.hp = BASE_HP;
+                    b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
                     self.bases_changed = true;
                 }
             }
@@ -138,8 +138,8 @@ impl Authority {
         self.specials.clone()
     }
 
-    pub fn armoured(&self, player: PlayerId) -> Option<bool> {
-        self.players.get(&player).map(|p| p.armour)
+    pub fn shielded(&self, player: PlayerId) -> Option<bool> {
+        self.players.get(&player).map(|p| p.shield)
     }
 
     pub fn magazine(&self, player: PlayerId) -> Option<Magazine> {

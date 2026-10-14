@@ -191,7 +191,7 @@ impl Authority {
         if let Some(p) = self.players.get_mut(&id) {
             p.ship = None;
             p.hold = None;
-            p.armour = false;
+            p.shield = false;
             p.deaths += playing as u32;
             p.respawn_tick = Some(respawn_tick);
         }

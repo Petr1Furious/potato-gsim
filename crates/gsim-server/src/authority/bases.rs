@@ -85,20 +85,21 @@ impl Authority {
         let tick = self.tick();
         let Some(p) = self.players.get_mut(&player).filter(|p| !p.spectating) else { return };
         (p.spectating, p.benched) = (true, true);
-        (p.ship, p.respawn_tick, p.hold, p.armour) = (None, None, None, false);
+        (p.ship, p.respawn_tick, p.hold, p.shield) = (None, None, None, false);
         self.event(Event::Gamemode { tick, player, spectating: true });
     }
 
-    /// `by` hurts the base on `slot`, if it is somebody else's and still standing.
+    /// `by` hurts the base on `slot` (their own too: shells and rams do not tell friend from
+    /// foe), if it still stands.
     pub(super) fn damage_base(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
-        let Some(b) = self.bases.iter_mut().find(|b| b.slot == slot && b.hp > 0 && b.owner != by) else { return };
+        let Some(b) = self.bases.iter_mut().find(|b| b.slot == slot && b.hp > 0) else { return };
         b.hp = b.hp.saturating_sub(amount);
         self.bases_changed = true;
         if b.hp > 0 {
             return;
         }
         let owner = b.owner;
-        if let Some(p) = self.players.get_mut(&by) {
+        if let Some(p) = self.players.get_mut(&by).filter(|_| by != owner) {
             p.captures += 1;
         }
         self.event(Event::BaseDestroyed { tick, owner, by: Some(by) });

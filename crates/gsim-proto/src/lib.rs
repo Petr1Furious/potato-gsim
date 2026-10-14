@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -75,7 +75,7 @@ pub struct PlayerInfo {
     /// Watching, with no ship.
     pub spectating: bool,
     /// The ship survives one shell.
-    pub armour: bool,
+    pub shield: bool,
 }
 
 /// What a round is about.
@@ -104,6 +104,9 @@ impl GameMode {
 /// A base's health when it is new.
 pub const BASE_HP: u32 = 6000;
 
+/// What a repair gives back to a standing base.
+pub const REPAIR_HP: u32 = BASE_HP / 5;
+
 /// A player's base: a body that does not move. It is gone (a hulk) at 0 hp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Base {
@@ -116,21 +119,21 @@ pub struct Base {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpecialKind {
     /// Twice the shells, fired twice as often, until the ship is lost.
-    Armoury,
-    /// The base back to full health.
-    Shipyard,
+    Ammo,
+    /// A fifth of the base's health back (see [`REPAIR_HP`]).
+    Repair,
     /// The ship survives one shell.
-    Armour,
+    Shield,
 }
 
 impl SpecialKind {
-    pub const ALL: [SpecialKind; 3] = [SpecialKind::Armoury, SpecialKind::Shipyard, SpecialKind::Armour];
+    pub const ALL: [SpecialKind; 3] = [SpecialKind::Ammo, SpecialKind::Repair, SpecialKind::Shield];
 
     pub fn name(self) -> &'static str {
         match self {
-            SpecialKind::Armoury => "armoury",
-            SpecialKind::Shipyard => "shipyard",
-            SpecialKind::Armour => "armour",
+            SpecialKind::Ammo => "ammo",
+            SpecialKind::Repair => "repair",
+            SpecialKind::Shield => "shield",
         }
     }
 }
@@ -208,8 +211,8 @@ pub enum Event {
     Specials { tick: Tick, specials: Vec<Special> },
     /// `player` held an orbit around the special on `slot` long enough and got what it gives.
     Gift { tick: Tick, player: PlayerId, kind: SpecialKind, slot: u32 },
-    /// The armour of `player`'s ship took a shell and is gone.
-    ArmourSpent { tick: Tick, player: PlayerId },
+    /// The shield of `player`'s ship took a shell and is gone.
+    ShieldSpent { tick: Tick, player: PlayerId },
     /// `by` brought the base of `owner` down to 0 hp.
     BaseDestroyed { tick: Tick, owner: PlayerId, by: Option<PlayerId> },
     /// Scores are final; a new world starts at `next_round_tick`. `winner`: the last player in play.

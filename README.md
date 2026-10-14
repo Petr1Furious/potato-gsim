@@ -90,20 +90,21 @@ on a qualifying orbit around it. There is one target for every two players
 With `GSIM_MODE=bases` (or `/mode bases`) there are no targets. Every player owns a base on a
 ring around the centre: a body that never moves, pushes other bodies away and pulls ships and
 shells in like Jupiter. Ships respawn on an orbit around their own base while it stands.
-Enemy bases lose health to shell hits (2 %), to a ship holding an orbit around them under the
-same conditions as for a target (1 % a second) and to ships crashing into them (10 %, and the
-ship). A destroyed base stays as a dark hulk; its owner is out once their ship is lost. The
-last player in play wins the round. Players who join a round under way watch it (a second
-player joining a lone one starts a new round); whoever leaves and comes back while their
-base stands gets it back. `R` selects the nearest enemy base, the top-left panel shows your
-base and the siege orbit, and the board shows each base's health and how many bases each
-player has destroyed (KO).
+Bases lose health to shell hits (2 %) and to ships crashing into them (10 %, and the ship),
+one's own included, and enemy bases to a ship holding an orbit around them under the same
+conditions as for a target (1 % a second). A destroyed base stays as a dark hulk; its owner
+is out once their ship is lost. The last player in play wins the round. Players who join a
+round under way watch it (a second player joining a lone one starts a new round); whoever
+leaves and comes back while their base stands gets it back. `R` selects the nearest enemy
+base, the top-left panel shows your base and the siege orbit, and the board shows each
+base's health and how many bases each player has destroyed (KO).
 
 Special bodies near the centre give something to whoever holds a qualifying orbit around them
-for 4 s: an **armoury** twice the shells, fired twice as fast, until the ship is lost; a
-**shipyard** the base back to full health; **armour** lets the ship survive one shell. Each
-gives once, and another of the same kind appears on another body 20 s later. There is one
-of each kind for every two players. Operators can name them in commands (`/orbit armoury`).
+for 4 s: **ammo** gives twice the shells, fired and coming back twice as fast, until the ship
+is lost; **repair** gives the base back 20 % of its health; a **shield** (drawn around the
+ship) lets the ship survive one shell. Each gives once, and another of the same kind appears
+on another body 20 s later. There is one of each kind for every two players.
+Operators can name them in commands (`/orbit ammo`).
 
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.

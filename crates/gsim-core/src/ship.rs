@@ -37,7 +37,7 @@ pub struct Magazine {
     pub since: Tick,
     /// The most it holds.
     pub max: u32,
-    /// Fires twice as often (an armoury's gift, until the ship is lost).
+    /// Fires and gets shells back twice as fast (from ammo, until the ship is lost).
     pub quick: bool,
 }
 
@@ -46,8 +46,8 @@ impl Magazine {
         Self { left: rules.shell_max, since: tick, max: rules.shell_max, quick: false }
     }
 
-    /// Twice the shells, filled up, fired twice as often.
-    pub fn armoury(tick: Tick, rules: &GameRules) -> Self {
+    /// Twice the shells, filled up, fired and coming back twice as fast.
+    pub fn ammo(tick: Tick, rules: &GameRules) -> Self {
         Self { left: 2 * rules.shell_max, since: tick, max: 2 * rules.shell_max, quick: true }
     }
 
@@ -57,6 +57,12 @@ impl Magazine {
         if self.quick { ticks / 2 } else { ticks }
     }
 
+    /// Ticks for one shell to come back.
+    fn regen_every(&self, rules: &GameRules) -> Tick {
+        let ticks = rules.shell_regen_ticks.max(1) as Tick;
+        if self.quick { (ticks / 2).max(1) } else { ticks }
+    }
+
     /// Ticks towards shells coming back at `tick`: none until the delay is over.
     fn restoring(&self, tick: Tick, rules: &GameRules) -> Tick {
         tick.saturating_sub(self.since).saturating_sub(rules.shell_regen_delay_ticks as Tick)
@@ -64,13 +70,13 @@ impl Magazine {
 
     /// Shells that can be fired at `tick`.
     pub fn at(&self, tick: Tick, rules: &GameRules) -> u32 {
-        let back = self.restoring(tick, rules) / rules.shell_regen_ticks.max(1) as Tick;
+        let back = self.restoring(tick, rules) / self.regen_every(rules);
         (self.left as Tick + back).min(self.max as Tick) as u32
     }
 
     /// How far along the next shell is, 0 to 1 (0 while none is on its way).
     pub fn next(&self, tick: Tick, rules: &GameRules) -> f32 {
-        let every = rules.shell_regen_ticks.max(1) as Tick;
+        let every = self.regen_every(rules);
         if self.at(tick, rules) >= self.max {
             return 0.0;
         }

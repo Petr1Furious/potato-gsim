@@ -57,7 +57,7 @@ struct Player {
     /// Only until the next round (out of this one, or joined while it was on).
     benched: bool,
     /// The ship survives one shell.
-    armour: bool,
+    shield: bool,
     /// Who `/r` answers.
     reply_to: Option<PlayerId>,
     /// (start tick, messages) of the current chat rate-limit window.
@@ -384,7 +384,7 @@ impl Authority {
                 god: false,
                 spectating: watch,
                 benched: watch,
-                armour: false,
+                shield: false,
                 reply_to: None,
                 chat_window: (0, 0),
                 last_mark: 0,
@@ -436,7 +436,7 @@ impl Authority {
                         next_fire_tick: p.next_fire_tick,
                         magazine: p.magazine,
                         spectating: p.spectating,
-                        armour: p.armour,
+                        shield: p.shield,
                     }
                 })
                 .collect(),
@@ -626,8 +626,8 @@ impl Authority {
         }
 
         let gods: Vec<PlayerId> = self.players.values().filter(|p| p.god).map(|p| p.id).collect();
-        // Armour takes the first shell, and is gone.
-        let mut armoured: Vec<PlayerId> = self.players.values().filter(|p| p.armour).map(|p| p.id).collect();
+        // A shield takes the first shell, and is gone.
+        let mut shielded: Vec<PlayerId> = self.players.values().filter(|p| p.shield).map(|p| p.id).collect();
         let mut spent: Vec<PlayerId> = Vec::new();
         let reach2 = (rules.shell_blast_radius + rules.ship_radius) * (rules.shell_blast_radius + rules.ship_radius);
         let mut gone: Vec<(ShellId, bool)> = Vec::new();
@@ -648,8 +648,8 @@ impl Authority {
                 for (victim, a0, a1) in &segs {
                     if !gods.contains(victim) && swept_min_dist2(before, after, *a0, *a1) <= reach2 {
                         exploded = true;
-                        if armoured.contains(victim) {
-                            armoured.retain(|a| a != victim);
+                        if shielded.contains(victim) {
+                            shielded.retain(|a| a != victim);
                             spent.push(*victim);
                         } else if !spent.contains(victim) && !deaths.iter().any(|d| d.0 == *victim) {
                             deaths.push((*victim, Some(s.owner), None));
@@ -675,9 +675,9 @@ impl Authority {
         }
         for player in spent {
             if let Some(p) = self.players.get_mut(&player) {
-                p.armour = false;
+                p.shield = false;
             }
-            self.event(Event::ArmourSpent { tick: next, player });
+            self.event(Event::ShieldSpent { tick: next, player });
         }
         let playing_now = self.next_round_tick.is_none();
         if playing_now {
@@ -696,7 +696,7 @@ impl Authority {
                 p.ship = None;
                 p.deaths += playing_now as u32;
                 p.hold = None;
-                p.armour = false;
+                p.shield = false;
                 p.respawn_tick = Some(respawn_tick);
             }
             if let Some(k) = killer.filter(|k| *k != victim && playing_now) {
@@ -794,7 +794,7 @@ impl Authority {
         p.hold = None;
         if spectating {
             p.ship = None;
-            p.armour = false;
+            p.shield = false;
             p.respawn_tick = None;
         } else {
             p.respawn_tick = Some(tick + 1);
@@ -1036,7 +1036,7 @@ impl Authority {
             p.deaths = 0;
             p.captures = 0;
             p.hold = None;
-            p.armour = false;
+            p.shield = false;
             p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }

@@ -493,6 +493,15 @@ fn gallery(ui: f32) {
         style::body((x, y), r, 6.0e24, 3 + col as u32, 1.0, ui, style::NO_LIGHT);
         style::special((x, y), r, kind, held, ui);
     }
+    // Ships with a shield, and one breaking.
+    y += 70.0 * ui;
+    for (k, colour) in [[230u8, 80, 230], [90, 200, 255], [255, 255, 255]].into_iter().enumerate() {
+        let x = w / 5.0 * (k as f32 + 1.0);
+        game::draw_ship((x, y), -0.6, style::rgb(colour), k == 1, ui);
+        style::ship_shield((x, y), k as u32, ui);
+    }
+    game::draw_ship((w * 0.8, y), 0.4, style::rgb([255, 190, 60]), false, ui);
+    style::shield_break((w * 0.8, y), 0.35, ui);
 }
 
 /// The page's script (`web/gsim.js`) is told apart by this.

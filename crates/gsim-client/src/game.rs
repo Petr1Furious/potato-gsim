@@ -951,6 +951,7 @@ impl Game {
                     }
                     style::disc(s.0, s.1, 22.0 * ui, style::alpha(c, 0.4 * (1.0 - (age as f32 / 0.4).min(1.0))));
                 }
+                EffectKind::ShieldBroken => style::shield_break(s, (age as f32 / 0.8).min(1.0), ui),
                 EffectKind::BaseDestroyed => {
                     // A flash, then three shock waves.
                     style::disc(s.0, s.1, 60.0 * ui, style::alpha(WHITE, 0.5 * (1.0 - (age as f32 / 0.3).min(1.0))));
@@ -1101,6 +1102,9 @@ impl Game {
             let fuel = p.ship.as_ref().map_or(0, |t| t.last().fuel);
             let color = style::rgb(p.color);
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
+            if p.shield {
+                style::ship_shield(s, *id, ui);
+            }
             if !mine {
                 labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Player);
             }
@@ -1252,8 +1256,6 @@ impl Game {
             let sp = world.specials.iter().find(|s| s.slot == h.0)?;
             Some((sp.kind, h.1 as f32 / hold_goal_special))
         });
-        let armour = me.is_some_and(|m| m.armour);
-        let quick = me.is_some_and(|m| m.magazine.quick);
         let winner = world.winner.map(|w| world.player_name(w).to_string());
         // What the chat box needs: names to complete and to highlight.
         let player_names: Vec<String> = world.players.values().map(|p| p.name.clone()).collect();
@@ -1493,12 +1495,7 @@ impl Game {
                             style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
                             let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
                             let ready = shells > 0 && !reloading;
-                            let label = if quick { "SHELLS · ARMOURY" } else { "SHELLS" };
-                            style::gauge(ui, label, &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
-                            if armour {
-                                let c = style::c32(style::special_colour(gsim_proto::SpecialKind::Armour));
-                                ui.label(RichText::new("ARMOUR · stops one shell").small().color(c).extra_letter_spacing(1.0));
-                            }
+                            style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
                         }
                         None if spectating => {
                             style::caption(ui, if out { "OUT · WATCHING" } else { "WATCHING" });

@@ -214,15 +214,15 @@ pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, s
 
 pub fn special_colour(kind: gsim_proto::SpecialKind) -> Color {
     match kind {
-        gsim_proto::SpecialKind::Armoury => Color::new(1.0, 0.56, 0.22, 1.0),
-        gsim_proto::SpecialKind::Shipyard => GOOD,
-        gsim_proto::SpecialKind::Armour => Color::new(0.62, 0.72, 1.0, 1.0),
+        gsim_proto::SpecialKind::Ammo => Color::new(1.0, 0.56, 0.22, 1.0),
+        gsim_proto::SpecialKind::Repair => GOOD,
+        gsim_proto::SpecialKind::Shield => Color::new(0.62, 0.72, 1.0, 1.0),
     }
 }
 
 /// The mark around a special body (radius `r` on screen): a breathing halo in the colour of
 /// its kind and an emblem turning around it, with `held` (0 to 1) of the hold as an arc.
-/// Armoury: three warheads circling it. Shipyard: a slowly turning gear. Armour: a hexagon.
+/// Ammo: three warheads circling it. Repair: a slowly turning gear. Shield: a hexagon.
 pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, ui: f32) {
     use gsim_proto::SpecialKind;
     use std::f32::consts::{FRAC_PI_2, TAU};
@@ -234,7 +234,7 @@ pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, 
         self::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, alpha(c, 0.14 * pulse / k as f32));
     }
     match kind {
-        SpecialKind::Armoury => {
+        SpecialKind::Ammo => {
             self::ring(s.0, s.1, ring, 1.5 * ui, alpha(c, 0.8));
             for k in 0..3 {
                 let a = time * 1.4 + k as f32 * TAU / 3.0;
@@ -243,7 +243,7 @@ pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, 
                 draw_triangle(at(9.0 * ui, 0.0), at(1.0 * ui, 4.0 * ui), at(1.0 * ui, -4.0 * ui), c);
             }
         }
-        SpecialKind::Shipyard => {
+        SpecialKind::Repair => {
             self::ring(s.0, s.1, ring, 2.0 * ui, alpha(c, 0.9));
             let teeth = 12;
             for k in 0..teeth {
@@ -252,7 +252,7 @@ pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, 
                 draw_line(s.0 + cos * ring, s.1 + sin * ring, s.0 + cos * (ring + 5.0 * ui), s.1 + sin * (ring + 5.0 * ui), 3.5 * ui, alpha(c, 0.9));
             }
         }
-        SpecialKind::Armour => {
+        SpecialKind::Shield => {
             for (k, out) in [(0.0f32, 0.0f32), (1.0, 4.0)] {
                 let turn = time * 0.3 * (1.0 - 2.0 * k);
                 let r6 = ring + out * ui;
@@ -265,6 +265,32 @@ pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, 
     }
     if held > 0.0 {
         arc(s.0, s.1, ring + 9.0 * ui, -FRAC_PI_2, -FRAC_PI_2 + TAU * held.min(1.0), 3.0 * ui, c);
+    }
+}
+
+/// A ship's shield: a faint bubble around it with a bright rim, two highlights gliding round
+/// it, breathing slowly. `seed` keeps neighbouring ships out of step.
+pub fn ship_shield(s: (f32, f32), seed: u32, ui: f32) {
+    use std::f32::consts::PI;
+    let c = special_colour(gsim_proto::SpecialKind::Shield);
+    let time = get_time() as f32 + seed as f32 * 0.7;
+    let r = (16.0 + 0.8 * (time * 2.0).sin()) * ui;
+    disc(s.0, s.1, r, alpha(c, 0.06));
+    ring(s.0, s.1, r, 1.2 * ui, alpha(c, 0.55));
+    for k in 0..2 {
+        let a = time * 1.3 + k as f32 * PI;
+        arc(s.0, s.1, r, a, a + 0.9, 2.2 * ui, alpha(WHITE, 0.55));
+    }
+}
+
+/// A shield breaking: its pieces flying apart and fading (`age` 0 to 1).
+pub fn shield_break(s: (f32, f32), age: f32, ui: f32) {
+    use std::f32::consts::TAU;
+    let c = special_colour(gsim_proto::SpecialKind::Shield);
+    let r = (16.0 + 30.0 * age) * ui;
+    for k in 0..8 {
+        let a = k as f32 * TAU / 8.0 + 0.3 * age;
+        arc(s.0, s.1, r, a, a + 0.45, (2.2 - 1.5 * age) * ui, alpha(c, (1.0 - age) * (1.0 - age)));
     }
 }
 

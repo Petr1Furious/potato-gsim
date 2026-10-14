@@ -1,8 +1,8 @@
 //! Special bodies in the bases mode: where they appear, what they give, and their comeback.
 
 use gsim_client_core::{Controls, Session};
-use gsim_core::{math, Body, Particle, ShipState};
-use gsim_proto::{GameMode, PlayerId, SpecialKind, BASE_HP};
+use gsim_core::{math, Body, Magazine, Particle, ShipState};
+use gsim_proto::{GameMode, PlayerId, SpecialKind, BASE_HP, REPAIR_HP};
 use gsim_server::scenario::{radius_from_mass, Scenario};
 use gsim_testkit::*;
 
@@ -88,28 +88,35 @@ fn one_of_each_kind_appears_on_a_planet() {
 }
 
 #[test]
-fn the_armoury_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
+fn ammo_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
     let (mut sim, a, b, ann, _) = duel(2);
-    take(&mut sim, ann, SpecialKind::Armoury);
+    take(&mut sim, ann, SpecialKind::Ammo);
     let mag = sim.server.magazine(ann).unwrap();
     let rules = sim.server.rules.clone();
     assert!(mag.quick && mag.max == 2 * rules.shell_max, "{mag:?}");
     assert_eq!(mag.cooldown(&rules), rules.shell_cooldown_ticks as u64 / 2);
+    // Shells come back twice as fast too.
+    let later = (rules.shell_regen_delay_ticks + rules.shell_regen_ticks) as u64;
+    for (mut m, back) in [(Magazine::full(0, &rules), 1), (Magazine::ammo(0, &rules), 2)] {
+        let full = m.max;
+        assert!(m.fire(0, &rules) && m.fire(0, &rules));
+        assert_eq!(m.at(later, &rules), full - 2 + back);
+    }
     for i in [a, b] {
         let w = sim.clients[i].session.world.as_ref().unwrap();
         assert_eq!(w.players[&ann].magazine, mag);
-        assert!(chat(&sim.clients[i].session).contains(&"ann raided an armoury".to_string()));
+        assert!(chat(&sim.clients[i].session).contains(&"ann took ammo".to_string()));
     }
-    // Firing as fast as allowed: twice as many shells go out as without the armoury.
+    // Firing as fast as allowed: twice as many shells go out as without ammo.
     let before = sim.server.shell_count();
     sim.run_with(3.0, |i, _| if i == a { Controls { fire: Some((0, 8000.0)), ..Controls::default() } } else { Controls::default() });
     let fired = sim.server.shell_count() - before;
     assert!((5..=7).contains(&fired), "{fired} shells in 3 s");
 
-    // Gone from that body; another armoury turns up some 20 s later.
-    assert!(slot_of(&sim, SpecialKind::Armoury).is_none());
+    // Gone from that body; more ammo turns up some 20 s later.
+    assert!(slot_of(&sim, SpecialKind::Ammo).is_none());
     sim.run_with(18.0, idle);
-    assert!(slot_of(&sim, SpecialKind::Armoury).is_some());
+    assert!(slot_of(&sim, SpecialKind::Ammo).is_some());
 
     sim.clients[a].session.send_chat("/kill ann");
     sim.run_with(7.0, idle);
@@ -119,24 +126,24 @@ fn the_armoury_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
 }
 
 #[test]
-fn armour_stops_one_shell() {
+fn a_shield_stops_one_shell() {
     let (mut sim, a, b, ann, bob) = duel(3);
-    take(&mut sim, ann, SpecialKind::Armour);
-    assert_eq!(sim.server.armoured(ann), Some(true));
-    assert!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].armour);
+    take(&mut sim, ann, SpecialKind::Shield);
+    assert_eq!(sim.server.shielded(ann), Some(true));
+    assert!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].shield);
 
     // Out in empty space, bob shoots at ann twice.
     place(&mut sim, ann, Particle { x: 2.0e11, y: 0.0, vx: 0.0, vy: 0.0 });
     place(&mut sim, bob, Particle { x: 2.0e11 + 1.0e9, y: 0.0, vx: 0.0, vy: 0.0 });
     sim.run_with(0.05, idle);
-    assert!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].armour, "moving a ship keeps its armour");
+    assert!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].shield, "moving a ship keeps its shield");
     let west = math::dir_to_angle(-1.0, 0.0);
     let t0 = sim.time;
     let shoot = |i: usize, t: f64| if i == b && (t < t0 + 0.1 || (t0 + 1.2..t0 + 1.3).contains(&t)) { Controls { fire: Some((west, 8000.0)), ..Controls::default() } } else { Controls::default() };
     sim.run_with(2.0, shoot);
-    assert_eq!(sim.server.armoured(ann), Some(false));
-    assert!(sim.server.ship(ann).is_some(), "the armour took the first shell");
-    assert!(chat(&sim.clients[a].session).contains(&"ann's armour stopped a shell".to_string()));
+    assert_eq!(sim.server.shielded(ann), Some(false));
+    assert!(sim.server.ship(ann).is_some(), "the shield took the first shell");
+    assert!(chat(&sim.clients[a].session).contains(&"ann's shield broke".to_string()));
     sim.run_with(2.0, shoot);
     assert!(sim.server.ship(ann).is_none(), "the second one gets through");
     assert_eq!(sim.server.score(bob).unwrap().0, 1);
@@ -144,16 +151,16 @@ fn armour_stops_one_shell() {
 }
 
 #[test]
-fn the_shipyard_repairs_the_base() {
+fn repair_mends_part_of_the_base() {
     let (mut sim, a, _, ann, bob) = duel(4);
     sim.server.hurt_base(ann, bob, BASE_HP / 2);
     sim.run_with(0.5, idle);
-    take(&mut sim, ann, SpecialKind::Shipyard);
+    take(&mut sim, ann, SpecialKind::Repair);
     let hp = sim.server.bases().iter().find(|b| b.owner == ann).unwrap().hp;
-    assert_eq!(hp, BASE_HP);
+    assert_eq!(hp, BASE_HP / 2 + REPAIR_HP);
     sim.run_with(1.0, idle);
     let w = sim.clients[a].session.world.as_ref().unwrap();
-    assert_eq!(w.base_of(ann).unwrap().hp, BASE_HP);
+    assert_eq!(w.base_of(ann).unwrap().hp, hp);
     in_sync(&sim);
 }
 

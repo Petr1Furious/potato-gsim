@@ -241,3 +241,25 @@ fn the_mode_command_switches_at_once() {
     assert!(sim.server.bases().is_empty());
     assert_eq!(sim.clients[a].session.world.as_ref().unwrap().mode, GameMode::Targets);
 }
+
+#[test]
+fn shells_and_rams_hurt_ones_own_base_too() {
+    let (shell, ram, _) = DAMAGE;
+    let (mut sim, a, _, ann, _) = duel(7);
+    // A shell dropped straight onto ann's own base.
+    let p = orbit_around(&sim, ann, 6.0e9);
+    place(&mut sim, ann, p);
+    let speed = 8000.0f64;
+    let angle = math::dir_to_angle(-(speed * speed - p.vy * p.vy).sqrt(), -p.vy);
+    let t0 = sim.time;
+    sim.run_with(8.0, |i, t| if i == a && t < t0 + 0.2 { Controls { fire: Some((angle, speed as f32)), ..Controls::default() } } else { Controls::default() });
+    assert_eq!(hp(&sim, ann), BASE_HP - shell);
+    // And a crash into it.
+    let (_, x, y) = base_at(&sim, ann);
+    place(&mut sim, ann, Particle { x: x + 2.0e9, y, vx: -20_000.0, vy: 0.0 });
+    sim.run_with(4.0, idle);
+    assert_eq!(hp(&sim, ann), BASE_HP - shell - ram);
+    assert_eq!(sim.server.score(ann).unwrap().1, 1);
+    assert_eq!(sim.clients[a].session.world.as_ref().unwrap().players[&ann].captures, 0, "no credit for it");
+    in_sync(&sim);
+}

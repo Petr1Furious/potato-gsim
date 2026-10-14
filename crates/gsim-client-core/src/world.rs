@@ -138,7 +138,7 @@ pub struct PlayerRep {
     /// Watching, with no ship.
     pub spectating: bool,
     /// The ship survives one shell.
-    pub armour: bool,
+    pub shield: bool,
 }
 
 pub struct ShellRep {
@@ -157,6 +157,8 @@ pub enum EffectKind {
     BaseDestroyed,
     /// Somebody took what a special body gives.
     Gift(SpecialKind),
+    /// A ship's shield took a shell.
+    ShieldBroken,
 }
 
 /// Something to draw for a moment (drifts with the velocity it had).
@@ -219,7 +221,7 @@ impl World {
                     next_fire_tick: p.next_fire_tick,
                     magazine: p.magazine,
                     spectating: p.spectating,
-                    armour: p.armour,
+                    shield: p.shield,
                 };
                 (p.id, rep)
             })
@@ -307,7 +309,7 @@ impl World {
                     next_fire_tick: 0,
                     magazine: Magazine::full(self.head, &self.rules),
                     spectating: false,
-                    armour: false,
+                    shield: false,
                 });
             }
             Event::PlayerColor { id, color } => {
@@ -327,7 +329,7 @@ impl World {
                 if let Some(p) = self.players.get_mut(&player) {
                     p.spectating = spectating;
                     if spectating {
-                        p.armour = false;
+                        p.shield = false;
                         p.respawn_tick = None;
                         if let Some(ship) = p.ship.as_mut() {
                             ship.dies_at = Some(tick);
@@ -391,7 +393,7 @@ impl World {
                 }
                 if let Some(p) = self.players.get_mut(&player) {
                     p.deaths += counts as u32;
-                    p.armour = false;
+                    p.shield = false;
                     p.respawn_tick = Some(respawn_tick);
                     if let Some(ship) = p.ship.as_mut() {
                         ship.dies_at = Some(tick);
@@ -441,9 +443,9 @@ impl World {
             Event::Gift { tick, player, kind, slot } => {
                 let name = self.player_name(player).to_string();
                 let text = match kind {
-                    SpecialKind::Armoury => format!("{name} raided an armoury"),
-                    SpecialKind::Shipyard => format!("{name} repaired their base at a shipyard"),
-                    SpecialKind::Armour => format!("{name} put on armour"),
+                    SpecialKind::Ammo => format!("{name} took ammo"),
+                    SpecialKind::Repair => format!("{name} repaired their base"),
+                    SpecialKind::Shield => format!("{name} took a shield"),
                 };
                 self.say(tick, text);
                 if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| (slot as usize) < r.x.len()) {
@@ -454,32 +456,37 @@ impl World {
                 self.specials.retain(|s| s.slot != slot);
                 self.holds.retain(|_, hold| hold.0 != slot);
                 match kind {
-                    SpecialKind::Armoury => {
+                    SpecialKind::Ammo => {
                         if let Some(p) = self.players.get_mut(&player) {
-                            p.magazine = Magazine::armoury(tick, &self.rules);
+                            p.magazine = Magazine::ammo(tick, &self.rules);
                         }
                     }
-                    SpecialKind::Armour => {
+                    SpecialKind::Shield => {
                         if let Some(p) = self.players.get_mut(&player) {
-                            p.armour = true;
+                            p.shield = true;
                         }
                     }
-                    SpecialKind::Shipyard => {
+                    SpecialKind::Repair => {
                         if let Some(b) = self.bases.iter_mut().find(|b| b.owner == player && b.hp > 0) {
-                            b.hp = BASE_HP;
+                            b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
                         }
                     }
                 }
             }
-            Event::ArmourSpent { tick, player } => {
-                self.say(tick, format!("{}'s armour stopped a shell", self.player_name(player)));
+            Event::ShieldSpent { tick, player } => {
+                self.say(tick, format!("{}'s shield broke", self.player_name(player)));
                 if let Some(p) = self.players.get_mut(&player) {
-                    p.armour = false;
+                    p.shield = false;
+                    if let Some(ship) = p.ship.as_ref() {
+                        let at = ship.at(tick).unwrap_or(ship.last()).p;
+                        self.effects.push_back(Effect { tick, at, kind: EffectKind::ShieldBroken });
+                    }
                 }
             }
             Event::BaseDestroyed { tick, owner, by } => {
                 let whose = self.player_name(owner).to_string();
                 let text = match by {
+                    Some(by) if by == owner => format!("{whose} destroyed their own base"),
                     Some(by) => format!("{} destroyed {whose}'s base", self.player_name(by)),
                     None => format!("{whose}'s base was destroyed"),
                 };
@@ -492,7 +499,7 @@ impl World {
                         self.effects.push_back(Effect { tick, at, kind: EffectKind::BaseDestroyed });
                     }
                 }
-                if let Some(p) = by.and_then(|by| self.players.get_mut(&by)) {
+                if let Some(p) = by.filter(|by| *by != owner).and_then(|by| self.players.get_mut(&by)) {
                     p.captures += 1;
                 }
             }
