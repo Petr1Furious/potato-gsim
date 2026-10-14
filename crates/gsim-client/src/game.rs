@@ -937,11 +937,11 @@ impl Game {
             let Some(ship) = world.ship_at(*id, tick_f) else { continue };
             let s = view.to_screen(ship.x, ship.y);
             if !view.on_screen(s, 40.0 * ui) {
-                // Other pilots out of view: an arrow on the edge, as for targets.
+                // Other players out of view: an arrow on the edge, as for targets.
                 if let Some(me) = own.filter(|_| *id != world.my_id) {
                     let at = edge_arrow(s, style::rgb(p.color), ui);
                     let d = ((ship.x - me.x).powi(2) + (ship.y - me.y).powi(2)).sqrt();
-                    labels.block(vec![p.name.clone(), fmt::distance(d)], at.0, at.1 - 8.0 * ui, LABEL * ui, style::rgb(p.color), Rank::Pilot);
+                    labels.block(vec![p.name.clone(), fmt::distance(d)], at.0, at.1 - 8.0 * ui, LABEL * ui, style::rgb(p.color), Rank::Player);
                 }
                 continue;
             }
@@ -953,7 +953,7 @@ impl Game {
             let color = style::rgb(p.color);
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
             if !mine {
-                labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Pilot);
+                labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Player);
             }
         }
 
@@ -1033,7 +1033,7 @@ impl Game {
             let ripple = (age * 1.2).fract();
             style::ring(s.0, s.1, (6.0 + 22.0 * ripple) * ui, 1.5 * ui, style::alpha(style::ACCENT, fade * (1.0 - ripple)));
             style::disc(s.0, s.1, 2.5 * ui, style::alpha(style::ACCENT, fade));
-            labels.push(m.name.as_str(), s.0, s.1 - 10.0 * ui, LABEL * ui, style::alpha(style::ACCENT, fade), Rank::Pilot);
+            labels.push(m.name.as_str(), s.0, s.1 - 10.0 * ui, LABEL * ui, style::alpha(style::ACCENT, fade), Rank::Player);
         }
 
         labels.draw();
@@ -1220,7 +1220,7 @@ impl Game {
             Area::new(Id::new("score")).anchor(Align2::RIGHT_TOP, [-10.0, 10.0]).interactable(false).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
                     egui::Grid::new("scores").num_columns(5).spacing([14.0, 3.0]).show(ui, |ui| {
-                        for head in ["PILOT", "PTS", "ORB", "K", "D"] {
+                        for head in ["PLAYER", "PTS", "ORB", "K", "D"] {
                             style::caption(ui, head);
                         }
                         ui.end_row();

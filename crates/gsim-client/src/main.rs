@@ -349,7 +349,7 @@ async fn run(args: Args, mut settings: Settings) {
                             // One full-width button per way into the game, each under the
                             // fields it uses.
                             let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([ui.available_width(), 32.0], egui::Button::new(text)).clicked();
-                            style::section(ui, "PILOT");
+                            style::section(ui, "PLAYER");
                             ui.horizontal(|ui| {
                                 // The colour button keeps its size; the name takes the rest.
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -266,6 +266,17 @@ impl Settings {
 }
 
 impl Settings {
+    /// Use another key from now on: one copied from another copy of the game (the program or
+    /// a browser), which then plays as the same player. False if `secret` is not a key.
+    pub fn adopt_identity(&self, secret: &str) -> bool {
+        use gsim_proto::identity::{from_hex, to_hex};
+        let Some(secret) = from_hex(secret) else { return false };
+        keep("identity.key", &to_hex(&secret), true);
+        true
+    }
+}
+
+impl Settings {
     /// This player's key, created on first use and kept next to the settings. Whoever holds
     /// it owns the player's names on every server, so nobody else may read it.
     pub fn identity(&self) -> gsim_proto::Identity {

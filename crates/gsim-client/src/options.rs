@@ -85,7 +85,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         "How far one wheel step zooms. Trackpads want a much lower value.",
     );
     if exact {
-        style::section(ui, "FLYING");
+        style::section(ui, "SHIP");
         ui.horizontal(|ui| {
             ship_color(ui, settings);
             ui.label("ship colour");
@@ -99,6 +99,9 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         "On: the ship points at the cursor. Off: A and D turn it.",
     );
     }
+    if world == World::Any {
+        player_key(ui, settings);
+    }
     style::section(ui, "GRAPHICS");
     ui.checkbox(&mut settings.gpu, "GPU drawing").on_hover_text(
         "On: the graphics card draws the small bodies, and more processor threads go to the simulation. Off: the processor draws them.",
@@ -107,7 +110,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     style::section(ui, "CONTROLS");
     if exact {
         if world == World::Any {
-            style::caption(ui, "EXACT WORLDS");
+            style::caption(ui, "WITH A SHIP");
         }
         style::key_row(ui, "Thrust", "W / UP");
         style::key_row(ui, "Throttle, cut, full", "SHIFT / CTRL, X, Z");
@@ -134,6 +137,54 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     style::key_row(ui, "Fullscreen", "F11");
     style::section(ui, "BODIES");
     style::mass_legend(ui);
+}
+
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    /// Put text on the clipboard, through the page's script (`web/gsim.js`).
+    fn gsim_copy(ptr: *const u8, len: usize);
+}
+
+fn copy(ui: &egui::Ui, text: &str) {
+    // (A browser has the page put it there, not the interface library.)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ui;
+        // SAFETY: the script reads the text during the call.
+        unsafe { gsim_copy(text.as_ptr(), text.len()) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    ui.ctx().copy_text(text.to_string());
+}
+
+/// The player's key: what makes them the same player in the program and in a browser, or on
+/// another machine. Copied out of one and pasted into the other.
+fn player_key(ui: &mut egui::Ui, settings: &Settings) {
+    use gsim_proto::identity::{fingerprint, from_hex, to_hex};
+    style::section(ui, "PLAYER KEY");
+    // (What is shown and what has been typed, kept from frame to frame.)
+    let (shown_id, entry_id) = (ui.id().with("key shown"), ui.id().with("key entry"));
+    let shown = ui.data_mut(|d| d.get_temp::<String>(shown_id)).unwrap_or_else(|| fingerprint(&settings.identity().public()));
+    let mut entry = ui.data_mut(|d| d.get_temp::<String>(entry_id)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label(format!("key {shown}")).on_hover_text(
+            "Your names on servers belong to this key. Copy it into the game elsewhere (the program, a browser) to play there as the same player.",
+        );
+        if ui.small_button("Copy").on_hover_text("Anyone with your key can play as you: keep it to yourself.").clicked() {
+            copy(ui, &to_hex(&settings.identity().secret()));
+        }
+    });
+    let valid = from_hex(&entry).is_some();
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut entry).desired_width(200.0).hint_text("paste a key here"));
+        if ui.add_enabled(valid, egui::Button::new("Use")).on_hover_text("Play as the player that key belongs to, from the next game on. Your current key is replaced.").clicked() && settings.adopt_identity(&entry) {
+            entry.clear();
+            ui.data_mut(|d| d.remove::<String>(shown_id));
+            return;
+        }
+        ui.data_mut(|d| d.insert_temp(shown_id, shown.clone()));
+    });
+    ui.data_mut(|d| d.insert_temp(entry_id, entry));
 }
 
 /// The button that opens the picker for the ship's colour.

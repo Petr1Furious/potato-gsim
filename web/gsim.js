@@ -91,6 +91,10 @@
             // (The worker's own way of answering: nothing to the page.)
             env.gsim_worker_post = () => {};
 
+            env.gsim_copy = function (ptr, len) {
+                // (Allowed only shortly after the player clicked, as they just did.)
+                if (navigator.clipboard) navigator.clipboard.writeText(text(ptr, len)).catch(() => {});
+            };
             env.gsim_now = () => performance.now() / 1000;
             env.gsim_random = (ptr, len) => { crypto.getRandomValues(bytes(ptr, len)); };
 

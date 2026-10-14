@@ -503,7 +503,7 @@ pub fn mass_legend(ui: &mut egui::Ui) {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
     BodyName,
-    Pilot,
+    Player,
     Approach,
     Target,
     Selection,

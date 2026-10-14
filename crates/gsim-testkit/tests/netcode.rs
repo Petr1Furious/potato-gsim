@@ -3,7 +3,7 @@ use gsim_core::{Particle, ShipState};
 use gsim_server::scenario::{build, Params};
 use gsim_testkit::*;
 
-/// Busy pilots: thrust on and off, heading sweeping, different per client.
+/// Busy players: thrust on and off, heading sweeping, different per client.
 fn flying(i: usize, t: f64) -> Controls {
     let phase = t * (1.3 + i as f64 * 0.7);
     Controls {

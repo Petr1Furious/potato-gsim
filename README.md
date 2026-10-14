@@ -87,7 +87,7 @@ on a qualifying orbit around it. There is one target for every two players
 
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
-Ships are drawn in their pilots' colours: random at first, chosen in the settings.
+Ships are drawn in their players' colours: random at first, chosen in the settings.
 Bodies flung out of the system for good fade out and are removed, and are never targets.
 
 ## Players, bans and the whitelist
