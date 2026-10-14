@@ -49,7 +49,8 @@ impl<W: Wide> Met<W> {
             vy: W::load(&view.vy[j..]),
             ax: W::load(&view.ax[j..]),
             ay: W::load(&view.ay[j..]),
-            mass: W::load(&view.mass[j..]),
+            // (What a ship feels: a base pulls it in, whatever it does to bodies.)
+            mass: W::load(&view.pull[j..]),
             radius: W::load(&view.radius[j..]),
             alive: W::flags(&view.alive[j..]),
         }

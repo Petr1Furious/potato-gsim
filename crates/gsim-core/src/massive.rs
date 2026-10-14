@@ -36,6 +36,8 @@ pub struct MassiveSnapshot {
     pub mass: Vec<f64>,
     pub radius: Vec<f64>,
     pub alive: Vec<bool>,
+    pub pull: Vec<f64>,
+    pub fixed: Vec<bool>,
 }
 
 /// Borrowed start-of-tick state, enough to integrate test particles across that tick.
@@ -50,6 +52,8 @@ pub struct MassiveView<'a> {
     pub mass: &'a [f64],
     pub radius: &'a [f64],
     pub alive: &'a [bool],
+    /// The mass ships and shells feel (see [`MassiveState::pull`]).
+    pub pull: &'a [f64],
 }
 
 /// Slots are stable for the lifetime of a match: merged bodies are tombstoned
@@ -66,6 +70,11 @@ pub struct MassiveState {
     pub mass: Vec<f64>,
     pub radius: Vec<f64>,
     pub alive: Vec<bool>,
+    /// The mass ships and shells feel: the body's mass, but for a base, which pushes other
+    /// bodies away (negative `mass`) and pulls ships in.
+    pub pull: Vec<f64>,
+    /// Never moves (a base): pulls and pushes, and is not moved by anything.
+    pub fixed: Vec<bool>,
     acc_valid: bool,
     bx: Vec<f64>,
     by: Vec<f64>,
@@ -199,6 +208,7 @@ fn accelerations(
     mass: &[f64],
     radius: &[f64],
     alive: &[bool],
+    fixed: &[bool],
     g: f64,
     eps2: f64,
     out_ax: &mut [f64],
@@ -235,8 +245,9 @@ fn accelerations(
             out_ay[j] += ay[j];
         }
     }
+    // (Nothing moves what is fixed: with no acceleration and no velocity, it stays put.)
     for j in 0..n {
-        if !alive[j] {
+        if !alive[j] || fixed[j] {
             (out_ax[j], out_ay[j]) = (0.0, 0.0);
         }
     }
@@ -260,6 +271,8 @@ impl MassiveState {
             mass: col(|b| b.mass),
             radius: col(|b| b.radius),
             alive: vec![true; n],
+            pull: col(|b| b.mass),
+            fixed: vec![false; n],
             acc_valid: false,
             bx: vec![0.0; n],
             by: vec![0.0; n],
@@ -281,6 +294,8 @@ impl MassiveState {
             mass: s.mass.clone(),
             radius: s.radius.clone(),
             alive: s.alive.clone(),
+            pull: s.pull.clone(),
+            fixed: s.fixed.clone(),
             acc_valid: false,
             bx: vec![0.0; n],
             by: vec![0.0; n],
@@ -299,7 +314,17 @@ impl MassiveState {
             mass: self.mass.clone(),
             radius: self.radius.clone(),
             alive: self.alive.clone(),
+            pull: self.pull.clone(),
+            fixed: self.fixed.clone(),
         }
+    }
+
+    /// Fix a body in place, as a base: from now on nothing moves it, and ships and shells feel
+    /// it as `pull` (whatever its mass does to other bodies).
+    pub fn anchor(&mut self, slot: usize, pull: f64) {
+        (self.fixed[slot], self.pull[slot]) = (true, pull);
+        (self.vx[slot], self.vy[slot]) = (0.0, 0.0);
+        self.acc_valid = false;
     }
 
     pub fn len(&self) -> usize {
@@ -321,7 +346,7 @@ impl MassiveState {
         }
         let eps2 = rules.softening * rules.softening;
         accelerations(
-            &self.x, &self.y, &self.mass, &self.radius, &self.alive, rules.g, eps2,
+            &self.x, &self.y, &self.mass, &self.radius, &self.alive, &self.fixed, rules.g, eps2,
             &mut self.ax, &mut self.ay, &mut self.hit, &mut self.work,
         );
         self.acc_valid = true;
@@ -340,6 +365,7 @@ impl MassiveState {
             mass: &self.mass,
             radius: &self.radius,
             alive: &self.alive,
+            pull: &self.pull,
         }
     }
 
@@ -356,7 +382,7 @@ impl MassiveState {
         }
         let eps2 = rules.softening * rules.softening;
         accelerations(
-            &self.x, &self.y, &self.mass, &self.radius, &self.alive, rules.g, eps2,
+            &self.x, &self.y, &self.mass, &self.radius, &self.alive, &self.fixed, rules.g, eps2,
             &mut self.bx, &mut self.by, &mut self.hit, &mut self.work,
         );
         for i in 0..n {
@@ -396,6 +422,8 @@ impl MassiveState {
         self.alive[i] = false;
         self.mass[i] = 0.0;
         self.radius[i] = 0.0;
+        self.pull[i] = 0.0;
+        self.fixed[i] = false;
         self.x[i] = 0.0;
         self.y[i] = 0.0;
         self.vx[i] = 0.0;
@@ -447,6 +475,17 @@ impl MassiveState {
         }
         for members in groups.iter().filter(|m| m.len() >= 2) {
             // Members are in ascending slot order, so every sum below has a fixed order.
+            // What runs into something fixed is gone, and the fixed thing is as it was.
+            if let Some(&base) = members.iter().find(|m| self.fixed[**m as usize]) {
+                let absorbed: Vec<u32> = members.iter().copied().filter(|m| *m != base && !self.fixed[*m as usize]).collect();
+                for &m in &absorbed {
+                    self.kill(m as usize);
+                }
+                if !absorbed.is_empty() {
+                    events.push(MergeEvent { survivor: Some(base), absorbed });
+                }
+                continue;
+            }
             let mut keep = members[0] as usize;
             let (mut total, mut sum_abs) = (0.0, 0.0);
             let (mut px, mut py, mut wx, mut wy, mut vol) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -482,7 +521,7 @@ impl MassiveState {
             for &m in &absorbed {
                 self.kill(m as usize);
             }
-            self.mass[keep] = total;
+            (self.mass[keep], self.pull[keep]) = (total, total);
             self.radius[keep] = radius;
             self.x[keep] = nx;
             self.y[keep] = ny;
@@ -501,9 +540,10 @@ impl MassiveState {
                 continue;
             }
             h.update(&(i as u32).to_le_bytes());
-            for v in [self.x[i], self.y[i], self.vx[i], self.vy[i], self.mass[i], self.radius[i]] {
+            for v in [self.x[i], self.y[i], self.vx[i], self.vy[i], self.mass[i], self.radius[i], self.pull[i]] {
                 h.update(&v.to_bits().to_le_bytes());
             }
+            h.update(&[self.fixed[i] as u8]);
         }
         h.digest()
     }
@@ -612,6 +652,7 @@ impl MassiveState {
             mass: &self.mass,
             radius: &self.radius,
             alive: &self.alive,
+            pull: &self.pull,
         }
     }
 
@@ -621,7 +662,7 @@ impl MassiveState {
             let view = self.kinematics();
             let frame = SystemFrame::of(&view);
             (0..self.len())
-                .filter(|&j| self.alive[j])
+                .filter(|&j| self.alive[j] && !self.fixed[j])
                 .filter(|&j| {
                     let (r, escaping) = frame.escape_state(&view, j, rules.g);
                     escaping && r > rules.escape_radius

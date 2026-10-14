@@ -377,3 +377,36 @@ fn escaped_bodies_are_removed_but_bound_ones_stay() {
     }
     assert_eq!(again.alive_count(), 1);
 }
+
+/// A base: fixed in place, pushing bodies away (negative mass) and pulling ships in (positive
+/// pull). Nothing moves it; a body that runs into it is gone and it is as it was; and a world
+/// with one goes on identically from a snapshot.
+#[test]
+fn a_base_stays_put_pushes_bodies_and_pulls_ships() {
+    let r = rules();
+    let base = body(0.0, 0.0, 0.0, 0.0, -2.0e27, 7.0e7);
+    // A body at rest nearby, and one flung straight at the base.
+    let near = body(3.0e9, 0.0, 0.0, 0.0, 1.0e24, 5.0e6);
+    let dart = body(0.0, 2.0e9, 0.0, -2.0e5, 1.0e22, 2.0e6);
+    let mut s = MassiveState::from_bodies(&[base, near, dart]);
+    s.anchor(0, 2.0e27);
+    let snap = s.snapshot();
+    let (mut merged, mut copy) = (Vec::new(), MassiveState::from_snapshot(&snap));
+    for _ in 0..600 {
+        merged.extend(s.step(&r));
+        copy.step(&r);
+    }
+    assert_eq!((s.x[0], s.y[0], s.vx[0], s.vy[0]), (0.0, 0.0, 0.0, 0.0), "the base moved");
+    assert_eq!((s.mass[0], s.pull[0], s.radius[0]), (-2.0e27, 2.0e27, 7.0e7), "the base changed");
+    assert!(s.x[1] > 3.0e9 && s.vx[1] > 0.0, "a body is pushed away from a base");
+    assert!(!s.alive[2] && merged.iter().any(|m| m.survivor == Some(0) && m.absorbed == [2]), "what runs into a base is gone");
+    assert_eq!(copy.hash(), s.hash(), "a snapshot keeps what makes a base");
+
+    // A ship next to the base falls towards it.
+    let mut fresh = MassiveState::from_bodies(&[base]);
+    fresh.anchor(0, 2.0e27);
+    fresh.ensure_acc(&r);
+    let mut ship = ShipState::new(Particle { x: 5.0e8, y: 0.0, vx: 0.0, vy: 0.0 }, &r);
+    step_ship(&mut ship, ShipInput::default(), &fresh.view(), &r, &mut Scratch::default());
+    assert!(ship.p.vx < 0.0, "a ship is pulled towards a base, not pushed");
+}

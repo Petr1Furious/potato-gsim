@@ -12,6 +12,8 @@ pub struct BodyProps {
     pub mass: Vec<f64>,
     pub radius: Vec<f64>,
     pub alive: Vec<bool>,
+    pub pull: Vec<f64>,
+    pub fixed: Vec<bool>,
 }
 
 /// Start-of-tick state of every massive body.
@@ -43,6 +45,7 @@ impl EphRow {
             mass: &self.props.mass,
             radius: &self.props.radius,
             alive: &self.props.alive,
+            pull: &self.props.pull,
         }
     }
 }
@@ -61,6 +64,8 @@ impl EphProducer {
             mass: state.mass.clone(),
             radius: state.radius.clone(),
             alive: state.alive.clone(),
+            pull: state.pull.clone(),
+            fixed: state.fixed.clone(),
         });
         Self { state, rules, props }
     }
@@ -91,6 +96,8 @@ impl EphProducer {
                 mass: self.state.mass.clone(),
                 radius: self.state.radius.clone(),
                 alive: self.state.alive.clone(),
+                pull: self.state.pull.clone(),
+                fixed: self.state.fixed.clone(),
             });
         }
         row

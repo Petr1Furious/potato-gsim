@@ -1,4 +1,4 @@
-//! What the exact engine costs: `cargo run --release -p gsim-server --example bench`.
+//! What the exact engine costs: `cargo run --release -p gsim-server --example exact`.
 //!
 //! A tick of the bodies (what a server and every client work out sixty times a second), a
 //! tick of one ship or shell among them, and a prediction of a ship's path.

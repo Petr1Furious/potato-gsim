@@ -14,6 +14,16 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::sync::Arc;
 
+/// What the bodies are made of, as it travels.
+#[derive(Serialize, Deserialize)]
+struct Props {
+    mass: Vec<f64>,
+    radius: Vec<f64>,
+    alive: Vec<bool>,
+    pull: Vec<f64>,
+    fixed: Vec<bool>,
+}
+
 /// A row of the ephemeris as it travels: what the bodies are made of only when that changed.
 #[derive(Serialize, Deserialize)]
 struct Row {
@@ -24,7 +34,7 @@ struct Row {
     vy: Vec<f64>,
     ax: Vec<f64>,
     ay: Vec<f64>,
-    props: Option<(Vec<f64>, Vec<f64>, Vec<bool>)>,
+    props: Option<Props>,
     hash: u64,
     merges: Vec<MergeEvent>,
 }
@@ -47,7 +57,7 @@ struct Asked {
 /// told apart.
 #[derive(Serialize, Deserialize)]
 enum ToWorker {
-    World { world: u32, snapshot: MassiveSnapshot, rules: GameRules },
+    World { world: u32, snapshot: Box<MassiveSnapshot>, rules: Box<GameRules> },
     Want { world: u32, upto: Tick, keep: Tick },
     Predict { world: u32, asked: Asked },
 }
@@ -115,7 +125,7 @@ fn pump(link: &mut Link) {
             Some(FromWorker::Rows { world, rows }) if world == link.world => {
                 for row in rows {
                     let props = match row.props {
-                        Some((mass, radius, alive)) => Arc::new(BodyProps { mass, radius, alive }),
+                        Some(Props { mass, radius, alive, pull, fixed }) => Arc::new(BodyProps { mass, radius, alive, pull, fixed }),
                         None => match &link.props {
                             Some(props) => props.clone(),
                             None => continue,
@@ -171,7 +181,7 @@ pub fn feed(snapshot: &MassiveSnapshot, rules: &GameRules) -> Option<Box<dyn Fee
         *link = Link { world: link.world + 1, answers, ..Link::default() };
         link.world
     });
-    send(&ToWorker::World { world, snapshot: snapshot.clone(), rules: rules.clone() });
+    send(&ToWorker::World { world, snapshot: Box::new(snapshot.clone()), rules: Box::new(rules.clone()) });
     Some(Box::new(FromTheWorker { world, asked: 0 }))
 }
 
@@ -260,7 +270,7 @@ pub extern "C" fn gsim_worker_message() {
         match message {
             Some(ToWorker::World { world, snapshot, rules }) => {
                 let eph = Eph::new(&snapshot, &rules, Source::Inline { budget: 1 });
-                *worker = Some(Worker { world, eph, rules, sent: snapshot.tick, want: snapshot.tick, keep: 0, props: None, kept: None });
+                *worker = Some(Worker { world, eph, rules: *rules, sent: snapshot.tick, want: snapshot.tick, keep: 0, props: None, kept: None });
             }
             Some(ToWorker::Want { world, upto, keep }) => {
                 if let Some(w) = worker.as_mut().filter(|w| w.world == world) {
@@ -322,7 +332,8 @@ pub extern "C" fn gsim_worker_work(ms: f64) -> bool {
                 // What the bodies are made of only goes with the rows where it changed.
                 let changed = w.props.as_ref().is_none_or(|props| !Arc::ptr_eq(props, &row.props));
                 w.props = Some(row.props.clone());
-                let props = changed.then(|| (row.props.mass.clone(), row.props.radius.clone(), row.props.alive.clone()));
+                let p = &row.props;
+                let props = changed.then(|| Props { mass: p.mass.clone(), radius: p.radius.clone(), alive: p.alive.clone(), pull: p.pull.clone(), fixed: p.fixed.clone() });
                 let r = &*row;
                 rows.push(Row { tick: r.tick, x: r.x.clone(), y: r.y.clone(), vx: r.vx.clone(), vy: r.vy.clone(), ax: r.ax.clone(), ay: r.ay.clone(), props, hash: r.hash, merges: r.merges.clone() });
                 w.sent += 1;
