@@ -48,6 +48,8 @@ struct Player {
     fires: VecDeque<(Tick, u16, f32)>,
     /// Shells cannot destroy this ship.
     god: bool,
+    /// Watching, with no ship and no respawns.
+    spectating: bool,
     /// Who `/r` answers.
     reply_to: Option<PlayerId>,
     /// (start tick, messages) of the current chat rate-limit window.
@@ -352,6 +354,7 @@ impl Authority {
                 last_cmd_tick: 0,
                 fires: VecDeque::new(),
                 god: false,
+                spectating: false,
                 reply_to: None,
                 chat_window: (0, 0),
                 last_mark: 0,
@@ -394,6 +397,7 @@ impl Authority {
                         respawn_tick: p.respawn_tick,
                         next_fire_tick: p.next_fire_tick,
                         magazine: p.magazine,
+                        spectating: p.spectating,
                     }
                 })
                 .collect(),
@@ -520,7 +524,7 @@ impl Authority {
 
         // Respawns: the ship exists from the start of tick `t`.
         let due: Vec<PlayerId> =
-            self.players.values().filter(|p| p.respawn_tick.is_some_and(|r| r <= t)).map(|p| p.id).collect();
+            self.players.values().filter(|p| !p.spectating && p.respawn_tick.is_some_and(|r| r <= t)).map(|p| p.id).collect();
         for id in due {
             let state = self.spawn_state();
             let p = self.players.get_mut(&id).unwrap();
@@ -708,6 +712,22 @@ impl Authority {
         self.shells.len()
     }
 
+    /// Make a player watch (losing their ship, without it counting as a death), or play
+    /// again (with a new ship at once). Nothing happens if they already do.
+    pub fn set_spectating(&mut self, player: PlayerId, spectating: bool) {
+        let tick = self.tick();
+        let Some(p) = self.players.get_mut(&player).filter(|p| p.spectating != spectating) else { return };
+        p.spectating = spectating;
+        p.hold = None;
+        if spectating {
+            p.ship = None;
+            p.respawn_tick = None;
+        } else {
+            p.respawn_tick = Some(tick + 1);
+        }
+        self.event(Event::Gamemode { tick, player, spectating });
+    }
+
     /// Place a player's ship (announced to everyone as a fresh spawn at the current tick).
     pub fn place_ship(&mut self, player: PlayerId, state: ShipState) {
         let tick = self.tick();
@@ -745,7 +765,7 @@ impl Authority {
     /// How many objectives there should be right now.
     fn targets_wanted(&self) -> usize {
         match self.target_plan {
-            TargetPlan::PerPlayers(each) => (self.players.len() / each.max(1) as usize).max(1),
+            TargetPlan::PerPlayers(each) => (self.players.values().filter(|p| !p.spectating).count() / each.max(1) as usize).max(1),
             TargetPlan::Fixed(count) => count as usize,
         }
     }
@@ -926,7 +946,7 @@ impl Authority {
             p.deaths = 0;
             p.captures = 0;
             p.hold = None;
-            p.respawn_tick = Some(tick);
+            p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }
         let ids: Vec<(ConnId, PlayerId)> = self.by_conn.iter().map(|(c, p)| (*c, *p)).collect();

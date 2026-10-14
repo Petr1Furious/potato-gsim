@@ -425,6 +425,15 @@ impl Authority {
                 }
                 done(format!("Refuelled {}", self.names_of(&filled)))
             }
+            "gamemode" => {
+                let spectating = args.first().map(String::as_str) == Some("spectator");
+                let who = self.select_or_me(args.get(1), me)?;
+                for id in &who {
+                    self.set_spectating(*id, spectating);
+                }
+                // (Everyone is told by the event itself.)
+                Ok(None)
+            }
             "god" => {
                 let who = self.select_or_me(args.first(), me)?;
                 let mut lines = Vec::new();

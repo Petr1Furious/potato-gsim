@@ -98,6 +98,12 @@ pub const COMMANDS: &[Command] = &[
         params: &[req("count|per", Arg::Word(&["count", "per"])), req("number", Arg::Number)],
     },
     Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
+    Command {
+        name: "gamemode",
+        help: "watch the game without a ship, or play again",
+        op: true,
+        params: &[req("spectator|play", Arg::Word(&["spectator", "play"])), opt("player", Arg::Player)],
+    },
     Command { name: "god", help: "toggle immunity to shells", op: true, params: &[opt("player", Arg::Player)] },
     Command { name: "kill", help: "destroy a ship", op: true, params: &[req("player", Arg::Player)] },
     Command {

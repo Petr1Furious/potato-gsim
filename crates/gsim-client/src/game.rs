@@ -466,7 +466,8 @@ impl Game {
                 .filter(|s| alive(*s));
         }
         let own = world.ship_at(world.my_id, tick_f);
-        let me_ship = world.my_ship();
+        // Watching: no ship of one's own, and the camera goes from one player to the next.
+        let spectating = world.me().is_some_and(|m| m.spectating);
         // The targets of the round, the nearest to the ship first.
         let mut targets: Vec<Objective> = world.objectives.iter().filter(|o| alive(o.slot) && world.next_round_tick.is_none()).copied().collect();
         if let Some(ship) = own {
@@ -494,6 +495,11 @@ impl Game {
         let objective = holding.into_iter().chain(self.selected).find_map(|s| targets.iter().find(|o| o.slot == s)).or(targets.first()).copied();
 
         // --- camera ----------------------------------------------------------------------------
+        if spectating && keys && is_key_pressed(KeyCode::Space) {
+            let flying: Vec<PlayerId> = world.players.iter().filter(|(id, p)| **id != world.my_id && p.ship.is_some()).map(|(id, _)| *id).collect();
+            let at = self.watch.and_then(|w| flying.iter().position(|id| *id == w));
+            self.watch = flying.get(at.map_or(0, |a| a + 1) % flying.len().max(1)).copied();
+        }
         let watched = self.watch.and_then(|id| world.ship_at(id, tick_f).map(|p| (id, p)));
         if watched.is_none() {
             self.watch = None;
@@ -826,9 +832,11 @@ impl Game {
         let spare = self.period - self.busy - SLACK;
         let asked = fmt::now();
         if self.predictor.poll(spare) {
-            let ship = me_ship.filter(|t| t.crashed.is_none());
+            // The path of one's own ship; while watching, of the player followed.
+            let subject = world.players.get(&if spectating { self.watch.unwrap_or(world.my_id) } else { world.my_id });
+            let ship = subject.and_then(|p| p.ship.as_ref()).filter(|t| t.crashed.is_none());
             let wanted = settings.prediction || settings.shell_prediction;
-            match (ship, world.me()) {
+            match (ship, subject) {
                 (Some(track), Some(me)) if wanted => {
                     let shell = own.filter(|_| settings.shell_prediction).and_then(|ship| {
                         let (angle, speed) = self.shell_aim(&ship, (mwx, mwy));
@@ -842,7 +850,7 @@ impl Game {
                         timeline: me.timeline.clone(),
                         ticks: self.lookahead_ticks,
                         show_ship: settings.prediction,
-                        held: controls.thrust > 0,
+                        held: !spectating && controls.thrust > 0,
                         burn_mmps: (settings.burn_preview as f64 * 1.0e6) as i64,
                         shell,
                         ref_slot,
@@ -1048,8 +1056,10 @@ impl Game {
         let mut scores: Vec<(String, i64, u32, u32, u32, bool, Color)> = world
             .players
             .iter()
+            .filter(|(_, p)| !p.spectating)
             .map(|(id, p)| (p.name.clone(), p.score(&world.rules), p.kills, p.deaths, p.captures, *id == world.my_id, style::rgb(p.color)))
             .collect();
+        let watchers: Vec<(String, Color)> = world.players.values().filter(|p| p.spectating).map(|p| (p.name.clone(), style::rgb(p.color))).collect();
         scores.sort_by(|a, b| b.1.cmp(&a.1).then(a.3.cmp(&b.3)));
         let secs = |t: Tick| (t as f64 - tick_f).max(0.0) / world.rules.tick_hz as f64;
         let round_left = world.round_end_tick.map(secs);
@@ -1234,6 +1244,14 @@ impl Game {
                             ui.end_row();
                         }
                     });
+                    if !watchers.is_empty() {
+                        style::caption(ui, "WATCHING");
+                        ui.horizontal_wrapped(|ui| {
+                            for (name, colour) in &watchers {
+                                ui.label(RichText::new(name).color(style::c32(style::alpha(*colour, 0.7))));
+                            }
+                        });
+                    }
                 });
             });
 
@@ -1250,6 +1268,10 @@ impl Game {
                             let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
                             let ready = shells > 0 && !reloading;
                             style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
+                        }
+                        None if spectating => {
+                            style::caption(ui, "WATCHING");
+                            ui.label(RichText::new("Space: next player").color(dim));
                         }
                         None => {
                             style::caption(ui, "SHIP LOST");

@@ -135,6 +135,8 @@ pub struct PlayerRep {
     pub respawn_tick: Option<Tick>,
     pub next_fire_tick: Tick,
     pub magazine: Magazine,
+    /// Watching, with no ship.
+    pub spectating: bool,
 }
 
 pub struct ShellRep {
@@ -201,6 +203,7 @@ impl World {
                     respawn_tick: p.respawn_tick,
                     next_fire_tick: p.next_fire_tick,
                     magazine: p.magazine,
+                    spectating: p.spectating,
                 };
                 (p.id, rep)
             })
@@ -274,6 +277,7 @@ impl World {
                     respawn_tick: None,
                     next_fire_tick: 0,
                     magazine: Magazine::full(self.head, &self.rules),
+                    spectating: false,
                 });
             }
             Event::PlayerColor { id, color } => {
@@ -284,6 +288,19 @@ impl World {
             Event::PlayerLeft { id } => {
                 if let Some(p) = self.players.remove(&id) {
                     self.say(self.head, format!("{} left the game", p.name));
+                }
+            }
+            Event::Gamemode { tick, player, spectating } => {
+                let name = self.player_name(player).to_string();
+                self.say(tick, format!("{name} {}", if spectating { "is watching" } else { "is playing again" }));
+                if let Some(p) = self.players.get_mut(&player) {
+                    p.spectating = spectating;
+                    if spectating {
+                        p.respawn_tick = None;
+                        if let Some(ship) = p.ship.as_mut() {
+                            ship.dies_at = Some(tick);
+                        }
+                    }
                 }
             }
             Event::ShipSpawn { tick, player, state } => {

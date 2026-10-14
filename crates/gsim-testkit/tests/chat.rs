@@ -336,3 +336,39 @@ fn operators_see_what_other_operators_do() {
     say(&mut sim, a, "/list");
     assert!(!system(&sim.clients[b].session).iter().any(|l| l.contains("players online")));
 }
+
+/// An operator can make a player watch: no ship, no respawn, not a death, and not counted
+/// for the targets, through a new round too; and play again with a ship at once.
+#[test]
+fn spectators_watch_and_come_back() {
+    let (mut sim, a, b, c) = trio(9);
+    let bob = sim.clients[b].session.world.as_ref().unwrap().my_id;
+    assert!(sim.server.ship(bob).is_some());
+    say(&mut sim, b, "/gamemode spectator");
+    assert!(!errors(&sim.clients[b].session).is_empty(), "only operators may");
+    assert!(sim.server.ship(bob).is_some());
+
+    say(&mut sim, a, "/gamemode spectator bob");
+    // Longer than a respawn takes.
+    sim.run_with(6.0, idle);
+    assert!(sim.server.ship(bob).is_none());
+    assert_eq!(sim.server.score(bob), Some((0, 0)), "watching is not dying");
+    for who in [a, b, c] {
+        let w = sim.clients[who].session.world.as_ref().unwrap();
+        assert!(w.players[&bob].spectating);
+        assert!(w.ship_at(bob, w.head as f64).is_none());
+    }
+    assert!(system(&sim.clients[c].session).iter().any(|l| l == "bob is watching"));
+    say(&mut sim, a, "/round new");
+    sim.run_with(1.5, idle);
+    assert!(sim.server.ship(bob).is_none(), "a new round does not bring a ship");
+
+    say(&mut sim, a, "/gamemode play bob");
+    sim.run_with(0.5, idle);
+    assert!(sim.server.ship(bob).is_some());
+    for who in [a, b, c] {
+        let s = &sim.clients[who].session;
+        assert!(!s.world.as_ref().unwrap().players[&bob].spectating);
+        assert_eq!(s.stats.hash_mismatches, 0);
+    }
+}

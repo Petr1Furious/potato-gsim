@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -72,6 +72,8 @@ pub struct PlayerInfo {
     pub respawn_tick: Option<Tick>,
     pub next_fire_tick: Tick,
     pub magazine: Magazine,
+    /// Watching, with no ship.
+    pub spectating: bool,
 }
 
 /// A body to orbit for points.
@@ -115,6 +117,8 @@ pub enum Event {
     PlayerJoined { id: PlayerId, name: String, color: [u8; 3] },
     PlayerColor { id: PlayerId, color: [u8; 3] },
     PlayerLeft { id: PlayerId },
+    /// From `tick` on the player watches (and has no ship), or plays again (and gets one).
+    Gamemode { tick: Tick, player: PlayerId, spectating: bool },
     ShipSpawn { tick: Tick, player: PlayerId, state: ShipState },
     Input { player: PlayerId, tick: Tick, input: ShipInput },
     ShellSpawn { tick: Tick, id: ShellId, owner: PlayerId, p: Particle },
