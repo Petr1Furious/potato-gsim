@@ -14,6 +14,7 @@ use std::net::IpAddr;
 
 mod bases;
 mod commands;
+mod specials;
 
 pub use bases::DAMAGE;
 
@@ -55,6 +56,8 @@ struct Player {
     spectating: bool,
     /// Only until the next round (out of this one, or joined while it was on).
     benched: bool,
+    /// The ship survives one shell.
+    armour: bool,
     /// Who `/r` answers.
     reply_to: Option<PlayerId>,
     /// (start tick, messages) of the current chat rate-limit window.
@@ -146,6 +149,9 @@ pub struct Authority {
     /// (player, base owner) for every ship on a siege orbit.
     sieges: Vec<(PlayerId, PlayerId)>,
     bases_changed: bool,
+    specials: Vec<Special>,
+    /// Kinds of special coming back, and when.
+    special_due: Vec<(SpecialKind, Tick)>,
 }
 
 impl Authority {
@@ -168,6 +174,8 @@ impl Authority {
             bases: Vec::new(),
             sieges: Vec::new(),
             bases_changed: false,
+            specials: Vec::new(),
+            special_due: Vec::new(),
             massive: MassiveState::from_bodies(&scenario.bodies),
             rules,
             stats: Stats::default(),
@@ -376,6 +384,7 @@ impl Authority {
                 god: false,
                 spectating: watch,
                 benched: watch,
+                armour: false,
                 reply_to: None,
                 chat_window: (0, 0),
                 last_mark: 0,
@@ -399,6 +408,7 @@ impl Authority {
             your_id,
             mode: self.mode,
             bases: self.base_list(),
+            specials: self.specials.clone(),
             preset: self.preset.clone(),
             round: self.round,
             round_end_tick: self.round_end_tick,
@@ -426,6 +436,7 @@ impl Authority {
                         next_fire_tick: p.next_fire_tick,
                         magazine: p.magazine,
                         spectating: p.spectating,
+                        armour: p.armour,
                     }
                 })
                 .collect(),
@@ -575,7 +586,7 @@ impl Authority {
                 if t < p.next_fire_tick || !p.magazine.fire(t, &rules) {
                     continue;
                 }
-                p.next_fire_tick = t + rules.shell_cooldown_ticks as Tick;
+                p.next_fire_tick = t + p.magazine.cooldown(&rules);
                 let (dx, dy) = math::angle_to_dir(angle);
                 let speed = if speed.is_finite() { speed as f64 } else { 0.0 };
                 let speed = speed.clamp(rules.shell_speed_min, rules.shell_speed_max);
@@ -615,6 +626,9 @@ impl Authority {
         }
 
         let gods: Vec<PlayerId> = self.players.values().filter(|p| p.god).map(|p| p.id).collect();
+        // Armour takes the first shell, and is gone.
+        let mut armoured: Vec<PlayerId> = self.players.values().filter(|p| p.armour).map(|p| p.id).collect();
+        let mut spent: Vec<PlayerId> = Vec::new();
         let reach2 = (rules.shell_blast_radius + rules.ship_radius) * (rules.shell_blast_radius + rules.ship_radius);
         let mut gone: Vec<(ShellId, bool)> = Vec::new();
         // (body, shooter) for every shell that struck a body.
@@ -634,7 +648,10 @@ impl Authority {
                 for (victim, a0, a1) in &segs {
                     if !gods.contains(victim) && swept_min_dist2(before, after, *a0, *a1) <= reach2 {
                         exploded = true;
-                        if !deaths.iter().any(|d| d.0 == *victim) {
+                        if armoured.contains(victim) {
+                            armoured.retain(|a| a != victim);
+                            spent.push(*victim);
+                        } else if !spent.contains(victim) && !deaths.iter().any(|d| d.0 == *victim) {
                             deaths.push((*victim, Some(s.owner), None));
                         }
                     }
@@ -656,6 +673,12 @@ impl Authority {
             self.shells.retain(|s| s.id != id);
             self.event(Event::ShellGone { tick: next, id, exploded });
         }
+        for player in spent {
+            if let Some(p) = self.players.get_mut(&player) {
+                p.armour = false;
+            }
+            self.event(Event::ArmourSpent { tick: next, player });
+        }
         let playing_now = self.next_round_tick.is_none();
         if playing_now {
             for (body, by) in struck {
@@ -673,6 +696,7 @@ impl Authority {
                 p.ship = None;
                 p.deaths += playing_now as u32;
                 p.hold = None;
+                p.armour = false;
                 p.respawn_tick = Some(respawn_tick);
             }
             if let Some(k) = killer.filter(|k| *k != victim && playing_now) {
@@ -692,7 +716,7 @@ impl Authority {
         match self.mode {
             GameMode::Targets if self.objective_enabled => self.tend_objectives(next, &merges, playing),
             GameMode::Targets => {}
-            GameMode::Bases => self.tend_bases(next, playing),
+            GameMode::Bases => self.tend_bases(next, &merges, playing),
         }
         if self.next_round_tick.is_none() && self.round_end_tick.is_some_and(|e| next >= e) {
             self.end_round(next, None);
@@ -770,6 +794,7 @@ impl Authority {
         p.hold = None;
         if spectating {
             p.ship = None;
+            p.armour = false;
             p.respawn_tick = None;
         } else {
             p.respawn_tick = Some(tick + 1);
@@ -989,6 +1014,8 @@ impl Authority {
             (p.spectating, p.benched) = (false, false);
         }
         self.lay_bases(&mut sc);
+        self.specials.clear();
+        self.special_due.clear();
         self.sieges.clear();
         self.massive = MassiveState::from_bodies(&sc.bodies);
         self.anchor_bases();
@@ -1009,6 +1036,7 @@ impl Authority {
             p.deaths = 0;
             p.captures = 0;
             p.hold = None;
+            p.armour = false;
             p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }

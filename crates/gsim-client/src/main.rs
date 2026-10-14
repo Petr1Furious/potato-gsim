@@ -485,6 +485,14 @@ fn gallery(ui: f32) {
         }
         y += 40.0 * ui;
     }
+    // Special bodies, with and without a hold under way.
+    y += 50.0 * ui;
+    for (col, (kind, held)) in gsim_proto::SpecialKind::ALL.iter().flat_map(|k| [(*k, 0.0), (*k, 0.6)]).enumerate() {
+        let x = w / 7.0 * (col as f32 + 1.0);
+        let r = if col % 2 == 0 { 8.0 } else { 20.0 } * ui;
+        style::body((x, y), r, 6.0e24, 3 + col as u32, 1.0, ui, style::NO_LIGHT);
+        style::special((x, y), r, kind, held, ui);
+    }
 }
 
 /// The page's script (`web/gsim.js`) is told apart by this.

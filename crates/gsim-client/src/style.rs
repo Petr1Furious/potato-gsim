@@ -212,6 +212,62 @@ pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, s
     }
 }
 
+pub fn special_colour(kind: gsim_proto::SpecialKind) -> Color {
+    match kind {
+        gsim_proto::SpecialKind::Armoury => Color::new(1.0, 0.56, 0.22, 1.0),
+        gsim_proto::SpecialKind::Shipyard => GOOD,
+        gsim_proto::SpecialKind::Armour => Color::new(0.62, 0.72, 1.0, 1.0),
+    }
+}
+
+/// The mark around a special body (radius `r` on screen): a breathing halo in the colour of
+/// its kind and an emblem turning around it, with `held` (0 to 1) of the hold as an arc.
+/// Armoury: three warheads circling it. Shipyard: a slowly turning gear. Armour: a hexagon.
+pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, ui: f32) {
+    use gsim_proto::SpecialKind;
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let time = get_time() as f32;
+    let c = special_colour(kind);
+    let ring = r.min(4000.0) + 9.0 * ui;
+    let pulse = 0.75 + 0.25 * (time * 2.2).sin();
+    for k in 1..=4 {
+        self::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, alpha(c, 0.14 * pulse / k as f32));
+    }
+    match kind {
+        SpecialKind::Armoury => {
+            self::ring(s.0, s.1, ring, 1.5 * ui, alpha(c, 0.8));
+            for k in 0..3 {
+                let a = time * 1.4 + k as f32 * TAU / 3.0;
+                let (cos, sin) = (a.cos(), a.sin());
+                let at = |out: f32, side: f32| vec2(s.0 + cos * (ring + out) - sin * side, s.1 + sin * (ring + out) + cos * side);
+                draw_triangle(at(9.0 * ui, 0.0), at(1.0 * ui, 4.0 * ui), at(1.0 * ui, -4.0 * ui), c);
+            }
+        }
+        SpecialKind::Shipyard => {
+            self::ring(s.0, s.1, ring, 2.0 * ui, alpha(c, 0.9));
+            let teeth = 12;
+            for k in 0..teeth {
+                let a = time * 0.4 + k as f32 * TAU / teeth as f32;
+                let (cos, sin) = (a.cos(), a.sin());
+                draw_line(s.0 + cos * ring, s.1 + sin * ring, s.0 + cos * (ring + 5.0 * ui), s.1 + sin * (ring + 5.0 * ui), 3.5 * ui, alpha(c, 0.9));
+            }
+        }
+        SpecialKind::Armour => {
+            for (k, out) in [(0.0f32, 0.0f32), (1.0, 4.0)] {
+                let turn = time * 0.3 * (1.0 - 2.0 * k);
+                let r6 = ring + out * ui;
+                for side in 0..6 {
+                    let (a, b) = (turn + side as f32 * TAU / 6.0, turn + (side + 1) as f32 * TAU / 6.0);
+                    draw_line(s.0 + r6 * a.cos(), s.1 + r6 * a.sin(), s.0 + r6 * b.cos(), s.1 + r6 * b.sin(), (2.0 - k) * ui, alpha(c, 0.9 - 0.4 * k));
+                }
+            }
+        }
+    }
+    if held > 0.0 {
+        arc(s.0, s.1, ring + 9.0 * ui, -FRAC_PI_2, -FRAC_PI_2 + TAU * held.min(1.0), 3.0 * ui, c);
+    }
+}
+
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1.0)
 }

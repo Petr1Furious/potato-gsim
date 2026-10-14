@@ -99,6 +99,12 @@ base stands gets it back. `R` selects the nearest enemy base, the top-left panel
 base and the siege orbit, and the board shows each base's health and how many bases each
 player has destroyed (KO).
 
+Special bodies near the centre give something to whoever holds a qualifying orbit around them
+for 4 s: an **armoury** twice the shells, fired twice as fast, until the ship is lost; a
+**shipyard** the base back to full health; **armour** lets the ship survive one shell. Each
+gives once, and another of the same kind appears on another body 20 s later. There is one
+of each kind for every two players. Operators can name them in commands (`/orbit armoury`).
+
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
 Ships are drawn in their players' colours: random at first, chosen in the settings.

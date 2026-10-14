@@ -85,7 +85,7 @@ impl Authority {
         let tick = self.tick();
         let Some(p) = self.players.get_mut(&player).filter(|p| !p.spectating) else { return };
         (p.spectating, p.benched) = (true, true);
-        (p.ship, p.respawn_tick, p.hold) = (None, None, None);
+        (p.ship, p.respawn_tick, p.hold, p.armour) = (None, None, None, false);
         self.event(Event::Gamemode { tick, player, spectating: true });
     }
 
@@ -110,8 +110,9 @@ impl Authority {
 
     /// Once a tick in the bases mode: sieges wear bases down, the last player in play wins,
     /// and everyone hears how the bases stand.
-    pub(super) fn tend_bases(&mut self, tick: Tick, playing: bool) {
+    pub(super) fn tend_bases(&mut self, tick: Tick, merges: &[MergeEvent], playing: bool) {
         let rules = self.rules.clone();
+        let holds = self.tend_specials(tick, merges, playing);
         let mut sieges = Vec::new();
         if playing {
             for p in self.players.values() {
@@ -146,10 +147,10 @@ impl Authority {
                 self.end_round(tick, winner);
             }
         }
-        if (self.bases_changed && tick.is_multiple_of(10)) || tick.is_multiple_of(hz) {
+        if ((self.bases_changed || !holds.is_empty()) && tick.is_multiple_of(10)) || tick.is_multiple_of(hz) {
             self.bases_changed = false;
             let (bases, sieges) = (self.base_list(), self.sieges.clone());
-            self.send(Target::All, ServerMsg::Bases { bases, sieges });
+            self.send(Target::All, ServerMsg::Bases { bases, sieges, holds });
         }
     }
 

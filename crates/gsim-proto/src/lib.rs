@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -74,6 +74,8 @@ pub struct PlayerInfo {
     pub magazine: Magazine,
     /// Watching, with no ship.
     pub spectating: bool,
+    /// The ship survives one shell.
+    pub armour: bool,
 }
 
 /// What a round is about.
@@ -110,6 +112,39 @@ pub struct Base {
     pub hp: u32,
 }
 
+/// What holding an orbit around a special body gives, once; then it moves to another body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpecialKind {
+    /// Twice the shells, fired twice as often, until the ship is lost.
+    Armoury,
+    /// The base back to full health.
+    Shipyard,
+    /// The ship survives one shell.
+    Armour,
+}
+
+impl SpecialKind {
+    pub const ALL: [SpecialKind; 3] = [SpecialKind::Armoury, SpecialKind::Shipyard, SpecialKind::Armour];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SpecialKind::Armoury => "armoury",
+            SpecialKind::Shipyard => "shipyard",
+            SpecialKind::Armour => "armour",
+        }
+    }
+}
+
+/// Seconds on a qualifying orbit around a special body to take what it gives.
+pub const SPECIAL_HOLD_SECONDS: f64 = 4.0;
+
+/// A body that gives something to whoever holds an orbit around it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Special {
+    pub kind: SpecialKind,
+    pub slot: u32,
+}
+
 /// A body to orbit for points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Objective {
@@ -140,6 +175,7 @@ pub struct Welcome {
     /// The bodies to orbit for points.
     pub objectives: Vec<Objective>,
     pub bases: Vec<Base>,
+    pub specials: Vec<Special>,
     pub rules: GameRules,
     pub massive: MassiveSnapshot,
     pub names: Vec<(u32, String)>,
@@ -168,6 +204,12 @@ pub enum Event {
     Objectives { tick: Tick, objectives: Vec<Objective> },
     /// `player` held an orbit around `target` long enough.
     Captured { tick: Tick, player: PlayerId, target: u32 },
+    /// The special bodies are now these.
+    Specials { tick: Tick, specials: Vec<Special> },
+    /// `player` held an orbit around the special on `slot` long enough and got what it gives.
+    Gift { tick: Tick, player: PlayerId, kind: SpecialKind, slot: u32 },
+    /// The armour of `player`'s ship took a shell and is gone.
+    ArmourSpent { tick: Tick, player: PlayerId },
     /// `by` brought the base of `owner` down to 0 hp.
     BaseDestroyed { tick: Tick, owner: PlayerId, by: Option<PlayerId> },
     /// Scores are final; a new world starts at `next_round_tick`. `winner`: the last player in play.
@@ -197,9 +239,10 @@ pub enum ServerMsg {
     /// Unreliable, a few times a second: how long each objective has left, and who has held
     /// a qualifying orbit around which body for how many ticks.
     Progress { objectives: Vec<Objective>, holds: Vec<(PlayerId, u32, u32)> },
-    /// Unreliable, a few times a second while bases change: their health, and who is besieging
-    /// whose base (player, base owner).
-    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, PlayerId)> },
+    /// Unreliable, a few times a second while bases change: their health, who is besieging
+    /// whose base (player, base owner), and who has held an orbit around which special body
+    /// for how many ticks (player, slot, ticks).
+    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, PlayerId)>, holds: Vec<(PlayerId, u32, u32)> },
     /// Unreliable safety net: authoritative ship state at the start of `tick`.
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }

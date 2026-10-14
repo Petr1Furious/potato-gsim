@@ -185,7 +185,7 @@ impl Session {
                     w.holds = holds.into_iter().filter(|h| w.is_target(h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
                 }
             }
-            ServerMsg::Bases { bases, sieges } => {
+            ServerMsg::Bases { bases, sieges, holds } => {
                 if let Some(w) = self.world.as_mut() {
                     // A late copy must not bring a fallen base back.
                     for b in &mut w.bases {
@@ -194,6 +194,8 @@ impl Session {
                         b.owner = bases.iter().find(|new| new.slot == b.slot).map_or(b.owner, |new| new.owner);
                     }
                     w.sieges = sieges;
+                    let specials: Vec<u32> = w.specials.iter().map(|s| s.slot).collect();
+                    w.holds = holds.into_iter().filter(|h| specials.contains(&h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
                 }
             }
             ServerMsg::ShipCheck { tick, player, state } => {
@@ -320,7 +322,7 @@ impl Session {
                 self.pending.push_back(Cmd { seq: self.next_seq, tick: apply_tick, kind: CmdKind::Fire { angle, speed } });
                 self.next_seq += 1;
                 self.last_cmd_tick = apply_tick;
-                self.fire_ready_tick = apply_tick + w.rules.shell_cooldown_ticks as Tick;
+                self.fire_ready_tick = apply_tick + w.me().map_or(w.rules.shell_cooldown_ticks as Tick, |m| m.magazine.cooldown(&w.rules));
                 self.stats.cmds_sent += 1;
             }
         }

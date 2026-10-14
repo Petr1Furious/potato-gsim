@@ -15,7 +15,7 @@ use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
-use gsim_proto::{GameMode, Objective, PlayerId, BASE_HP};
+use gsim_proto::{GameMode, Objective, PlayerId, BASE_HP, SPECIAL_HOLD_SECONDS};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -487,7 +487,20 @@ impl Game {
             };
             enemy_bases.sort_by(|a, b| far(a).total_cmp(&far(b)));
         }
-        let picks: Vec<u32> = if bases { enemy_bases.clone() } else { targets.iter().map(|o| o.slot).collect() };
+        let picks: Vec<u32> = if bases {
+            // Enemy bases and special bodies, nearest first.
+            let mut picks: Vec<u32> = enemy_bases.iter().copied().chain(world.specials.iter().map(|s| s.slot).filter(|s| alive(*s))).collect();
+            if let Some(ship) = own {
+                let far = |slot: &u32| {
+                    let b = body(*slot);
+                    (b.x - ship.x).powi(2) + (b.y - ship.y).powi(2)
+                };
+                picks.sort_by(|a, b| far(a).total_cmp(&far(b)));
+            }
+            picks
+        } else {
+            targets.iter().map(|o| o.slot).collect()
+        };
         if std::mem::take(&mut self.pick_target) {
             // The nearest one, then the next one each time.
             let after = self.selected.and_then(|s| picks.iter().position(|p| *p == s)).map_or(0, |i| i + 1);
@@ -859,6 +872,37 @@ impl Game {
             }
         }
 
+        // --- special bodies ---------------------------------------------------------------------
+        let hold_goal_special = (SPECIAL_HOLD_SECONDS * world.rules.tick_hz as f64) as f32;
+        for sp in world.specials.iter().filter(|sp| alive(sp.slot) && world.next_round_tick.is_none()) {
+            let j = sp.slot as usize;
+            let at = body(sp.slot);
+            let s = view.to_screen(at.x, at.y);
+            let radius = row.props.radius[j];
+            let colour = style::special_colour(sp.kind);
+            let name = sp.kind.name().to_uppercase();
+            if !view.on_screen(s, 0.0) {
+                let at_edge = edge_arrow(s, colour, ui);
+                let mut lines = vec![name];
+                if let Some(ship) = own {
+                    lines.push(fmt::distance(((at.x - ship.x).powi(2) + (at.y - ship.y).powi(2)).sqrt()));
+                }
+                labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, colour, Rank::Target);
+                continue;
+            }
+            // The band a qualifying orbit must stay inside.
+            let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
+            if outer > 14.0 * ui {
+                let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
+                style::ring(s.0, s.1, outer.min(1.0e5), ui, style::alpha(colour, 0.3));
+                style::ring(s.0, s.1, inner.min(1.0e5), ui, style::alpha(colour, 0.3));
+            }
+            let held = world.holds.get(&world.my_id).filter(|h| h.0 == sp.slot).map_or(0.0, |h| h.1 as f32 / hold_goal_special);
+            let r_px = (radius / view.mpp) as f32;
+            style::special(s, r_px, sp.kind, held, ui);
+            labels.push(name, s.0, s.1 - r_px.min(4000.0) - 26.0 * ui, LABEL * ui, colour, Rank::Target);
+        }
+
         // --- shells and effects ----------------------------------------------------------------
         let blast_px = (world.rules.shell_blast_radius / view.mpp) as f32;
         for (id, shell) in &world.shells {
@@ -895,6 +939,17 @@ impl Game {
                         }
                     }
                     style::disc(s.0, s.1, 26.0 * ui, style::alpha(style::GOLD, 0.35 * (1.0 - (age as f32 / 0.4).min(1.0))));
+                }
+                EffectKind::Gift(kind) => {
+                    // Rings bursting outwards in the colour of what was taken.
+                    let c = style::special_colour(kind);
+                    for delay in [0.0f32, 0.15, 0.3] {
+                        let t = (age as f32 - delay) / 1.1;
+                        if (0.0..1.0).contains(&t) {
+                            style::ring(s.0, s.1, (12.0 + 90.0 * t) * ui, (3.5 - 2.5 * t) * ui, style::alpha(c, (1.0 - t) * (1.0 - t)));
+                        }
+                    }
+                    style::disc(s.0, s.1, 22.0 * ui, style::alpha(c, 0.4 * (1.0 - (age as f32 / 0.4).min(1.0))));
                 }
                 EffectKind::BaseDestroyed => {
                     // A flash, then three shock waves.
@@ -1137,7 +1192,7 @@ impl Game {
         let fuel = me.and_then(|m| m.ship.as_ref()).map(|t| t.last().fuel);
         let respawn_in = me.and_then(|m| m.respawn_tick).map(|t| (t as f64 - tick_f).max(0.0) / world.rules.tick_hz as f64);
         let reloading = fire_ready as f64 > tick_f;
-        let shells_max = world.rules.shell_max;
+        let shells_max = me.map_or(world.rules.shell_max, |m| m.magazine.max);
         let (shells, next_shell) = me.map_or((0, 0.0), |m| (m.magazine.at(tick_f as Tick, &world.rules), m.magazine.next(tick_f as Tick, &world.rules)));
         // In a round of bases the first column is the base's health, and the board is in that order.
         let base_hp = |id: &PlayerId| world.base_of(*id).map_or(-1, |b| b.hp as i64);
@@ -1192,6 +1247,13 @@ impl Game {
             (name, colour, health(b), state.map(|o| (o, row.props.radius[j])), on)
         });
         let out = spectating && bases && world.base_of(world.my_id).is_some_and(|b| b.hp == 0);
+        // The special body one is holding an orbit around, and how far along.
+        let taking = world.holds.get(&world.my_id).and_then(|h| {
+            let sp = world.specials.iter().find(|s| s.slot == h.0)?;
+            Some((sp.kind, h.1 as f32 / hold_goal_special))
+        });
+        let armour = me.is_some_and(|m| m.armour);
+        let quick = me.is_some_and(|m| m.magazine.quick);
         let winner = world.winner.map(|w| world.player_name(w).to_string());
         // What the chat box needs: names to complete and to highlight.
         let player_names: Vec<String> = world.players.values().map(|p| p.name.clone()).collect();
@@ -1337,7 +1399,7 @@ impl Game {
             }
 
             // Bases: one's own, the one being attacked, and how the siege orbit is doing.
-            if bases && intermission.is_none() && (home.is_some() || siege.is_some()) {
+            if bases && intermission.is_none() && (home.is_some() || siege.is_some() || taking.is_some()) {
                 Area::new(Id::new("bases")).fixed_pos([10.0, below]).interactable(false).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
                         ui.set_width(230.0);
@@ -1360,6 +1422,10 @@ impl Game {
                                     ui.label(RichText::new(name).small().color(style::c32(*colour)));
                                 }
                             });
+                        }
+                        if let Some((kind, frac)) = taking {
+                            style::section(ui, "TAKING");
+                            style::gauge(ui, &kind.name().to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), frac, style::special_colour(kind));
                         }
                         if let Some((name, colour, h, state, on)) = &siege {
                             style::section(ui, if *on { "SIEGE · ON" } else { "SIEGE" });
@@ -1427,7 +1493,12 @@ impl Game {
                             style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
                             let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
                             let ready = shells > 0 && !reloading;
-                            style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
+                            let label = if quick { "SHELLS · ARMOURY" } else { "SHELLS" };
+                            style::gauge(ui, label, &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
+                            if armour {
+                                let c = style::c32(style::special_colour(gsim_proto::SpecialKind::Armour));
+                                ui.label(RichText::new("ARMOUR · stops one shell").small().color(c).extra_letter_spacing(1.0));
+                            }
                         }
                         None if spectating => {
                             style::caption(ui, if out { "OUT · WATCHING" } else { "WATCHING" });

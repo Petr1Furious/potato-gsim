@@ -35,11 +35,26 @@ pub struct Magazine {
     pub left: u32,
     /// The tick of that shot.
     pub since: Tick,
+    /// The most it holds.
+    pub max: u32,
+    /// Fires twice as often (an armoury's gift, until the ship is lost).
+    pub quick: bool,
 }
 
 impl Magazine {
     pub fn full(tick: Tick, rules: &GameRules) -> Self {
-        Self { left: rules.shell_max, since: tick }
+        Self { left: rules.shell_max, since: tick, max: rules.shell_max, quick: false }
+    }
+
+    /// Twice the shells, filled up, fired twice as often.
+    pub fn armoury(tick: Tick, rules: &GameRules) -> Self {
+        Self { left: 2 * rules.shell_max, since: tick, max: 2 * rules.shell_max, quick: true }
+    }
+
+    /// Ticks between two shots.
+    pub fn cooldown(&self, rules: &GameRules) -> Tick {
+        let ticks = rules.shell_cooldown_ticks as Tick;
+        if self.quick { ticks / 2 } else { ticks }
     }
 
     /// Ticks towards shells coming back at `tick`: none until the delay is over.
@@ -50,13 +65,13 @@ impl Magazine {
     /// Shells that can be fired at `tick`.
     pub fn at(&self, tick: Tick, rules: &GameRules) -> u32 {
         let back = self.restoring(tick, rules) / rules.shell_regen_ticks.max(1) as Tick;
-        (self.left as Tick + back).min(rules.shell_max as Tick) as u32
+        (self.left as Tick + back).min(self.max as Tick) as u32
     }
 
     /// How far along the next shell is, 0 to 1 (0 while none is on its way).
     pub fn next(&self, tick: Tick, rules: &GameRules) -> f32 {
         let every = rules.shell_regen_ticks.max(1) as Tick;
-        if self.at(tick, rules) >= rules.shell_max {
+        if self.at(tick, rules) >= self.max {
             return 0.0;
         }
         (self.restoring(tick, rules) % every) as f32 / every as f32
@@ -66,7 +81,7 @@ impl Magazine {
     pub fn fire(&mut self, tick: Tick, rules: &GameRules) -> bool {
         let have = self.at(tick, rules);
         if have > 0 {
-            *self = Self { left: have - 1, since: tick };
+            *self = Self { left: have - 1, since: tick, ..*self };
         }
         have > 0
     }

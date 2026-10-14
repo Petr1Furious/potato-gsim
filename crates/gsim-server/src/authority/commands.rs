@@ -157,8 +157,11 @@ impl Authority {
     /// A live body: a scenario name, `B<slot>`, a bare slot number, or `@t` (the objective).
     fn find_body(&self, word: &str) -> Result<u32, String> {
         let w = word.to_lowercase();
+        let special = self.specials.iter().find(|s| s.kind.name() == w).map(|s| s.slot);
         let slot = if w == "@t" {
             self.objectives.first().map(|o| o.slot)
+        } else if special.is_some() {
+            special
         } else if let Some((slot, _)) = self.names.iter().find(|(_, n)| n.to_lowercase() == w) {
             Some(*slot)
         } else {
@@ -188,6 +191,7 @@ impl Authority {
         if let Some(p) = self.players.get_mut(&id) {
             p.ship = None;
             p.hold = None;
+            p.armour = false;
             p.deaths += playing as u32;
             p.respawn_tick = Some(respawn_tick);
         }

@@ -137,6 +137,8 @@ pub struct PlayerRep {
     pub magazine: Magazine,
     /// Watching, with no ship.
     pub spectating: bool,
+    /// The ship survives one shell.
+    pub armour: bool,
 }
 
 pub struct ShellRep {
@@ -153,6 +155,8 @@ pub enum EffectKind {
     Captured,
     /// A base went down here.
     BaseDestroyed,
+    /// Somebody took what a special body gives.
+    Gift(SpecialKind),
 }
 
 /// Something to draw for a moment (drifts with the velocity it had).
@@ -187,6 +191,8 @@ pub struct World {
     pub holds: BTreeMap<PlayerId, (u32, u32)>,
     /// Every base, with its health as last heard.
     pub bases: Vec<Base>,
+    /// The bodies that give something to whoever holds an orbit around them.
+    pub specials: Vec<Special>,
     /// (player, base owner) for every ship on a siege orbit.
     pub sieges: Vec<(PlayerId, PlayerId)>,
     /// The last player in play, once the round is over.
@@ -213,6 +219,7 @@ impl World {
                     next_fire_tick: p.next_fire_tick,
                     magazine: p.magazine,
                     spectating: p.spectating,
+                    armour: p.armour,
                 };
                 (p.id, rep)
             })
@@ -241,6 +248,7 @@ impl World {
             objectives: w.objectives.clone(),
             holds: BTreeMap::new(),
             bases: w.bases.clone(),
+            specials: w.specials.clone(),
             sieges: Vec::new(),
             winner: None,
         }
@@ -299,6 +307,7 @@ impl World {
                     next_fire_tick: 0,
                     magazine: Magazine::full(self.head, &self.rules),
                     spectating: false,
+                    armour: false,
                 });
             }
             Event::PlayerColor { id, color } => {
@@ -318,6 +327,7 @@ impl World {
                 if let Some(p) = self.players.get_mut(&player) {
                     p.spectating = spectating;
                     if spectating {
+                        p.armour = false;
                         p.respawn_tick = None;
                         if let Some(ship) = p.ship.as_mut() {
                             ship.dies_at = Some(tick);
@@ -351,7 +361,7 @@ impl World {
             Event::ShellSpawn { tick, id, owner, p } => {
                 self.shells.insert(id, ShellRep { owner, spawn_tick: tick, track: Track::new(tick, p) });
                 if let Some(pl) = self.players.get_mut(&owner) {
-                    pl.next_fire_tick = tick + self.rules.shell_cooldown_ticks as Tick;
+                    pl.next_fire_tick = tick + pl.magazine.cooldown(&self.rules);
                     pl.magazine.fire(tick, &self.rules);
                 }
             }
@@ -381,6 +391,7 @@ impl World {
                 }
                 if let Some(p) = self.players.get_mut(&player) {
                     p.deaths += counts as u32;
+                    p.armour = false;
                     p.respawn_tick = Some(respawn_tick);
                     if let Some(ship) = p.ship.as_mut() {
                         ship.dies_at = Some(tick);
@@ -420,6 +431,50 @@ impl World {
                 }
                 if let Some(p) = self.players.get_mut(&player) {
                     p.captures += 1;
+                }
+            }
+            Event::Specials { specials, .. } => {
+                self.specials = specials;
+                let slots: Vec<u32> = self.specials.iter().map(|s| s.slot).collect();
+                self.holds.retain(|_, hold| slots.contains(&hold.0));
+            }
+            Event::Gift { tick, player, kind, slot } => {
+                let name = self.player_name(player).to_string();
+                let text = match kind {
+                    SpecialKind::Armoury => format!("{name} raided an armoury"),
+                    SpecialKind::Shipyard => format!("{name} repaired their base at a shipyard"),
+                    SpecialKind::Armour => format!("{name} put on armour"),
+                };
+                self.say(tick, text);
+                if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| (slot as usize) < r.x.len()) {
+                    let j = slot as usize;
+                    let at = Particle { x: row.x[j], y: row.y[j], vx: row.vx[j], vy: row.vy[j] };
+                    self.effects.push_back(Effect { tick, at, kind: EffectKind::Gift(kind) });
+                }
+                self.specials.retain(|s| s.slot != slot);
+                self.holds.retain(|_, hold| hold.0 != slot);
+                match kind {
+                    SpecialKind::Armoury => {
+                        if let Some(p) = self.players.get_mut(&player) {
+                            p.magazine = Magazine::armoury(tick, &self.rules);
+                        }
+                    }
+                    SpecialKind::Armour => {
+                        if let Some(p) = self.players.get_mut(&player) {
+                            p.armour = true;
+                        }
+                    }
+                    SpecialKind::Shipyard => {
+                        if let Some(b) = self.bases.iter_mut().find(|b| b.owner == player && b.hp > 0) {
+                            b.hp = BASE_HP;
+                        }
+                    }
+                }
+            }
+            Event::ArmourSpent { tick, player } => {
+                self.say(tick, format!("{}'s armour stopped a shell", self.player_name(player)));
+                if let Some(p) = self.players.get_mut(&player) {
+                    p.armour = false;
                 }
             }
             Event::BaseDestroyed { tick, owner, by } => {
