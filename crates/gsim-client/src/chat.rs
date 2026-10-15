@@ -82,6 +82,8 @@ pub struct ChatBox {
     history: Vec<String>,
     /// Position in `history` while browsing with the arrow keys.
     recall: Option<usize>,
+    /// What was being typed before browsing began; Down past the newest line brings it back.
+    draft: String,
     /// Frames left in which to take focus and put the cursor at the end.
     settle: u8,
     opened_with: String,
@@ -184,6 +186,11 @@ impl ChatBox {
         }
         self.analysed = self.input.clone();
         self.analysis = complete::analyze(&self.input, ctx, false);
+        // A line recalled from history gets no suggestions until it is edited, as in Minecraft.
+        if self.recall.is_some_and(|i| self.history.get(i) == Some(&self.input)) {
+            self.list = None;
+            return;
+        }
         // An accepted suggestion keeps its list, so Tab can walk on through it.
         if self.list.as_ref().is_some_and(|l| l.applied.as_deref() == Some(self.input.as_str())) {
             return;
@@ -428,13 +435,16 @@ impl ChatBox {
             return false;
         }
         let last = self.history.len() - 1;
+        if self.recall.is_none() {
+            self.draft = self.input.clone();
+        }
         self.recall = match (self.recall, older) {
             (None, true) => Some(last),
             (Some(i), true) => Some(i.saturating_sub(1)),
             (Some(i), false) if i < last => Some(i + 1),
             _ => None,
         };
-        self.input = self.recall.map_or(String::new(), |i| self.history[i].clone());
+        self.input = self.recall.map_or_else(|| self.draft.clone(), |i| self.history[i].clone());
         true
     }
 }

@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -196,7 +196,8 @@ pub enum Event {
     Gamemode { tick: Tick, player: PlayerId, spectating: bool },
     ShipSpawn { tick: Tick, player: PlayerId, state: ShipState },
     Input { player: PlayerId, tick: Tick, input: ShipInput },
-    ShellSpawn { tick: Tick, id: ShellId, owner: PlayerId, p: Particle },
+    /// `free`: fired from within the owner's home zone, so it took nothing from the magazine.
+    ShellSpawn { tick: Tick, id: ShellId, owner: PlayerId, p: Particle, free: bool },
     ShellGone { tick: Tick, id: ShellId, exploded: bool },
     ShipDied { tick: Tick, player: PlayerId, killer: Option<PlayerId>, body: Option<u32>, respawn_tick: Tick },
     /// A player's totals were set by hand.
@@ -245,7 +246,8 @@ pub enum ServerMsg {
     /// Unreliable, a few times a second while bases change: their health, who is besieging
     /// whose base (player, base owner), and who has held an orbit around which special body
     /// for how many ticks (player, slot, ticks).
-    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, PlayerId)>, holds: Vec<(PlayerId, u32, u32)> },
+    /// `hits`: (base owner, by whom) for every base hurt since the last of these.
+    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, PlayerId)>, holds: Vec<(PlayerId, u32, u32)>, hits: Vec<(PlayerId, PlayerId)> },
     /// Unreliable safety net: authoritative ship state at the start of `tick`.
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }

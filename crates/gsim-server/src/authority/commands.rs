@@ -414,6 +414,11 @@ impl Authority {
                 self.set_target(slot);
                 done(format!("{} is now a target", self.body_name(slot)))
             }
+            "reelect" => {
+                let slot = self.find_body(args.first().ok_or("")?)?;
+                let new = self.reelect(slot)?;
+                done(format!("Moved {} to {}", self.body_name(slot), self.body_name(new)))
+            }
             "targets" => {
                 let n = args.get(1).and_then(|s| s.parse::<u32>().ok()).filter(|n| (1..=64).contains(n)).ok_or("")?;
                 let (plan, what) = match args[0].as_str() {

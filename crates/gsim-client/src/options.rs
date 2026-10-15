@@ -28,11 +28,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::toggle(ui, &mut settings.body_names, "Body names", "N").on_hover_text("Names next to named bodies.");
     }
     if world == World::Large {
-        let mut follow = settings.camera != Camera::Ship;
-        style::toggle(ui, &mut follow, "Camera follows selection", "F").on_hover_text("On: the camera stays with the selection. Off: it stays where it is.");
-        if follow != (settings.camera != Camera::Ship) {
-            settings.camera = if follow { Camera::Selection } else { Camera::Ship };
-        }
+        style::toggle(ui, &mut settings.follow, "Camera follows selection", "F").on_hover_text("On: the camera stays with the selection. Off: it stays where it is.");
     } else {
         ui.horizontal(|ui| {
             ui.label("Camera follows");
@@ -43,7 +39,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         })
         .response
         .on_hover_text(
-            "Ship: stays with your ship. Selection: stays with the selected body. \
+            "Selection: stays with the selected body, or with your ship while nothing is selected. \
              Auto: as Selection, and it moves and zooms to keep your ship, its path and the selected body in view.",
         );
     }
@@ -79,7 +75,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
     })
     .response
     .on_hover_text(
-        "Size of menus, panels and text. Default 1.2.",
+        "Size of menus, panels and text. Default 1.5.",
     );
     ui.add(egui::Slider::new(&mut settings.zoom_speed, 0.002..=3.0).logarithmic(true).text("zoom speed")).on_hover_text(
         "How far one wheel step zooms. Trackpads want a much lower value.",

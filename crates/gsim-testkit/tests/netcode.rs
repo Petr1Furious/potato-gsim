@@ -360,11 +360,12 @@ fn ships_spawn_near_the_target_but_not_on_top_of_it() {
 }
 
 #[test]
-fn target_survives_a_fast_swing_past_a_neighbour() {
+fn a_target_swung_around_a_much_heavier_neighbour_moves_to_it() {
     use gsim_core::Body;
     let mut sc = quiet_scenario();
     // A light body in a tight, fast orbit around a heavy one, far from the star: it moves
-    // faster than the system's escape speed at that distance, half the time outwards.
+    // faster than the system's escape speed at that distance, half the time outwards (which
+    // is no reason to drop it), but no orbit around it lasts: the heavy one takes over.
     let (m_heavy, d): (f64, f64) = (5.0e27, 4.0e8);
     let v = (6.67430e-11 * m_heavy / d).sqrt();
     sc.bodies.push(Body { x: 4.0e11, y: 0.0, vx: 0.0, vy: 0.0, mass: m_heavy, radius: 4.0e7 });
@@ -375,8 +376,8 @@ fn target_survives_a_fast_swing_past_a_neighbour() {
     sim.server.set_target(2);
     sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
     sim.run_with(12.0, idle);
-    assert_eq!(sim.server.targets(), [2], "{:?}", sim.server.stats);
-    assert_eq!(sim.server.stats.target_ineligible, 0);
+    assert_eq!(sim.server.targets(), [1], "{:?}", sim.server.stats);
+    assert_eq!((sim.server.stats.target_swung, sim.server.stats.target_ineligible), (1, 0));
 }
 
 fn firing(_: usize, _: f64) -> Controls {

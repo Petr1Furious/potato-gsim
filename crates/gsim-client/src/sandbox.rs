@@ -5,7 +5,7 @@
 use crate::density::{ColorMode, Density, Flash};
 use crate::fmt;
 use crate::game::{Outcome, View, LABEL, PICK_RADIUS_PX};
-use crate::settings::{Camera, Settings};
+use crate::settings::Settings;
 use crate::style::{self, Rank};
 use egui_macroquad::egui;
 use gsim_swarm::runner::{Command, Heavy, Runner, Stats};
@@ -465,7 +465,7 @@ impl Sandbox {
                 settings.long_exposure = !settings.long_exposure;
             }
             if is_key_pressed(KeyCode::F) {
-                settings.camera = if settings.camera == Camera::Ship { Camera::Selection } else { Camera::Ship };
+                settings.follow = !settings.follow;
             }
             for (tool, _, key) in Tool::ALL {
                 if is_key_pressed(key) && !paging {
@@ -540,7 +540,7 @@ impl Sandbox {
             found.sort_unstable();
 
             // --- camera ------------------------------------------------------------------------
-            let target = match (settings.camera != Camera::Ship, picked) {
+            let target = match (settings.follow, picked) {
                 (true, Some(_)) => Target::Bodies(found.iter().fold(found.len() as u32, |all, id| all.wrapping_mul(0x9E37_79B1) ^ id)),
                 _ => Target::Free,
             };

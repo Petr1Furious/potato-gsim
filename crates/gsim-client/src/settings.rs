@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// What the camera stays with in a world with a ship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Camera {
-    Ship,
+    /// Stays with the selected body, or with one's own ship while nothing is selected.
     Selection,
     /// Stays with the selection like `Selection`, and moves and zooms by itself so that the
     /// ship, its predicted path and the selected body are all on screen.
@@ -16,11 +16,10 @@ pub enum Camera {
 }
 
 impl Camera {
-    pub const ALL: [Camera; 3] = [Camera::Ship, Camera::Selection, Camera::Auto];
+    pub const ALL: [Camera; 2] = [Camera::Selection, Camera::Auto];
 
     pub fn name(self) -> &'static str {
         match self {
-            Camera::Ship => "ship",
             Camera::Selection => "selection",
             Camera::Auto => "auto",
         }
@@ -51,6 +50,8 @@ pub struct Settings {
     pub trails_relative: bool,
     pub body_names: bool,
     pub camera: Camera,
+    /// Large-scale worlds: the camera stays with the selection (or else where it is).
+    pub follow: bool,
     /// The F3 panel: network details in exact worlds, statistics in large ones.
     pub details: bool,
     pub color: ColorMode,
@@ -64,7 +65,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ship_color: random_color(), ui_scale: 1.2, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, camera: Camera::Selection, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ship_color: random_color(), ui_scale: 1.5, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, camera: Camera::Selection, follow: true, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -165,6 +166,7 @@ impl Settings {
                 "camera" => s.camera = Camera::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.camera),
                 "details" => s.details = v == "1",
                 "long_exposure" => s.long_exposure = v == "1",
+                "follow" => s.follow = v == "1",
                 "color" => s.color = ColorMode::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.color),
                 key => {
                     // `param.<world>.<key>` and `measured.<world>`
@@ -205,6 +207,7 @@ impl Settings {
             ("body_names", self.body_names),
             ("details", self.details),
             ("long_exposure", self.long_exposure),
+            ("follow", self.follow),
         ] {
             text.push_str(&format!("{key}={}\n", on as u8));
         }

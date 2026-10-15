@@ -263,3 +263,39 @@ fn shells_and_rams_hurt_ones_own_base_too() {
     assert_eq!(sim.clients[a].session.world.as_ref().unwrap().players[&ann].captures, 0, "no credit for it");
     in_sync(&sim);
 }
+
+#[test]
+fn shells_are_free_at_home() {
+    let (mut sim, a, b, ann, bob) = duel(8);
+    let full = sim.server.rules.shell_max;
+    // Ships start on an orbit inside their home zone.
+    let t0 = sim.time;
+    let shoot = move |i: usize, t: f64| if i == a && t < t0 + 3.5 { Controls { fire: Some((0, 8000.0)), ..Controls::default() } } else { Controls::default() };
+    sim.run_with(4.0, shoot);
+    assert!(sim.server.shell_count() >= 3);
+    assert_eq!(sim.server.shells_left(ann), Some(full), "nothing taken at home");
+    assert_eq!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].magazine.at(sim.server.tick(), &sim.server.rules), full);
+    // Away from home they cost as usual.
+    let p = orbit_around(&sim, bob, 4.0e9);
+    place(&mut sim, ann, p);
+    let t0 = sim.time;
+    sim.run_with(2.5, move |i: usize, t: f64| if i == a && t < t0 + 2.0 { Controls { fire: Some((0, 8000.0)), ..Controls::default() } } else { Controls::default() });
+    assert!(sim.server.shells_left(ann).unwrap() < full);
+    in_sync(&sim);
+}
+
+#[test]
+fn whoever_is_hit_hears_about_it() {
+    let (mut sim, a, b, ann, bob) = duel(9);
+    sim.server.hurt_base(ann, bob, 100);
+    sim.run_with(0.5, idle);
+    fn alerts(sim: &Sim, i: usize) -> Vec<String> {
+        sim.clients[i].session.world.as_ref().unwrap().alerts.iter().map(|a| a.text.clone()).collect()
+    }
+    assert_eq!(alerts(&sim, a), ["bob is hitting your base"]);
+    assert!(alerts(&sim, b).is_empty());
+    sim.server.hurt_base(ann, bob, BASE_HP);
+    sim.run_with(0.5, idle);
+    assert!(alerts(&sim, a).contains(&"Your base is destroyed".to_string()));
+    assert!(alerts(&sim, b).contains(&"You destroyed ann's base".to_string()));
+}

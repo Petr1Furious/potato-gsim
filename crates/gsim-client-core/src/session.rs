@@ -185,7 +185,7 @@ impl Session {
                     w.holds = holds.into_iter().filter(|h| w.is_target(h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
                 }
             }
-            ServerMsg::Bases { bases, sieges, holds } => {
+            ServerMsg::Bases { bases, sieges, holds, hits } => {
                 if let Some(w) = self.world.as_mut() {
                     // A late copy must not bring a fallen base back.
                     for b in &mut w.bases {
@@ -196,6 +196,11 @@ impl Session {
                     w.sieges = sieges;
                     let specials: Vec<u32> = w.specials.iter().map(|s| s.slot).collect();
                     w.holds = holds.into_iter().filter(|h| specials.contains(&h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
+                    let me = w.my_id;
+                    for (_, by) in hits.into_iter().filter(|h| h.0 == me && h.1 != me) {
+                        let text = format!("{} is hitting your base", w.player_name(by));
+                        w.alert(w.head, text, false);
+                    }
                 }
             }
             ServerMsg::ShipCheck { tick, player, state } => {
@@ -317,7 +322,7 @@ impl Session {
         if let Some((angle, speed)) = controls.fire {
             let ready = w.me().map_or(Tick::MAX, |m| m.next_fire_tick).max(self.fire_ready_tick);
             let alive = w.my_ship().is_some();
-            let loaded = w.me().is_some_and(|m| m.magazine.at(apply_tick, &w.rules) > 0);
+            let loaded = w.me().is_some_and(|m| m.magazine.at(apply_tick, &w.rules) > 0) || w.at_home(w.my_id);
             if alive && loaded && apply_tick >= ready && apply_tick >= self.last_cmd_tick {
                 self.pending.push_back(Cmd { seq: self.next_seq, tick: apply_tick, kind: CmdKind::Fire { angle, speed } });
                 self.next_seq += 1;

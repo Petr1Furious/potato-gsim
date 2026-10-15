@@ -14,7 +14,10 @@ use std::net::IpAddr;
 
 mod bases;
 mod commands;
+mod interest;
 mod specials;
+
+use interest::Trouble;
 
 pub use bases::DAMAGE;
 
@@ -90,6 +93,8 @@ pub struct Stats {
     pub target_merged: u64,
     pub target_gone: u64,
     pub target_ineligible: u64,
+    /// Moved to the heavier body swinging it around.
+    pub target_swung: u64,
     pub target_expired: u64,
     pub captures: u64,
     pub shells_fired: u64,
@@ -111,6 +116,8 @@ pub struct Authority {
     preset: String,
     names: Vec<(u32, String)>,
     spawn_r: (f64, f64),
+    /// How far from the centre the world reached when it was made.
+    world_r: f64,
     players: BTreeMap<PlayerId, Player>,
     by_conn: BTreeMap<ConnId, PlayerId>,
     shells: Vec<Shell>,
@@ -149,6 +156,8 @@ pub struct Authority {
     /// (player, base owner) for every ship on a siege orbit.
     sieges: Vec<(PlayerId, PlayerId)>,
     bases_changed: bool,
+    /// (base owner, by whom) for every base hurt since the last report.
+    base_hits: Vec<(PlayerId, PlayerId)>,
     specials: Vec<Special>,
     /// Kinds of special coming back, and when.
     special_due: Vec<(SpecialKind, Tick)>,
@@ -156,6 +165,7 @@ pub struct Authority {
 
 impl Authority {
     pub fn new(scenario: Scenario, rules: GameRules, seed: u64) -> Self {
+        let world_r = scenario.extent().max(scenario.spawn_r.1);
         Self {
             initial: scenario.clone(),
             generator: None,
@@ -174,6 +184,7 @@ impl Authority {
             bases: Vec::new(),
             sieges: Vec::new(),
             bases_changed: false,
+            base_hits: Vec::new(),
             specials: Vec::new(),
             special_due: Vec::new(),
             massive: MassiveState::from_bodies(&scenario.bodies),
@@ -182,6 +193,7 @@ impl Authority {
             preset: scenario.name,
             names: scenario.names,
             spawn_r: scenario.spawn_r,
+            world_r,
             players: BTreeMap::new(),
             by_conn: BTreeMap::new(),
             shells: Vec::new(),
@@ -577,13 +589,16 @@ impl Authority {
             self.event(Event::ShipSpawn { tick: t, player: id, state });
         }
 
-        // Shells leave the muzzle from the ship's state at the start of tick `t`.
-        let mut spawned = Vec::new();
+        // Shells leave the muzzle from the ship's state at the start of tick `t`. Fired within
+        // one's own home zone they cost nothing.
+        let home: Vec<PlayerId> = self.players.keys().copied().filter(|id| self.at_home(*id)).collect();
+        let mut spawned: Vec<(Shell, bool)> = Vec::new();
         for p in self.players.values_mut() {
             while p.fires.front().is_some_and(|f| f.0 <= t) {
                 let (_, angle, speed) = p.fires.pop_front().unwrap();
                 let Some(ship) = p.ship else { continue };
-                if t < p.next_fire_tick || !p.magazine.fire(t, &rules) {
+                let free = home.contains(&p.id);
+                if t < p.next_fire_tick || !(free || p.magazine.fire(t, &rules)) {
                     continue;
                 }
                 p.next_fire_tick = t + p.magazine.cooldown(&rules);
@@ -597,14 +612,14 @@ impl Authority {
                     vx: ship.p.vx + dx * speed,
                     vy: ship.p.vy + dy * speed,
                 };
-                spawned.push(Shell { id: 0, owner: p.id, spawn_tick: t, p: particle });
+                spawned.push((Shell { id: 0, owner: p.id, spawn_tick: t, p: particle }, free));
             }
         }
-        for mut s in spawned {
+        for (mut s, free) in spawned {
             s.id = self.next_shell_id;
             self.next_shell_id += 1;
             self.stats.shells_fired += 1;
-            self.event(Event::ShellSpawn { tick: t, id: s.id, owner: s.owner, p: s.p });
+            self.event(Event::ShellSpawn { tick: t, id: s.id, owner: s.owner, p: s.p, free });
             self.shells.push(s);
         }
 
@@ -864,14 +879,28 @@ impl Authority {
                 p.hold = p.hold.map(|(slot, held)| (if slot == old { survivor } else { slot }, held));
             }
         }
-        // Gone (annihilated or escaped), or (checked once a second) drifting out of play, or
-        // the same body as another objective after a merge.
+        // Gone (annihilated or escaped), or the same body as another objective after a merge;
+        // or (checked once a second) swung around by a heavier body, which becomes the target
+        // instead, or far from the centre or racing away with nobody on the way to it.
         let check = tick.is_multiple_of(rules.tick_hz as Tick);
         let frame = SystemFrame::of(&self.massive.kinematics());
         for k in (0..self.objectives.len()).rev() {
             let slot = self.objectives[k].slot;
             let gone = !self.massive.alive[slot as usize];
-            let out = !gone && check && !self.target_eligible(&frame, slot as usize, 0.5, false);
+            let trouble = if !gone && check { self.trouble(&frame, slot, false) } else { None };
+            if let Some(Trouble::Swung(heavy)) = trouble {
+                // The heavier body takes over; if it is a target already, the body most like
+                // the old one in place and motion does.
+                let taken: Vec<u32> = self.objectives.iter().map(|o| o.slot).collect();
+                let new = if taken.contains(&heavy) { self.most_alike(slot as usize, &taken, false) } else { Some(heavy) };
+                if let Some(new) = new {
+                    self.objectives[k] = Objective { slot: new, left: rules.target_ticks };
+                    self.forget_holds(slot);
+                    self.stats.target_swung += 1;
+                    continue;
+                }
+            }
+            let out = trouble.is_some() || (!gone && self.massive.mass[slot as usize] <= 0.0);
             let twice = self.objectives[..k].iter().any(|o| o.slot == slot);
             if gone || out || twice {
                 self.stats.target_gone += gone as u64;
@@ -974,7 +1003,7 @@ impl Authority {
             let view = self.massive.kinematics();
             let frame = SystemFrame::of(&view);
             (0..view.x.len())
-                .filter(|&j| !taken.contains(&(j as u32)) && self.target_eligible(&frame, j, 0.35, true))
+                .filter(|&j| !taken.contains(&(j as u32)) && self.target_eligible(&frame, j, 0.35, true) && self.fit_for_interest(&frame, j, false))
                 .map(|j| (j as u32, view.mass[j], (view.x[j] - cx) * (view.x[j] - cx) + (view.y[j] - cy) * (view.y[j] - cy)))
                 .collect()
         };
@@ -1014,10 +1043,12 @@ impl Authority {
             (p.spectating, p.benched) = (false, false);
         }
         self.lay_bases(&mut sc);
+        self.base_hits.clear();
         self.specials.clear();
         self.special_due.clear();
         self.sieges.clear();
         self.massive = MassiveState::from_bodies(&sc.bodies);
+        let world_r = sc.extent().max(sc.spawn_r.1);
         self.anchor_bases();
         // Ticks never restart: clients keep their clock across rounds.
         self.massive.tick = tick;
@@ -1025,6 +1056,7 @@ impl Authority {
         self.names = sc.names;
         self.preset = sc.name;
         self.spawn_r = sc.spawn_r;
+        self.world_r = world_r;
         self.shells.clear();
         self.round += 1;
         self.next_round_tick = None;

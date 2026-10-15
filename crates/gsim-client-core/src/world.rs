@@ -169,6 +169,15 @@ pub struct Effect {
     pub kind: EffectKind,
 }
 
+/// Something that just happened to us, for the top of the screen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Alert {
+    pub tick: Tick,
+    pub text: String,
+    /// Good news (in our favour) or bad.
+    pub good: bool,
+}
+
 pub struct World {
     pub rules: GameRules,
     pub my_id: PlayerId,
@@ -199,6 +208,8 @@ pub struct World {
     pub sieges: Vec<(PlayerId, PlayerId)>,
     /// The last player in play, once the round is over.
     pub winner: Option<PlayerId>,
+    /// What just happened to us, newest last.
+    pub alerts: VecDeque<Alert>,
     scratch: Scratch,
 }
 
@@ -253,6 +264,7 @@ impl World {
             specials: w.specials.clone(),
             sieges: Vec::new(),
             winner: None,
+            alerts: VecDeque::new(),
         }
     }
 
@@ -276,12 +288,33 @@ impl World {
         self.bases.iter().find(|b| b.owner == player)
     }
 
+    /// The player's ship (as far as simulated) is within their own standing base's zone, where
+    /// shells cost nothing (the server decides; this is for the controls and the HUD).
+    pub fn at_home(&self, player: PlayerId) -> bool {
+        let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
+        let Some(ship) = self.players.get(&player).and_then(|p| p.ship.as_ref()) else { return false };
+        let Some(row) = self.eph.get(ship.end()).or_else(|| self.eph.get(self.head.saturating_sub(1))) else { return false };
+        let (j, s) = (b.slot as usize, ship.last().p);
+        let zone = self.rules.orbit_max_apo_radii * row.props.radius[j];
+        j < row.x.len() && (s.x - row.x[j]).powi(2) + (s.y - row.y[j]).powi(2) <= zone * zone
+    }
+
     pub fn base_on(&self, slot: u32) -> Option<&Base> {
         self.bases.iter().find(|b| b.slot == slot)
     }
 
     pub fn body_name(&self, slot: u32) -> String {
         self.names.get(&slot).cloned().unwrap_or_else(|| format!("B{slot}"))
+    }
+
+    /// Tell the player about something that concerns them (the same news again only
+    /// freshens it).
+    pub fn alert(&mut self, tick: Tick, text: String, good: bool) {
+        self.alerts.retain(|a| a.text != text);
+        self.alerts.push_back(Alert { tick, text, good });
+        while self.alerts.len() > 4 {
+            self.alerts.pop_front();
+        }
     }
 
     fn say(&mut self, tick: Tick, text: String) {
@@ -326,6 +359,9 @@ impl World {
                 let name = self.player_name(player).to_string();
                 let out = spectating && self.mode == GameMode::Bases && self.base_of(player).is_some_and(|b| b.hp == 0);
                 self.say(tick, format!("{name} {}", if out { "is out" } else if spectating { "is watching" } else { "is playing again" }));
+                if out && player == self.my_id {
+                    self.alert(tick, "You are out".to_string(), false);
+                }
                 if let Some(p) = self.players.get_mut(&player) {
                     p.spectating = spectating;
                     if spectating {
@@ -360,11 +396,13 @@ impl World {
                     }
                 }
             }
-            Event::ShellSpawn { tick, id, owner, p } => {
+            Event::ShellSpawn { tick, id, owner, p, free } => {
                 self.shells.insert(id, ShellRep { owner, spawn_tick: tick, track: Track::new(tick, p) });
                 if let Some(pl) = self.players.get_mut(&owner) {
                     pl.next_fire_tick = tick + pl.magazine.cooldown(&self.rules);
-                    pl.magazine.fire(tick, &self.rules);
+                    if !free {
+                        pl.magazine.fire(tick, &self.rules);
+                    }
                 }
             }
             Event::ShellGone { tick, id, exploded } => {
@@ -385,6 +423,13 @@ impl World {
                     _ => format!("{victim} was destroyed"),
                 };
                 self.say(tick, text);
+                let me = self.my_id;
+                match (killer, body) {
+                    (Some(k), _) if player == me && k != me => self.alert(tick, format!("{} destroyed your ship", self.player_name(k)), false),
+                    (None, Some(b)) if player == me => self.alert(tick, format!("You crashed into {}", self.body_name(b)), false),
+                    (Some(k), _) if k == me && player != me => self.alert(tick, format!("You destroyed {victim}"), true),
+                    _ => {}
+                }
                 let counts = self.next_round_tick.is_none();
                 if let Some(k) = killer.filter(|k| *k != player && counts) {
                     if let Some(p) = self.players.get_mut(&k) {
@@ -423,6 +468,11 @@ impl World {
             }
             Event::Captured { tick, player, target } => {
                 self.say(tick, format!("{} captured {}", self.player_name(player), self.body_name(target)));
+                if player == self.my_id {
+                    self.alert(tick, format!("You captured {}", self.body_name(target)), true);
+                } else if self.holds.get(&self.my_id).is_some_and(|h| h.0 == target) {
+                    self.alert(tick, format!("{} captured it first", self.player_name(player)), false);
+                }
                 // Mark the spot (the event can be a few ticks old; the nearest row will do).
                 if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))) {
                     let j = target as usize;
@@ -448,6 +498,16 @@ impl World {
                     SpecialKind::Shield => format!("{name} took a shield"),
                 };
                 self.say(tick, text);
+                if player == self.my_id {
+                    let text = match kind {
+                        SpecialKind::Ammo => "You took ammo",
+                        SpecialKind::Repair => "Your base is repaired",
+                        SpecialKind::Shield => "You took a shield",
+                    };
+                    self.alert(tick, text.to_string(), true);
+                } else if self.holds.get(&self.my_id).is_some_and(|h| h.0 == slot) {
+                    self.alert(tick, format!("{name} took the {} first", kind.name()), false);
+                }
                 if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| (slot as usize) < r.x.len()) {
                     let j = slot as usize;
                     let at = Particle { x: row.x[j], y: row.y[j], vx: row.vx[j], vy: row.vy[j] };
@@ -475,6 +535,9 @@ impl World {
             }
             Event::ShieldSpent { tick, player } => {
                 self.say(tick, format!("{}'s shield broke", self.player_name(player)));
+                if player == self.my_id {
+                    self.alert(tick, "Your shield broke".to_string(), false);
+                }
                 if let Some(p) = self.players.get_mut(&player) {
                     p.shield = false;
                     if let Some(ship) = p.ship.as_ref() {
@@ -491,6 +554,12 @@ impl World {
                     None => format!("{whose}'s base was destroyed"),
                 };
                 self.say(tick, text);
+                let me = self.my_id;
+                match by {
+                    _ if owner == me => self.alert(tick, if by == Some(me) { "You destroyed your own base".to_string() } else { "Your base is destroyed".to_string() }, false),
+                    Some(by) if by == me => self.alert(tick, format!("You destroyed {whose}'s base"), true),
+                    _ => {}
+                }
                 if let Some(b) = self.bases.iter_mut().find(|b| b.owner == owner) {
                     b.hp = 0;
                     let j = b.slot as usize;

@@ -88,7 +88,7 @@ fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
     };
     match arg {
         Arg::Player => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
-        Arg::Body => with(names(&[ctx.bodies]), &["@t"]),
+        Arg::Body => with(names(&[ctx.bodies]), &["@t", "ammo", "repair", "shield"]),
         Arg::Place => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
         Arg::PlayerOrBody => with(names(&[ctx.players, ctx.bodies]), &["@a", "@r", "@s", "@t"]),
         Arg::Preset => ctx.presets.iter().map(|p| p.0.to_string()).collect(),

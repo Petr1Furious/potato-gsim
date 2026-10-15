@@ -76,6 +76,16 @@ impl Authority {
         self.base_of(player).is_some_and(|b| b.hp > 0)
     }
 
+    /// The player's ship is within their own standing base's zone (as far out as a siege orbit
+    /// may reach), where shells cost nothing.
+    pub(super) fn at_home(&self, player: PlayerId) -> bool {
+        let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
+        let Some(s) = self.players.get(&player).and_then(|p| p.ship) else { return false };
+        let (m, j) = (&self.massive, b.slot as usize);
+        let zone = self.rules.orbit_max_apo_radii * m.radius[j];
+        (s.p.x - m.x[j]).powi(2) + (s.p.y - m.y[j]).powi(2) <= zone * zone
+    }
+
     /// A circular orbit around the player's base, if they have one.
     pub(super) fn base_spawn(&mut self, player: PlayerId) -> Option<ShipState> {
         let slot = self.base_of(player)?.slot as usize;
@@ -101,11 +111,14 @@ impl Authority {
     pub(super) fn damage_base(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
         let Some(b) = self.bases.iter_mut().find(|b| b.slot == slot && b.hp > 0) else { return };
         b.hp = b.hp.saturating_sub(amount);
+        let (owner, left) = (b.owner, b.hp);
         self.bases_changed = true;
-        if b.hp > 0 {
+        if !self.base_hits.contains(&(owner, by)) {
+            self.base_hits.push((owner, by));
+        }
+        if left > 0 {
             return;
         }
-        let owner = b.owner;
         if let Some(p) = self.players.get_mut(&by).filter(|_| by != owner) {
             p.captures += 1;
         }
@@ -157,8 +170,8 @@ impl Authority {
         }
         if ((self.bases_changed || !holds.is_empty()) && tick.is_multiple_of(10)) || tick.is_multiple_of(hz) {
             self.bases_changed = false;
-            let (bases, sieges) = (self.base_list(), self.sieges.clone());
-            self.send(Target::All, ServerMsg::Bases { bases, sieges, holds });
+            let (bases, sieges, hits) = (self.base_list(), self.sieges.clone(), std::mem::take(&mut self.base_hits));
+            self.send(Target::All, ServerMsg::Bases { bases, sieges, holds, hits });
         }
     }
 

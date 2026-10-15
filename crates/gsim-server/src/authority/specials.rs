@@ -13,12 +13,14 @@ impl Authority {
         (self.players.values().filter(|p| !p.spectating).count() / 2).max(1)
     }
 
-    /// A body for a new special: a planet among the few closest to the centre, that is no
-    /// base, star or special already. `None` if there is none.
-    fn choose_special(&mut self) -> Option<u32> {
+    /// A body for a new special: a planet among the few closest to the centre that is fit for
+    /// it (see `fit_for_interest`), no special already and not one of `avoid`. `None` if there
+    /// is none.
+    pub(super) fn choose_special(&mut self, avoid: &[u32]) -> Option<u32> {
+        let frame = SystemFrame::of(&self.massive.kinematics());
         let m = &self.massive;
         let mut cands: Vec<(u32, f64)> = (0..m.len())
-            .filter(|&j| m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && m.mass[j] < 1.0e29)
+            .filter(|&j| !avoid.contains(&(j as u32)) && self.fit_for_interest(&frame, j, true))
             .filter(|&j| !self.specials.iter().any(|s| s.slot as usize == j))
             .map(|j| (j as u32, m.x[j] * m.x[j] + m.y[j] * m.y[j]))
             .collect();
@@ -55,6 +57,28 @@ impl Authority {
             self.specials[k].slot = slot;
             for p in self.players.values_mut() {
                 p.hold = p.hold.map(|(s, held)| (if s == old { slot } else { s }, held));
+            }
+        }
+        // Once a second: a special swung around by a heavier body moves to it (or, when that
+        // one is a special already, to the body most like it in place and motion); one far out
+        // or racing away (that nobody is on the way to) somewhere near the centre again.
+        if tick.is_multiple_of(rules.tick_hz.max(1) as Tick) {
+            let frame = SystemFrame::of(&self.massive.kinematics());
+            for k in 0..self.specials.len() {
+                let slot = self.specials[k].slot;
+                let new = match self.trouble(&frame, slot, true) {
+                    None => continue,
+                    Some(Trouble::Swung(heavy)) if !self.specials.iter().any(|s| s.slot == heavy) => Some(heavy),
+                    Some(Trouble::Swung(_)) => {
+                        let taken: Vec<u32> = self.specials.iter().map(|s| s.slot).collect();
+                        self.most_alike(slot as usize, &taken, true)
+                    }
+                    Some(Trouble::Far) => self.choose_special(&[slot]),
+                };
+                if let Some(new) = new {
+                    self.specials[k].slot = new;
+                    self.forget_holds(slot);
+                }
             }
         }
 
@@ -100,7 +124,7 @@ impl Authority {
                     if waiting + have(self) >= wanted && due.is_none() {
                         break;
                     }
-                    let Some(slot) = self.choose_special() else { break };
+                    let Some(slot) = self.choose_special(&[]) else { break };
                     if let Some(i) = due {
                         self.special_due.remove(i);
                     }

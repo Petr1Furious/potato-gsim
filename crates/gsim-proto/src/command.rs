@@ -93,6 +93,12 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "timescale", help: "simulated seconds per second; starts a new round", op: true, params: &[req("factor", Arg::Number)] },
     Command { name: "target", help: "make a body a target", op: true, params: &[req("body", Arg::Body)] },
     Command {
+        name: "reelect",
+        help: "move a target or a special (@t, ammo, repair, shield or a body) to another body",
+        op: true,
+        params: &[req("body", Arg::Body)],
+    },
+    Command {
         name: "targets",
         help: "how many targets there are: a fixed count, or one per so many players",
         op: true,

@@ -196,6 +196,8 @@ const WHEEL: f32 = if cfg!(target_arch = "wasm32") { 0.02 } else { 1.0 };
 const SLACK: f64 = 0.0015;
 /// Seconds the self-destruct key has to be held.
 const DESTRUCT_HOLD: f64 = 1.5;
+/// How long news for the player stays under the clock (s).
+const ALERT_SECONDS: f64 = 4.0;
 
 impl Game {
     /// `server`: host or host:port (in a browser, nothing: the server the page came from).
@@ -331,13 +333,11 @@ impl Game {
             }
             if is_key_pressed(KeyCode::F) {
                 settings.camera = match settings.camera {
-                    Camera::Ship => Camera::Selection,
                     Camera::Selection => Camera::Auto,
-                    Camera::Auto => Camera::Ship,
+                    Camera::Auto => Camera::Selection,
                 };
                 self.watch = None;
                 self.say(match settings.camera {
-                    Camera::Ship => "Following own ship",
                     Camera::Selection => "Following selection",
                     Camera::Auto => "Auto camera",
                 });
@@ -531,10 +531,10 @@ impl Game {
         if watched.is_none() {
             self.watch = None;
         }
-        let target = match (settings.camera != Camera::Ship, own, self.selected) {
+        let target = match (own, self.selected) {
             _ if watched.is_some() => Target::Player(watched.unwrap().0),
-            (true, _, Some(s)) => Target::Body(s),
-            (_, Some(_), _) => Target::Ship,
+            (_, Some(s)) => Target::Body(s),
+            (Some(_), _) => Target::Ship,
             _ => Target::Free,
         };
         let target_pos = match target {
@@ -846,8 +846,14 @@ impl Game {
                 }
                 continue;
             }
-            // Where a siege orbit has to stay, around the bases one can besiege.
+            // Around one's own base: the home zone, where shells cost nothing (brighter while
+            // inside it). Around the others: where a siege orbit has to stay.
             let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
+            if b.hp > 0 && mine && outer > 14.0 * ui && outer < 1.0e5 {
+                let inside = world.at_home(world.my_id);
+                style::disc(s.0, s.1, outer, style::alpha(colour, if inside { 0.07 } else { 0.035 }));
+                style::ring(s.0, s.1, outer, if inside { 2.0 } else { 1.2 } * ui, style::alpha(colour, if inside { 0.7 } else { 0.35 }));
+            }
             if b.hp > 0 && !mine && outer > 14.0 * ui && outer < 1.0e5 {
                 let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
                 let dashes = 72;
@@ -1257,6 +1263,31 @@ impl Game {
             Some((sp.kind, h.1 as f32 / hold_goal_special))
         });
         let winner = world.winner.map(|w| world.player_name(w).to_string());
+        // Under the clock: what is going on around us right now, as gauges (what, how far, colour),
+        // then what just happened to us (fading out after a few seconds).
+        let mut happening: Vec<(String, f32, Color)> = Vec::new();
+        if let (false, Some(h)) = (besiegers.is_empty(), home) {
+            let who: Vec<String> = besiegers.iter().map(|b| b.0.to_uppercase()).collect();
+            happening.push((format!("UNDER SIEGE · {}", who.join(", ")), h, style::EMBER));
+        }
+        if let Some((name, colour, h, _, true)) = &siege {
+            happening.push((format!("SIEGE · {name}"), *h, *colour));
+        }
+        if let Some((kind, frac)) = taking {
+            happening.push((format!("TAKING {}", kind.name().to_uppercase()), frac, style::special_colour(kind)));
+        }
+        if let (Some(name), true) = (&target_name, my_hold > 0.0) {
+            happening.push((format!("CAPTURING {}", name.to_uppercase()), my_hold, style::GOLD));
+        }
+        let hz = world.rules.tick_hz as f64;
+        let alerts: Vec<(String, Color, f32)> = world
+            .alerts
+            .iter()
+            .map(|a| (a, (tick_f - a.tick as f64) / hz))
+            .filter(|(_, age)| (0.0..ALERT_SECONDS).contains(age))
+            .map(|(a, age)| (a.text.clone(), if a.good { style::GOOD } else { style::EMBER }, (ALERT_SECONDS - age).min(1.0) as f32))
+            .collect();
+        let free_shells = world.at_home(world.my_id);
         // What the chat box needs: names to complete and to highlight.
         let player_names: Vec<String> = world.players.values().map(|p| p.name.clone()).collect();
         let mut mentions: Vec<(String, Mention)> = world.players.iter().map(|(id, p)| (p.name.clone(), Mention::Player(*id))).collect();
@@ -1335,6 +1366,16 @@ impl Game {
                     if let Some(s) = &status {
                         ui.label(RichText::new(s).color(gold));
                     }
+                    for (what, frac, colour) in &happening {
+                        ui.add_space(4.0);
+                        ui.allocate_ui(egui::vec2(280.0, 0.0), |ui| {
+                            ui.set_width(280.0);
+                            style::gauge(ui, what, &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, *colour);
+                        });
+                    }
+                    for (text, colour, fade) in &alerts {
+                        ui.label(RichText::new(text).size(17.0).strong().color(style::c32(style::alpha(*colour, *fade))));
+                    }
                 });
             });
 
@@ -1382,7 +1423,6 @@ impl Game {
                         if let Some(t) = &target_time {
                             time(ui, if t.2 { "TIME · HELD" } else { "TIME" }, t);
                         }
-                        style::gauge(ui, "HOLD", &format!("{:.0} %", my_hold.min(1.0) * 100.0), my_hold, style::GOLD);
                         for (rival, frac, colour) in &rivals {
                             style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, *colour);
                         }
@@ -1401,7 +1441,7 @@ impl Game {
             }
 
             // Bases: one's own, the one being attacked, and how the siege orbit is doing.
-            if bases && intermission.is_none() && (home.is_some() || siege.is_some() || taking.is_some()) {
+            if bases && intermission.is_none() && (home.is_some() || siege.is_some()) {
                 Area::new(Id::new("bases")).fixed_pos([10.0, below]).interactable(false).show(ctx, |ui| {
                     style::panel().show(ui, |ui| {
                         ui.set_width(230.0);
@@ -1416,18 +1456,6 @@ impl Game {
                                 ui.label(RichText::new("destroyed: no more ships").color(bad));
                             }
                             None => {}
-                        }
-                        if !besiegers.is_empty() {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new("UNDER SIEGE").small().color(bad).extra_letter_spacing(1.0));
-                                for (name, colour) in &besiegers {
-                                    ui.label(RichText::new(name).small().color(style::c32(*colour)));
-                                }
-                            });
-                        }
-                        if let Some((kind, frac)) = taking {
-                            style::section(ui, "TAKING");
-                            style::gauge(ui, &kind.name().to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), frac, style::special_colour(kind));
                         }
                         if let Some((name, colour, h, state, on)) = &siege {
                             style::section(ui, if *on { "SIEGE · ON" } else { "SIEGE" });
@@ -1493,9 +1521,14 @@ impl Game {
                             let fuel_colour = if frac < 0.2 { style::EMBER } else { style::ACCENT };
                             style::gauge(ui, "DELTA-V", &fmt::speed(f as f64 / 1000.0), frac, fuel_colour);
                             style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
-                            let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
-                            let ready = shells > 0 && !reloading;
-                            style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
+                            if free_shells {
+                                // At home shells cost nothing.
+                                style::gauge(ui, "SHELLS", "free", 1.0, if reloading { style::DIM } else { style::GOOD });
+                            } else {
+                                let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
+                                let ready = shells > 0 && !reloading;
+                                style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
+                            }
                         }
                         None if spectating => {
                             style::caption(ui, if out { "OUT · WATCHING" } else { "WATCHING" });
