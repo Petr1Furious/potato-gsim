@@ -83,7 +83,7 @@ fn every_player_gets_a_fixed_base_and_respawns_around_it() {
         let (j, x, y) = base_at(&sim, who);
         let s = sim.server.ship(who).unwrap().p;
         let r = ((s.x - x).powi(2) + (s.y - y).powi(2)).sqrt();
-        assert!((20.0..60.0).contains(&(r / sim.server.massive.radius[j])), "ship {r} m from its base");
+        assert!((70.0..80.0).contains(&(r / sim.server.massive.radius[j])), "ship {r} m from its base");
     }
     // Ships stay on their orbits and bases stay put.
     sim.run_with(20.0, idle);
@@ -94,7 +94,7 @@ fn every_player_gets_a_fixed_base_and_respawns_around_it() {
         let (j, x, y) = base_at(&sim, who);
         let s = sim.server.ship(who).expect("still flying").p;
         let r = ((s.x - x).powi(2) + (s.y - y).powi(2)).sqrt();
-        assert!((30.0..50.0).contains(&(r / sim.server.massive.radius[j])), "ship drifted to {r} m");
+        assert!((70.0..80.0).contains(&(r / sim.server.massive.radius[j])), "ship drifted to {r} m");
     }
     for i in [a, b] {
         let w = sim.clients[i].session.world.as_ref().unwrap();
@@ -111,7 +111,7 @@ fn shells_rams_and_sieges_wear_a_base_down() {
     let (mut sim, a, _, ann, bob) = duel(2);
 
     // A shell dropped straight onto bob's base from outside the siege band.
-    let r = 4.0e9;
+    let r = 5.0e8;
     let p = orbit_around(&sim, bob, r);
     place(&mut sim, ann, p);
     let speed = 8000.0f64;
@@ -123,7 +123,7 @@ fn shells_rams_and_sieges_wear_a_base_down() {
 
     // A ship on a close orbit around it lays siege.
     let before = hp(&sim, bob);
-    let p = orbit_around(&sim, bob, 2.0e9);
+    let p = orbit_around(&sim, bob, 2.0e8);
     place(&mut sim, ann, p);
     sim.run_with(5.0, idle);
     let taken = before - hp(&sim, bob);
@@ -134,7 +134,7 @@ fn shells_rams_and_sieges_wear_a_base_down() {
     // Ramming costs the ship and some of the base.
     let before = hp(&sim, bob);
     let (_, x, y) = base_at(&sim, bob);
-    place(&mut sim, ann, Particle { x: x + 2.0e9, y, vx: -20_000.0, vy: 0.0 });
+    place(&mut sim, ann, Particle { x: x + 2.0e8, y, vx: -20_000.0, vy: 0.0 });
     sim.run_with(4.0, idle);
     let taken = before - hp(&sim, bob);
     assert!((ram..ram + 2 * siege).contains(&taken), "ram took {taken}");
@@ -194,7 +194,7 @@ fn operators_bring_players_back_even_without_a_base() {
     let (j, x, y) = base_at(&sim, bob);
     let s = sim.server.ship(bob).expect("back in the game").p;
     let r = ((s.x - x).powi(2) + (s.y - y).powi(2)).sqrt();
-    assert!(r < 60.0 * sim.server.massive.radius[j], "around the hulk of the old base");
+    assert!(r < gsim_proto::HOME_RADII * sim.server.massive.radius[j], "around the hulk of the old base");
     in_sync(&sim);
 }
 
@@ -247,7 +247,7 @@ fn shells_and_rams_hurt_ones_own_base_too() {
     let (shell, ram, _) = DAMAGE;
     let (mut sim, a, _, ann, _) = duel(7);
     // A shell dropped straight onto ann's own base.
-    let p = orbit_around(&sim, ann, 4.0e9);
+    let p = orbit_around(&sim, ann, 5.0e8);
     place(&mut sim, ann, p);
     let speed = 8000.0f64;
     let angle = math::dir_to_angle(-(speed * speed - p.vy * p.vy).sqrt(), -p.vy);
@@ -256,7 +256,7 @@ fn shells_and_rams_hurt_ones_own_base_too() {
     assert_eq!(hp(&sim, ann), BASE_HP - shell);
     // And a crash into it.
     let (_, x, y) = base_at(&sim, ann);
-    place(&mut sim, ann, Particle { x: x + 2.0e9, y, vx: -20_000.0, vy: 0.0 });
+    place(&mut sim, ann, Particle { x: x + 2.0e8, y, vx: -20_000.0, vy: 0.0 });
     sim.run_with(4.0, idle);
     assert_eq!(hp(&sim, ann), BASE_HP - shell - ram);
     assert_eq!(sim.server.score(ann).unwrap().1, 1);
@@ -276,7 +276,7 @@ fn shells_are_free_at_home() {
     assert_eq!(sim.server.shells_left(ann), Some(full), "nothing taken at home");
     assert_eq!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].magazine.at(sim.server.tick(), &sim.server.rules), full);
     // Away from home they cost as usual.
-    let p = orbit_around(&sim, bob, 4.0e9);
+    let p = orbit_around(&sim, bob, 5.0e8);
     place(&mut sim, ann, p);
     let t0 = sim.time;
     sim.run_with(2.5, move |i: usize, t: f64| if i == a && t < t0 + 2.0 { Controls { fire: Some((0, 8000.0)), ..Controls::default() } } else { Controls::default() });
@@ -298,4 +298,34 @@ fn whoever_is_hit_hears_about_it() {
     sim.run_with(0.5, idle);
     assert!(alerts(&sim, a).contains(&"Your base is destroyed".to_string()));
     assert!(alerts(&sim, b).contains(&"You destroyed ann's base".to_string()));
+}
+
+#[test]
+fn from_anywhere_on_the_spawn_orbit_a_straight_burn_leaves_home() {
+    use std::f64::consts::{FRAC_PI_4, PI};
+    let (mut sim, a, _, ann, _) = duel(10);
+    let (j, x, y) = base_at(&sim, ann);
+    let s = sim.server.ship(ann).unwrap().p;
+    let r = ((s.x - x).powi(2) + (s.y - y).powi(2)).sqrt();
+    let v = (sim.server.rules.g * sim.server.massive.pull[j] / r).sqrt();
+    let reach = sim.server.rules.base_reach;
+    for at in 0..8 {
+        for toward in 0..16 {
+            // Counter-clockwise around the base at `at`, burning for `toward` from the start;
+            // anywhere but into the quarter where the base is.
+            let (p, q) = (at as f64 * FRAC_PI_4, toward as f64 * PI / 8.0);
+            let off = (q - p - PI).sin().atan2((q - p - PI).cos()).abs();
+            if off < FRAC_PI_4 - 1.0e-9 {
+                continue;
+            }
+            // (A fresh ship each time: full of fuel.)
+            let fresh = ShipState::new(Particle { x: x + r * p.cos(), y: y + r * p.sin(), vx: -v * p.sin(), vy: v * p.cos() }, &sim.server.rules);
+            sim.server.place_ship(ann, fresh);
+            let angle = math::dir_to_angle(q.cos(), q.sin());
+            sim.run_with(8.0, move |i, _| if i == a { Controls { angle, thrust: 100, fire: None } } else { Controls::default() });
+            let s = sim.server.ship(ann).unwrap_or_else(|| panic!("crashed from {at} burning {toward}")).p;
+            let far = ((s.x - x).powi(2) + (s.y - y).powi(2)).sqrt();
+            assert!(far > 1.5 * reach, "from {at} burning {toward}: only {far:.3e} m out");
+        }
+    }
 }

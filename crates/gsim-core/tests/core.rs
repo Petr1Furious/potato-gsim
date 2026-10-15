@@ -412,7 +412,7 @@ fn a_base_stays_put_pushes_bodies_and_pulls_ships() {
 }
 
 #[test]
-fn a_base_pulls_ships_only_within_its_reach() {
+fn a_base_pulls_ships_within_its_reach_and_pushes_them_as_bodies_beyond() {
     let mut r = rules();
     let mut s = MassiveState::from_bodies(&[body(0.0, 0.0, 0.0, 0.0, -2.0e26, 5.0e7)]);
     s.anchor(0, 2.0e26);
@@ -423,14 +423,17 @@ fn a_base_pulls_ships_only_within_its_reach() {
         step_particle(&mut p, (0.0, 0.0), 1.0, &s.view(), r, &mut Scratch::default());
         p.vx
     };
-    let everywhere = [kick(1.0e9, &r), kick(1.3e9, &r), kick(3.0e9, &r)];
+    let everywhere = [kick(1.0e9, &r), kick(1.1e9, &r), kick(3.0e9, &r)];
     r.base_reach = 1.0e9;
     let near = kick(0.9e9, &r);
     r.base_reach = 0.0;
     assert_eq!(near, kick(0.9e9, &r), "in full within the reach");
     r.base_reach = 1.0e9;
-    let fading = kick(1.3e9, &r);
+    let fading = kick(1.1e9, &r);
     assert!(fading < 0.0 && fading > everywhere[1], "less beyond it: {fading} vs {}", everywhere[1]);
-    assert_eq!(kick(3.0e9, &r), 0.0, "and nothing far away");
+    // Far away it pushes as hard as a body of the same mass pulls (the particle moves the other
+    // way over the tick, hence not to the last digit).
+    let far = kick(3.0e9, &r);
+    assert!((far + everywhere[2]).abs() < 1.0e-5 * far, "far away a ship feels what bodies feel: {far}");
     assert!(everywhere.iter().all(|k| *k < 0.0));
 }

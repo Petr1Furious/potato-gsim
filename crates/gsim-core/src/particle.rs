@@ -32,6 +32,8 @@ struct Met<W: Wide> {
     vy: W,
     ax: W,
     ay: W,
+    /// What a ship feels near the body, and what bodies feel (the same but for bases).
+    pull: W,
     mass: W,
     radius: W,
     /// 1 for a body that is there, 0 for one that is gone.
@@ -51,8 +53,8 @@ impl<W: Wide> Met<W> {
             vy: W::load(&view.vy[j..]),
             ax: W::load(&view.ax[j..]),
             ay: W::load(&view.ay[j..]),
-            // (What a ship feels: a base pulls it in, whatever it does to bodies.)
-            mass: W::load(&view.pull[j..]),
+            pull: W::load(&view.pull[j..]),
+            mass: W::load(&view.mass[j..]),
             radius: W::load(&view.radius[j..]),
             alive: W::flags(&view.alive[j..]),
             fade: W::flags(&view.fixed[j..]) * W::splat(fade),
@@ -84,7 +86,7 @@ fn asks<W: Wide>(p: &Particle, b: &Met<W>, f: &Fineness) -> W {
     // One over the distance squared, and over the distance.
     let inv2 = W::splat(1.0) / (dx * dx + dy * dy + W::splat(f.eps2));
     let inv = inv2.sqrt();
-    let omega2 = W::splat(f.g) * b.mass.abs() * inv2 * inv;
+    let omega2 = W::splat(f.g) * larger(b.pull.abs(), b.mass.abs()) * inv2 * inv;
     let fly2 = (rvx * rvx + rvy * rvy) * inv2;
     larger(omega2 * W::splat(f.inv_eta2), fly2 * W::splat(f.inv_kappa2)) * b.alive
 }
@@ -172,10 +174,13 @@ fn against<W: Wide>(m: &Moment, b: &Met<W>, r0x: W, r0y: W) -> (W, W, W, W, W::M
         W::or(W::and(start, from2.le(reach2)), W::and(W::not(start), inside))
     };
     let inv = W::splat(1.0) / (d2 + W::splat(m.eps2)).sqrt();
-    // Beyond its reach a base pulls less and less, down to nothing (from 2 reach² on).
+    // Within its reach a base pulls a ship in (`pull`); beyond, that turns into what bodies
+    // feel of it (`mass`), wholly so from 2 reach² on: far away a ship falls as the bodies
+    // around it do. (For any other body the two are the same.)
     let (one, k) = (W::splat(1.0), W::splat(2.0) - d2 * b.fade);
     let k = W::pick(k.gt(one), one, W::pick(zero.gt(k), zero, k));
-    let f = W::splat(m.g) * b.mass * inv * inv * inv * k;
+    let felt = b.mass + (b.pull - b.mass) * k;
+    let f = W::splat(m.g) * felt * inv * inv * inv;
     (rx, ry, rx * f, ry * f, W::and(b.alive.gt(zero), hit))
 }
 

@@ -15,7 +15,7 @@ use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
-use gsim_proto::{GameMode, Objective, PlayerId, BASE_HP, SPECIAL_HOLD_SECONDS};
+use gsim_proto::{GameMode, Objective, PlayerId, BASE_HP, HOME_RADII, SPECIAL_HOLD_SECONDS};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -826,6 +826,38 @@ impl Game {
             let name = owner.map_or("?", |p| p.name.as_str());
             let mine = b.owner == world.my_id;
             let health = b.hp as f32 / BASE_HP as f32;
+            // Around one's own base: the home zone, where shells cost nothing (brighter while
+            // inside it), drawn even when the base itself is off screen. Around the others:
+            // where a siege orbit has to stay.
+            let home = (HOME_RADII * radius / view.mpp) as f32;
+            let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
+            if b.hp > 0 && mine && home > 14.0 * ui {
+                let lit = world.at_home(world.my_id);
+                if home < 1.0e6 {
+                    style::zone(s, home, colour, lit, ui);
+                } else {
+                    // Zoomed far in: worked out in the world, where the numbers are exact.
+                    let zone = HOME_RADII * radius;
+                    let (dx, dy) = (view.cx - at.x, view.cy - at.y);
+                    let d = (dx * dx + dy * dy).sqrt().max(1.0);
+                    let half = 0.5 * ((screen_width() as f64).powi(2) + (screen_height() as f64).powi(2)).sqrt() * view.mpp;
+                    if d + half <= zone {
+                        draw_rectangle(0.0, 0.0, screen_width(), screen_height(), style::alpha(colour, if lit { 0.07 } else { 0.035 }));
+                    } else if d - half < zone {
+                        let edge = view.to_screen(at.x + dx / d * zone, at.y + dy / d * zone);
+                        style::zone_edge(edge, (-(dx / d) as f32, -(dy / d) as f32), colour, lit, ui);
+                    }
+                }
+            }
+            if b.hp > 0 && !mine && outer > 14.0 * ui && outer < 1.0e5 && view.on_screen(s, outer) {
+                let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
+                let dashes = 72;
+                for k in 0..dashes {
+                    let a = k as f32 / dashes as f32 * std::f32::consts::TAU;
+                    style::arc(s.0, s.1, outer, a, a + 0.045, ui, style::alpha(colour, 0.3));
+                }
+                style::ring(s.0, s.1, inner, ui, style::alpha(colour, 0.2));
+            }
             if !view.on_screen(s, r_px.max(30.0 * ui)) {
                 // Off screen: an arrow to every standing base, one's own included.
                 if b.hp > 0 {
@@ -845,23 +877,6 @@ impl Game {
                     labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, colour, Rank::Target);
                 }
                 continue;
-            }
-            // Around one's own base: the home zone, where shells cost nothing (brighter while
-            // inside it). Around the others: where a siege orbit has to stay.
-            let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
-            if b.hp > 0 && mine && outer > 14.0 * ui && outer < 1.0e5 {
-                let inside = world.at_home(world.my_id);
-                style::disc(s.0, s.1, outer, style::alpha(colour, if inside { 0.07 } else { 0.035 }));
-                style::ring(s.0, s.1, outer, if inside { 2.0 } else { 1.2 } * ui, style::alpha(colour, if inside { 0.7 } else { 0.35 }));
-            }
-            if b.hp > 0 && !mine && outer > 14.0 * ui && outer < 1.0e5 {
-                let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
-                let dashes = 72;
-                for k in 0..dashes {
-                    let a = k as f32 / dashes as f32 * std::f32::consts::TAU;
-                    style::arc(s.0, s.1, outer, a, a + 0.045, ui, style::alpha(colour, 0.3));
-                }
-                style::ring(s.0, s.1, inner, ui, style::alpha(colour, 0.2));
             }
             let besieged = world.sieges.iter().any(|x| x.1 == b.owner);
             style::base(s, r_px, colour, health, besieged, b.slot, ui);

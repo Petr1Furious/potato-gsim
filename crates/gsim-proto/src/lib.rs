@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 18;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -106,6 +106,10 @@ pub const BASE_HP: u32 = 6000;
 
 /// What a repair gives back to a standing base.
 pub const REPAIR_HP: u32 = BASE_HP / 5;
+
+/// How far around one's own base (in base radii) shells cost nothing: the home zone. Ships
+/// spawn inside it, and it is as far as the base pulls ships in full.
+pub const HOME_RADII: f64 = 100.0;
 
 /// A player's base: a body that does not move. It is gone (a hulk) at 0 hp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

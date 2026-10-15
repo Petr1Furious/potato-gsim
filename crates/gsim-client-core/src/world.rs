@@ -295,7 +295,7 @@ impl World {
         let Some(ship) = self.players.get(&player).and_then(|p| p.ship.as_ref()) else { return false };
         let Some(row) = self.eph.get(ship.end()).or_else(|| self.eph.get(self.head.saturating_sub(1))) else { return false };
         let (j, s) = (b.slot as usize, ship.last().p);
-        let zone = self.rules.orbit_max_apo_radii * row.props.radius[j];
+        let zone = HOME_RADII * row.props.radius[j];
         j < row.x.len() && (s.x - row.x[j]).powi(2) + (s.y - row.y[j]).powi(2) <= zone * zone
     }
 

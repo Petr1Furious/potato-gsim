@@ -268,6 +268,39 @@ pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, 
     }
 }
 
+/// A zone around `s` of radius `r` (screen pixels): a faint tint with a rim, brighter when
+/// `lit`. However far in the view is zoomed: when the screen lies wholly inside, it is tinted
+/// all over; when only the rim crosses it, the visible stretch of the rim is drawn.
+pub fn zone(s: (f32, f32), r: f32, colour: Color, lit: bool, ui: f32) {
+    let (w, h) = (screen_width(), screen_height());
+    let (fill, rim, width) = if lit { (0.07, 0.7, 2.0 * ui) } else { (0.035, 0.35, 1.2 * ui) };
+    // Nearest and farthest points of the screen from the centre.
+    let near = ((s.0.clamp(0.0, w) - s.0).powi(2) + (s.1.clamp(0.0, h) - s.1).powi(2)).sqrt();
+    let far = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().map(|c: &(f32, f32)| ((c.0 - s.0).powi(2) + (c.1 - s.1).powi(2)).sqrt()).fold(0.0, f32::max);
+    if r < near {
+        return;
+    }
+    if r >= far {
+        draw_rectangle(0.0, 0.0, w, h, alpha(colour, fill));
+    } else {
+        disc(s.0, s.1, r, alpha(colour, fill));
+        ring(s.0, s.1, r, width, alpha(colour, rim));
+    }
+}
+
+/// The rim of a zone far too big to draw whole, where it crosses the screen: straight there,
+/// through `p`, with the inside towards `inward` (a unit vector), tinted.
+pub fn zone_edge(p: (f32, f32), inward: (f32, f32), colour: Color, lit: bool, ui: f32) {
+    let (fill, rim, width) = if lit { (0.07, 0.7, 2.0 * ui) } else { (0.035, 0.35, 1.2 * ui) };
+    let reach = 2.0 * (screen_width() + screen_height());
+    let along = (-inward.1 * reach, inward.0 * reach);
+    let (a, b) = (vec2(p.0 - along.0, p.1 - along.1), vec2(p.0 + along.0, p.1 + along.1));
+    let deep = vec2(inward.0 * reach, inward.1 * reach);
+    draw_triangle(a, b, b + deep, alpha(colour, fill));
+    draw_triangle(a, b + deep, a + deep, alpha(colour, fill));
+    draw_line(a.x, a.y, b.x, b.y, width, alpha(colour, rim));
+}
+
 /// A ship's shield: a faint bubble around it with a bright rim, two highlights gliding round
 /// it, breathing slowly. `seed` keeps neighbouring ships out of step.
 pub fn ship_shield(s: (f32, f32), seed: u32, ui: f32) {

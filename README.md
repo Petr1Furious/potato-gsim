@@ -88,10 +88,12 @@ on a qualifying orbit around it. There is one target for every two players
 ### Bases
 
 With `GSIM_MODE=bases` (or `/mode bases`) there are no targets. Every player owns a base on a
-ring near the edge of the world: a body that never moves, pushes other bodies away a little and
-pulls ships and shells in like a small gas giant, but only within 5 Gm of it (fading out by
-7 Gm), so orbits around bodies elsewhere are left alone. Ships respawn on an orbit around
-their own base while it stands.
+ring near the edge of the world: an Earth-sized body that never moves, keeps other bodies
+away and pulls ships and shells in like an Earth within 640 Mm of it; from there to 900 Mm
+that turns into the push bodies feel, so that far away ships and bodies fall alike and orbits
+around bodies elsewhere are left alone. Ships respawn on an orbit 480 Mm out from their own
+base while it stands, where a straight burn in any direction but at the base gets them away.
+Within 640 Mm of one's own base (the zone drawn around it) shells cost nothing.
 Bases lose health to shell hits (2 %) and to ships crashing into them (10 %, and the ship),
 one's own included, and enemy bases to a ship holding an orbit around them under the same
 conditions as for a target (1 % a second). A destroyed base stays as a dark hulk; its owner

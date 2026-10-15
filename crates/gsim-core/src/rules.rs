@@ -67,9 +67,10 @@ pub struct GameRules {
     /// A target moves on to another body after this many ticks (0 = never). The count stands
     /// still while a ship is on a qualifying orbit around it.
     pub target_ticks: u32,
-    /// Ships and shells feel a fixed body (a base) in full up to this distance from it, less
-    /// and less beyond, and not at all from 1.41 times as far (0 = everywhere). Orbits around
-    /// bodies far from the bases are then left alone.
+    /// Ships and shells feel a fixed body (a base) as its `pull` up to this distance from it;
+    /// beyond, that turns into its `mass`, what bodies feel, wholly so from 1.41 times as far
+    /// (0 = its pull everywhere). Far from the bases ships and bodies then fall alike, and
+    /// orbits around bodies there are left alone.
     pub base_reach: f64,
 }
 

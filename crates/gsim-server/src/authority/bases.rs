@@ -5,19 +5,24 @@
 
 use super::*;
 
-/// What ships and shells feel: about a third of Saturn, near the base (see [`REACH_RADII`]).
-const BASE_PULL: f64 = 2.0e26;
-/// What other bodies feel: a push, enough to clear the neighbourhood of a base but not to
-/// blow the world apart over a round.
-const BASE_MASS: f64 = -1.0e25;
-const BASE_RADIUS: f64 = 5.0e7;
-/// Ships feel a base in full this many base radii out, then less and less (to nothing at 1.41
-/// times as far): a ship circling some planet far away is not dragged off its orbit by bases
-/// the planet does not feel the same way. The siege band and the spawn orbit are well inside.
-const REACH_RADII: f64 = 100.0;
-/// Ships appear on a circular orbit this many base radii out: outside the siege band of an
-/// enemy, and a cheap burn away from leaving.
-const SPAWN_RADII: f64 = 40.0;
+/// What ships and shells feel: an Earth, near the base (see [`REACH_RADII`]).
+const BASE_PULL: f64 = 6.0e24;
+/// What other bodies feel: a push that keeps the neighbourhood of a base clear, so that ships
+/// circling it are not thrown about by passing bodies. (Three times as much hardly clears it
+/// better and halves the bodies left near the centre within three minutes.)
+const BASE_MASS: f64 = -3.0e25;
+/// Earth's: small enough for a ship to circle close in.
+const BASE_RADIUS: f64 = 6.4e6;
+/// Ships feel a base's pull this many base radii out; beyond, it turns into the push bodies
+/// feel (wholly at 1.41 times as far): a ship circling some planet far away is not dragged off
+/// its orbit by bases the planet feels differently. The home zone ends there too;
+/// the siege band and the spawn orbit are well inside.
+const REACH_RADII: f64 = HOME_RADII;
+/// Ships appear on a circular orbit this many base radii out (480 Mm, 0.9 km/s), inside the
+/// home zone and high enough that full thrust is ten times what the base pulls with there: from
+/// anywhere on the orbit, whichever way the ship is moving, a straight burn in any direction at
+/// least 45° away from the base takes it clear.
+const SPAWN_RADII: f64 = 75.0;
 const SHELL_DAMAGE: u32 = 120;
 /// A ship crashing into an enemy base (and dying for it).
 const RAM_DAMAGE: u32 = 600;
@@ -76,13 +81,13 @@ impl Authority {
         self.base_of(player).is_some_and(|b| b.hp > 0)
     }
 
-    /// The player's ship is within their own standing base's zone (as far out as a siege orbit
-    /// may reach), where shells cost nothing.
+    /// The player's ship is within their own standing base's home zone (see [`HOME_RADII`]),
+    /// where shells cost nothing.
     pub(super) fn at_home(&self, player: PlayerId) -> bool {
         let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
         let Some(s) = self.players.get(&player).and_then(|p| p.ship) else { return false };
         let (m, j) = (&self.massive, b.slot as usize);
-        let zone = self.rules.orbit_max_apo_radii * m.radius[j];
+        let zone = HOME_RADII * m.radius[j];
         (s.p.x - m.x[j]).powi(2) + (s.p.y - m.y[j]).powi(2) <= zone * zone
     }
 
