@@ -106,6 +106,12 @@ pub const COMMANDS: &[Command] = &[
     },
     Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
     Command {
+        name: "give",
+        help: "put scrap or crystals in a player's bank",
+        op: true,
+        params: &[req("scrap|crystals", Arg::Word(&["scrap", "crystals"])), req("amount", Arg::Number), opt("player", Arg::Player)],
+    },
+    Command {
         name: "gamemode",
         help: "watch the game without a ship, or play again",
         op: true,

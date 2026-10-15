@@ -15,7 +15,8 @@ use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
-use gsim_proto::{GameMode, Objective, PlayerId, BASE_HP, HOME_RADII, SPECIAL_HOLD_SECONDS};
+use gsim_proto::shop::{Upgrade, PICKUP_RADIUS, TIERS};
+use gsim_proto::{GameMode, Objective, PieceKind, PlayerId, Purse, Upgrades, BASE_HP, HOME_RADII, SPECIAL_HOLD_SECONDS};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -177,6 +178,8 @@ pub struct Game {
     round: Option<u32>,
     status: Option<(String, f64)>,
     started: f64,
+    /// The shop is showing (at home, in a round of bases).
+    shop_open: bool,
 }
 
 const TRAIL_EVERY_TICKS: Tick = 4;
@@ -260,6 +263,7 @@ impl Game {
             round: None,
             status: None,
             started: get_time(),
+            shop_open: false,
         })
     }
 
@@ -281,12 +285,16 @@ impl Game {
         let ui = settings.marker_factor();
         let keys = !self.ui_has_keyboard && !self.menu_open && !self.chat.open;
         let mouse = mouse_position();
+        let mut shop_asked = false;
 
         // --- toggles -------------------------------------------------------------------------
         if is_key_pressed(KeyCode::Escape) {
-            // Escape hides the suggestion list, then closes the chat line; otherwise the menu.
+            // Escape hides the suggestion list, then closes the chat line; then the shop; otherwise
+            // the menu.
             if self.chat.open {
                 self.chat.escape();
+            } else if self.shop_open {
+                self.shop_open = false;
             } else {
                 self.menu_open = !self.menu_open;
             }
@@ -343,6 +351,18 @@ impl Game {
                 });
             }
             self.pick_target |= is_key_pressed(KeyCode::R);
+            if is_key_pressed(KeyCode::B) {
+                self.shop_open = !self.shop_open;
+                shop_asked = self.shop_open;
+            }
+            if self.shop_open {
+                let keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5];
+                for (key, upgrade) in keys.into_iter().zip(Upgrade::ALL) {
+                    if is_key_pressed(key) {
+                        self.net.session.buy(upgrade);
+                    }
+                }
+            }
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
                 settings.save();
@@ -479,6 +499,17 @@ impl Game {
         }
         // In a round of bases the standing enemy bases take the place of targets, nearest first.
         let bases = world.mode == GameMode::Bases;
+        // The shop: at home only (or there waiting for a ship), in a round of bases.
+        let playing = world.me().is_some_and(|m| !m.spectating) && world.next_round_tick.is_none();
+        let waiting = world.me().is_some_and(|m| m.ship.is_none() && m.respawn_tick.is_some());
+        let can_shop = bases && playing && world.base_of(world.my_id).is_some_and(|b| b.hp > 0) && (waiting || world.at_home(world.my_id));
+        if self.shop_open && !can_shop {
+            self.shop_open = false;
+            if shop_asked {
+                let why = if bases { "The shop is open only at home" } else { "There is no shop in this game" };
+                self.status = Some((why.to_string(), get_time() + 2.0));
+            }
+        }
         let mut enemy_bases: Vec<u32> = world.bases.iter().filter(|b| b.hp > 0 && b.owner != world.my_id && alive(b.slot)).map(|b| b.slot).collect();
         if let Some(ship) = own {
             let far = |slot: &u32| {
@@ -940,6 +971,21 @@ impl Game {
             }
             style::disc(s.0, s.1, 2.0 * ui, Color::from_rgba(255, 210, 160, 255));
         }
+        // Scrap and crystals, each turning at its own pace; within reach of the ship, how close
+        // it has to pass to take them.
+        let reach_px = (PICKUP_RADIUS / view.mpp) as f32;
+        let spin = get_time() as f32;
+        for (id, piece) in &world.pieces {
+            let Some(p) = world.piece_at(*id, tick_f) else { continue };
+            let s = view.to_screen(p.x, p.y);
+            if !view.on_screen(s, reach_px.max(10.0 * ui)) {
+                continue;
+            }
+            if reach_px > 14.0 * ui && reach_px < 1.0e5 {
+                style::ring(s.0, s.1, reach_px, ui, style::alpha(style::piece_colour(piece.kind), 0.12));
+            }
+            style::piece(s, piece.kind, spin * (0.7 + (id % 5) as f32 * 0.3) + *id as f32, ui);
+        }
         for e in &world.effects {
             let age = (tick_f - e.tick as f64) / world.rules.tick_hz as f64;
             if !(0.0..1.5).contains(&age) {
@@ -973,6 +1019,7 @@ impl Game {
                     style::disc(s.0, s.1, 22.0 * ui, style::alpha(c, 0.4 * (1.0 - (age as f32 / 0.4).min(1.0))));
                 }
                 EffectKind::ShieldBroken => style::shield_break(s, (age as f32 / 0.8).min(1.0), ui),
+                EffectKind::Pickup(kind) => style::pickup(s, kind, (age as f32 / 0.5).min(1.0), ui),
                 EffectKind::BaseDestroyed => {
                     // A flash, then three shock waves.
                     style::disc(s.0, s.1, 60.0 * ui, style::alpha(WHITE, 0.5 * (1.0 - (age as f32 / 0.3).min(1.0))));
@@ -1338,7 +1385,13 @@ impl Game {
             format!("prediction {horizon:.1} s ahead, computed in {predict_ms:.0} ms, {per_second:.0} a second"),
         ];
         let status = self.status.as_ref().filter(|s| s.1 > get_time()).map(|s| s.0.clone());
-        let fuel_max = world.rules.fuel_max_mmps;
+        // The ship's engine and tank, what it carries, and what is banked and bought.
+        let kit = me.and_then(|m| m.ship.as_ref()).map(|t| t.last().kit);
+        let fuel_max = kit.map_or(world.rules.fuel_max_mmps, |k| k.tank);
+        let thrust_share = kit.map_or(1.0, |k| k.push as f32 / k.burn.max(1) as f32);
+        let (cargo, bank, upgrades) = me.map_or(Default::default(), |m| (m.cargo, m.bank, m.upgrades));
+        let shop_open = self.shop_open;
+        let mut bought: Option<Upgrade> = None;
         let thrust_pct = self.thrust_pct;
         // The ruler replaces a "metres per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
@@ -1544,6 +1597,11 @@ impl Game {
                                 let ready = shells > 0 && !reloading;
                                 style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
                             }
+                            if !cargo.is_empty() {
+                                // What it carries, by how much less the engine pushes it.
+                                let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
+                                style::gauge(ui, "HOLD", &what, thrust_share, style::piece_colour(PieceKind::Scrap));
+                            }
                         }
                         None if spectating => {
                             style::caption(ui, if out { "OUT · WATCHING" } else { "WATCHING" });
@@ -1555,6 +1613,18 @@ impl Game {
                                 ui.label(RichText::new("waiting for a ship").heading().color(bad));
                             }
                         }
+                    }
+                    if bases && playing {
+                        ui.horizontal(|ui| {
+                            style::caption(ui, "BANK");
+                            ui.label(RichText::new(bank.describe()).color(style::c32(style::piece_colour(PieceKind::Scrap))));
+                            if can_shop {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new("shop").color(dim));
+                                    style::key_hint(ui, "B");
+                                });
+                            }
+                        });
                     }
                 });
             });
@@ -1585,6 +1655,10 @@ impl Game {
                 });
             }
 
+            if shop_open {
+                bought = shop(ctx, &bank, &upgrades);
+            }
+
             chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
             if menu {
                 egui::Window::new("MENU").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
@@ -1613,6 +1687,9 @@ impl Game {
         egui_macroquad::draw();
         if let Some(text) = chat_out.send {
             self.net.session.send_chat(&text);
+        }
+        if let Some(upgrade) = bought {
+            self.net.session.buy(upgrade);
         }
         match chat_out.clicked {
             Some(Mention::Body(slot)) => {
@@ -1908,4 +1985,55 @@ impl Game {
     pub fn leave(&mut self) {
         self.net.disconnect();
     }
+}
+
+/// The shop, at home: the next tier of each upgrade, for what is banked. Returns the one
+/// bought, if any.
+fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades) -> Option<Upgrade> {
+    use egui::RichText;
+    let mut bought = None;
+    let (dim, gold, scrap) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::piece_colour(PieceKind::Scrap)));
+    egui::Window::new("SHOP").collapsible(false).resizable(false).anchor(egui::Align2::LEFT_CENTER, [10.0, 0.0]).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            style::caption(ui, "BANK");
+            ui.label(RichText::new(bank.describe()).color(scrap).strong());
+        });
+        style::section(ui, "SHIP");
+        egui::Grid::new("shop").num_columns(6).spacing([12.0, 6.0]).show(ui, |ui| {
+            for head in ["", "", "", "NOW", "NEXT", ""] {
+                style::caption(ui, head);
+            }
+            ui.end_row();
+            for (k, u) in Upgrade::ALL.into_iter().enumerate() {
+                let (tier, tiers) = (upgrades.tier(u), u.tiers());
+                style::key_hint(ui, &(k + 1).to_string());
+                ui.label(RichText::new(u.name().to_uppercase()).strong());
+                // Tiers bought, out of all of them.
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(TIERS as f32 * 11.0, 10.0), egui::Sense::hover());
+                for t in 0..TIERS {
+                    let pip = egui::Rect::from_min_size(rect.min + egui::vec2(t as f32 * 11.0, 1.0), egui::vec2(8.0, 8.0));
+                    if t < tier {
+                        ui.painter().rect_filled(pip, 1.0, gold);
+                    } else {
+                        ui.painter().rect_stroke(pip, 1.0, egui::Stroke::new(1.0, dim), egui::StrokeKind::Inside);
+                    }
+                }
+                ui.label(RichText::new(tiers[tier as usize]).color(dim));
+                if tier < TIERS {
+                    let price = u.price(tier + 1);
+                    ui.label(RichText::new(tiers[tier as usize + 1]).color(style::c32(style::TEXT)));
+                    if ui.add_enabled(bank.covers(price), egui::Button::new(price.describe())).clicked() {
+                        bought = Some(u);
+                    }
+                } else {
+                    ui.label("");
+                    ui.label(RichText::new("MAX").color(gold));
+                }
+                ui.end_row();
+            }
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new("A lost ship loses one tier of each.").small().color(dim));
+    });
+    bought
 }

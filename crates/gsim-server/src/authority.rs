@@ -15,6 +15,7 @@ use std::net::IpAddr;
 mod bases;
 mod commands;
 mod interest;
+mod scrap;
 mod specials;
 
 use interest::Trouble;
@@ -23,6 +24,9 @@ pub use bases::DAMAGE;
 
 /// Transport-level connection handle.
 pub type ConnId = u64;
+
+/// A ship's way over one tick: whose, from where, to where.
+type Sweep = (PlayerId, (f64, f64), (f64, f64));
 
 pub enum Target {
     One(ConnId),
@@ -61,6 +65,12 @@ struct Player {
     benched: bool,
     /// The ship survives one shell.
     shield: bool,
+    /// Fires and reloads twice as fast, with twice the shells (from ammo, until the ship is lost).
+    quick: bool,
+    /// What the ship carries, what is banked at home, and what has been bought.
+    cargo: Purse,
+    bank: Purse,
+    upgrades: Upgrades,
     /// Who `/r` answers.
     reply_to: Option<PlayerId>,
     /// (start tick, messages) of the current chat rate-limit window.
@@ -161,6 +171,12 @@ pub struct Authority {
     specials: Vec<Special>,
     /// Kinds of special coming back, and when.
     special_due: Vec<(SpecialKind, Tick)>,
+    /// Scrap and crystals floating free, and when the next cloud of scrap may turn up.
+    pieces: Vec<scrap::Piece>,
+    /// Where scrap turns up (apart from `rng`, so that it does not change the rest).
+    scrap_rng: Rng,
+    next_piece_id: PieceId,
+    cloud_due: Tick,
 }
 
 impl Authority {
@@ -187,6 +203,9 @@ impl Authority {
             base_hits: Vec::new(),
             specials: Vec::new(),
             special_due: Vec::new(),
+            pieces: Vec::new(),
+            next_piece_id: 1,
+            cloud_due: 0,
             massive: MassiveState::from_bodies(&scenario.bodies),
             rules,
             stats: Stats::default(),
@@ -200,6 +219,7 @@ impl Authority {
             next_player_id: 1,
             next_shell_id: 1,
             rng: Rng::new(seed ^ 0xA5A5_5A5A_1234_5678),
+            scrap_rng: Rng::new(seed ^ 0x5C4A_9000_0000_0001),
             out: Vec::new(),
             scratch: Scratch::default(),
             state: ServerState::in_memory(),
@@ -297,6 +317,7 @@ impl Authority {
             ClientMsg::Chat { text } => self.chat(conn, text),
             ClientMsg::Mark { x, y } => self.mark(conn, x, y),
             ClientMsg::Cmds(cmds) => self.commands(conn, cmds),
+            ClientMsg::Buy(upgrade) => self.buy(conn, upgrade),
             ClientMsg::ResyncRequest => {
                 if let Some(&id) = self.by_conn.get(&conn) {
                     self.stats.resyncs += 1;
@@ -397,6 +418,10 @@ impl Authority {
                 spectating: watch,
                 benched: watch,
                 shield: false,
+                quick: false,
+                cargo: Purse::default(),
+                bank: Purse::default(),
+                upgrades: Upgrades::default(),
                 reply_to: None,
                 chat_window: (0, 0),
                 last_mark: 0,
@@ -449,6 +474,9 @@ impl Authority {
                         magazine: p.magazine,
                         spectating: p.spectating,
                         shield: p.shield,
+                        cargo: p.cargo,
+                        bank: p.bank,
+                        upgrades: p.upgrades,
                     }
                 })
                 .collect(),
@@ -457,6 +485,7 @@ impl Authority {
                 .iter()
                 .map(|s| ShellInfo { id: s.id, owner: s.owner, spawn_tick: s.spawn_tick, p: s.p })
                 .collect(),
+            pieces: self.pieces.iter().map(|p| PieceInfo { id: p.id, kind: p.kind, p: p.p }).collect(),
         }
     }
 
@@ -496,8 +525,9 @@ impl Authority {
         }
     }
 
-    /// Circular orbit around the barycentre, clear of every body, near the objective if any.
-    fn spawn_state(&mut self) -> ShipState {
+    /// The barycentre (weighing every body by its mass, pushes too) and how it moves:
+    /// (x, y, vx, vy).
+    fn barycentre(&self) -> (f64, f64, f64, f64) {
         let m = &self.massive;
         let (mut w, mut cx, mut cy, mut cvx, mut cvy) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for j in 0..m.len() {
@@ -509,11 +539,28 @@ impl Authority {
             cvy += m.vy[j] * a;
         }
         if w > 0.0 {
-            cx /= w;
-            cy /= w;
-            cvx /= w;
-            cvy /= w;
+            (cx / w, cy / w, cvx / w, cvy / w)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
         }
+    }
+
+    /// A circular orbit about the barycentre `c` through (x, y), around whatever is closer in.
+    fn circular_at(&self, x: f64, y: f64, c: (f64, f64, f64, f64)) -> Particle {
+        let m = &self.massive;
+        let (cx, cy, cvx, cvy) = c;
+        let (rx, ry) = (x - cx, y - cy);
+        let r = (rx * rx + ry * ry).sqrt().max(1.0);
+        let enclosed: f64 = (0..m.len()).filter(|&j| m.alive[j] && (m.x[j] - cx).powi(2) + (m.y[j] - cy).powi(2) < r * r).map(|j| m.mass[j]).sum();
+        let v = (self.rules.g * enclosed.max(0.0) / r).sqrt();
+        Particle { x, y, vx: cvx - v * ry / r, vy: cvy + v * rx / r }
+    }
+
+    /// Circular orbit around the barycentre, clear of every body, near the objective if any.
+    fn spawn_state(&mut self) -> Particle {
+        let c = self.barycentre();
+        let (cx, cy) = (c.0, c.1);
+        let m = &self.massive;
         // With objectives, spawn in a ring around one of them: near enough to be in the game at
         // once, far enough (several times the scoring band) that respawning is never a
         // shortcut to the target. Otherwise anywhere in the scenario's spawn annulus.
@@ -523,7 +570,7 @@ impl Authority {
             let lo = (0.12 * self.spawn_r.1).max(4.0 * self.rules.orbit_max_apo_radii * m.radius[j]);
             (m.x[j], m.y[j], lo, 2.0 * lo)
         });
-        let mut best = Particle { x: cx + self.spawn_r.1, y: cy, vx: cvx, vy: cvy };
+        let mut best = Particle { x: cx + self.spawn_r.1, y: cy, vx: c.2, vy: c.3 };
         for _ in 0..64 {
             let a = self.rng.angle();
             let (x, y) = match near {
@@ -536,32 +583,17 @@ impl Authority {
                     (cx + r * a.cos(), cy + r * a.sin())
                 }
             };
-            let (rx, ry) = (x - cx, y - cy);
-            let r = (rx * rx + ry * ry).sqrt().max(1.0);
-            let mut enclosed = 0.0;
-            let mut clear = true;
-            for j in 0..m.len() {
-                if !m.alive[j] {
-                    continue;
-                }
-                let (dcx, dcy) = (m.x[j] - cx, m.y[j] - cy);
-                if dcx * dcx + dcy * dcy < r * r {
-                    enclosed += m.mass[j];
-                }
-                let (dx, dy) = (m.x[j] - x, m.y[j] - y);
+            let m = &self.massive;
+            let clear = (0..m.len()).filter(|&j| m.alive[j]).all(|j| {
                 let keep_out = 20.0 * m.radius[j] + 4.0 * self.rules.shell_blast_radius;
-                if dx * dx + dy * dy < keep_out * keep_out {
-                    clear = false;
-                }
-            }
-            // Circular orbit about the barycentre through the chosen point.
-            let v = (self.rules.g * enclosed.max(0.0) / r).sqrt();
-            best = Particle { x, y, vx: cvx - v * ry / r, vy: cvy + v * rx / r };
+                (m.x[j] - x).powi(2) + (m.y[j] - y).powi(2) >= keep_out * keep_out
+            });
+            best = self.circular_at(x, y, c);
             if clear {
                 break;
             }
         }
-        ShipState::new(best, &self.rules)
+        best
     }
 
     /// Integrate one tick.
@@ -577,15 +609,17 @@ impl Authority {
         let due: Vec<PlayerId> =
             self.players.values().filter(|p| !p.spectating && p.respawn_tick.is_some_and(|r| r <= t)).map(|p| p.id).collect();
         for id in due {
-            let state = match self.base_spawn(id) {
-                Some(state) => state,
+            let at = match self.base_spawn(id) {
+                Some(at) => at,
                 None => self.spawn_state(),
             };
             let p = self.players.get_mut(&id).unwrap();
+            // A new ship comes fully armed, as it comes fully fuelled, with an empty hold.
+            let state = ShipState::with_kit(at, shop::kit(&rules, &p.upgrades, &Purse::default()));
             p.ship = Some(state);
             p.respawn_tick = None;
-            // A new ship comes fully armed, as it comes fully fuelled.
-            p.magazine = Magazine::full(t, &rules);
+            (p.cargo, p.quick) = (Purse::default(), false);
+            p.magazine = shop::magazine(t, &rules, &p.upgrades, false);
             self.event(Event::ShipSpawn { tick: t, player: id, state });
         }
 
@@ -601,10 +635,10 @@ impl Authority {
                 if t < p.next_fire_tick || !(free || p.magazine.fire(t, &rules)) {
                     continue;
                 }
-                p.next_fire_tick = t + p.magazine.cooldown(&rules);
+                p.next_fire_tick = t + p.magazine.cooldown();
                 let (dx, dy) = math::angle_to_dir(angle);
                 let speed = if speed.is_finite() { speed as f64 } else { 0.0 };
-                let speed = speed.clamp(rules.shell_speed_min, rules.shell_speed_max);
+                let speed = speed.clamp(rules.shell_speed_min, shop::shell_speed_max(&rules, &p.upgrades));
                 let muzzle = rules.ship_radius + 2.0 * rules.shell_radius;
                 let particle = Particle {
                     x: ship.p.x + dx * muzzle,
@@ -629,8 +663,7 @@ impl Authority {
         // (victim, killer, body)
         let mut deaths: Vec<(PlayerId, Option<PlayerId>, Option<u32>)> = Vec::new();
         // Ship segments over this tick, for the proximity fuses.
-        type Point = (f64, f64);
-        let mut segs: Vec<(PlayerId, Point, Point)> = Vec::new();
+        let mut segs: Vec<Sweep> = Vec::new();
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
             let before = (ship.p.x, ship.p.y);
@@ -681,8 +714,15 @@ impl Authority {
             }
         }
 
+        // Scrap and crystals drift, and are taken by ships passing close (not by the ones
+        // lost this tick).
+        let lost: Vec<PlayerId> = deaths.iter().map(|d| d.0).collect();
+        segs.retain(|s| !lost.contains(&s.0));
+        let picked = scrap::step_pieces(&mut self.pieces, &segs, &view, &rules, &mut self.scratch, 4.0 * self.world_r);
+
         let merges = self.massive.step(&rules);
         let next = t + 1;
+        self.pick_up(next, picked);
 
         for (id, exploded) in gone {
             self.shells.retain(|s| s.id != id);
@@ -707,6 +747,7 @@ impl Authority {
         }
         for (victim, killer, body) in deaths {
             let respawn_tick = next + rules.respawn_ticks as Tick;
+            self.spill(next, victim);
             if let Some(p) = self.players.get_mut(&victim) {
                 p.ship = None;
                 p.deaths += playing_now as u32;
@@ -820,11 +861,11 @@ impl Authority {
     /// Place a player's ship (announced to everyone as a fresh spawn at the current tick).
     pub fn place_ship(&mut self, player: PlayerId, state: ShipState) {
         let tick = self.tick();
-        let magazine = Magazine::full(tick, &self.rules);
+        let rules = self.rules.clone();
         if let Some(p) = self.players.get_mut(&player) {
             p.ship = Some(state);
             p.respawn_tick = None;
-            p.magazine = magazine;
+            p.magazine = shop::magazine(tick, &rules, &p.upgrades, p.quick);
             self.event(Event::ShipSpawn { tick, player, state });
         }
     }
@@ -1052,6 +1093,8 @@ impl Authority {
         self.anchor_bases();
         // Ticks never restart: clients keep their clock across rounds.
         self.massive.tick = tick;
+        self.spawn_r = sc.spawn_r;
+        self.sow_scrap();
         self.rules.escape_radius = if self.rules.escape_radius > 0.0 { sc.escape_radius() } else { 0.0 };
         self.names = sc.names;
         self.preset = sc.name;
@@ -1069,6 +1112,7 @@ impl Authority {
             p.captures = 0;
             p.hold = None;
             p.shield = false;
+            (p.quick, p.cargo, p.bank, p.upgrades) = (false, Purse::default(), Purse::default(), Upgrades::default());
             p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }

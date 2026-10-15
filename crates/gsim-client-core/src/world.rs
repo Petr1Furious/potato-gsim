@@ -5,7 +5,8 @@ use crate::eph::Eph;
 use crate::session::Stats;
 use gsim_core::particle::step_particle;
 use gsim_core::ship::step_ship;
-use gsim_core::{math, EphRow, GameRules, InputTimeline, Magazine, Particle, Scratch, ShipState, Tick};
+use gsim_core::{math, EphRow, GameRules, InputTimeline, Kit, Magazine, Particle, Scratch, ShipState, Tick};
+use gsim_proto::shop;
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -139,6 +140,20 @@ pub struct PlayerRep {
     pub spectating: bool,
     /// The ship survives one shell.
     pub shield: bool,
+    /// Fires and reloads twice as fast, with twice the shells (from ammo, until the ship is lost).
+    pub quick: bool,
+    /// What the ship carries, what is banked at home, and what has been bought.
+    pub cargo: Purse,
+    pub bank: Purse,
+    pub upgrades: Upgrades,
+    /// The ship's engine and tank from each of these ticks on.
+    pub kits: BTreeMap<Tick, Kit>,
+}
+
+/// A piece of scrap or a crystal, floating free.
+pub struct PieceRep {
+    pub kind: PieceKind,
+    pub track: Track<Particle>,
 }
 
 pub struct ShellRep {
@@ -159,6 +174,8 @@ pub enum EffectKind {
     Gift(SpecialKind),
     /// A ship's shield took a shell.
     ShieldBroken,
+    /// Somebody took a piece of scrap or a crystal.
+    Pickup(PieceKind),
 }
 
 /// Something to draw for a moment (drifts with the velocity it had).
@@ -187,6 +204,7 @@ pub struct World {
     pub eph: Eph,
     pub players: BTreeMap<PlayerId, PlayerRep>,
     pub shells: BTreeMap<ShellId, ShellRep>,
+    pub pieces: BTreeMap<PieceId, PieceRep>,
     /// Every entity has been simulated up to the start of this tick (ephemeris permitting).
     pub head: Tick,
     pub effects: VecDeque<Effect>,
@@ -233,6 +251,11 @@ impl World {
                     magazine: p.magazine,
                     spectating: p.spectating,
                     shield: p.shield,
+                    quick: false,
+                    cargo: p.cargo,
+                    bank: p.bank,
+                    upgrades: p.upgrades,
+                    kits: BTreeMap::new(),
                 };
                 (p.id, rep)
             })
@@ -242,6 +265,7 @@ impl World {
             .iter()
             .map(|s| (s.id, ShellRep { owner: s.owner, spawn_tick: s.spawn_tick, track: Track::new(tick, s.p) }))
             .collect();
+        let pieces = w.pieces.iter().map(|p| (p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p) })).collect();
         Self {
             rules: w.rules.clone(),
             my_id: w.your_id,
@@ -251,6 +275,7 @@ impl World {
             eph: Eph::new(&w.massive, &w.rules, eph),
             players,
             shells,
+            pieces,
             head: tick,
             effects: VecDeque::new(),
             feed: VecDeque::new(),
@@ -343,6 +368,11 @@ impl World {
                     magazine: Magazine::full(self.head, &self.rules),
                     spectating: false,
                     shield: false,
+                    quick: false,
+                    cargo: Purse::default(),
+                    bank: Purse::default(),
+                    upgrades: Upgrades::default(),
+                    kits: BTreeMap::new(),
                 });
             }
             Event::PlayerColor { id, color } => {
@@ -376,9 +406,10 @@ impl World {
             Event::ShipSpawn { tick, player, state } => {
                 if let Some(p) = self.players.get_mut(&player) {
                     p.ship = Some(Track::new(tick, state));
+                    p.kits = BTreeMap::from([(tick, state.kit)]);
                     p.respawn_tick = None;
-                    // A new ship comes fully armed.
-                    p.magazine = Magazine::full(tick, &self.rules);
+                    // A new ship comes fully armed, with an empty hold (or as it was placed).
+                    p.magazine = shop::magazine(tick, &self.rules, &p.upgrades, p.quick);
                 }
             }
             Event::Input { player, tick, input } => {
@@ -399,7 +430,7 @@ impl World {
             Event::ShellSpawn { tick, id, owner, p, free } => {
                 self.shells.insert(id, ShellRep { owner, spawn_tick: tick, track: Track::new(tick, p) });
                 if let Some(pl) = self.players.get_mut(&owner) {
-                    pl.next_fire_tick = tick + pl.magazine.cooldown(&self.rules);
+                    pl.next_fire_tick = tick + pl.magazine.cooldown();
                     if !free {
                         pl.magazine.fire(tick, &self.rules);
                     }
@@ -439,6 +470,7 @@ impl World {
                 if let Some(p) = self.players.get_mut(&player) {
                     p.deaths += counts as u32;
                     p.shield = false;
+                    p.quick = false;
                     p.respawn_tick = Some(respawn_tick);
                     if let Some(ship) = p.ship.as_mut() {
                         ship.dies_at = Some(tick);
@@ -518,7 +550,8 @@ impl World {
                 match kind {
                     SpecialKind::Ammo => {
                         if let Some(p) = self.players.get_mut(&player) {
-                            p.magazine = Magazine::ammo(tick, &self.rules);
+                            p.quick = true;
+                            p.magazine = shop::magazine(tick, &self.rules, &p.upgrades, true);
                         }
                     }
                     SpecialKind::Shield => {
@@ -583,6 +616,21 @@ impl World {
                 };
                 self.say(tick, text);
             }
+            Event::Pieces { tick, pieces } => {
+                for p in pieces {
+                    self.pieces.insert(p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p) });
+                }
+            }
+            Event::PieceGone { tick, id, by } => {
+                if let Some(piece) = self.pieces.get_mut(&id) {
+                    piece.track.dies_at = Some(tick);
+                    if by.is_some() {
+                        let at = *piece.track.at(tick).unwrap_or(piece.track.last());
+                        self.effects.push_back(Effect { tick, at, kind: EffectKind::Pickup(piece.kind) });
+                    }
+                }
+            }
+            Event::Loadout { tick, player, cargo, bank, upgrades, magazine } => self.loadout(tick, player, cargo, bank, upgrades, magazine),
             Event::Hash { .. } => {} // handled by the session
         }
     }
@@ -602,10 +650,15 @@ impl World {
         let (rules, eph, scratch) = (&self.rules, &self.eph, &mut self.scratch);
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
-            let timeline = &p.timeline;
+            let (timeline, kits) = (&p.timeline, &p.kits);
             let rolled = ship.advance(target, |s, t| {
                 let row = eph.get(t)?;
-                Some(step_ship(s, timeline.at(t), &row.view(), rules, scratch))
+                let hit = step_ship(s, timeline.at(t), &row.view(), rules, scratch);
+                // What the ship carries or has bought shows from the tick it changed.
+                if let Some(kit) = kits.range(..=t + 1).next_back().map(|k| *k.1).filter(|k| *k != s.kit) {
+                    s.refit(kit);
+                }
+                Some(hit)
             });
             if rolled {
                 stats.rollbacks += 1;
@@ -621,6 +674,13 @@ impl World {
             });
         }
         self.shells.retain(|_, s| s.track.dies_at.is_none_or(|d| d > target));
+        for piece in self.pieces.values_mut() {
+            piece.track.advance(target, |p, t| {
+                let row = eph.get(t)?;
+                Some(step_particle(p, (0.0, 0.0), rules.shell_radius, &row.view(), rules, scratch))
+            });
+        }
+        self.pieces.retain(|_, p| p.track.dies_at.is_none_or(|d| d > target));
         if target > self.head {
             self.head = target;
         }
@@ -660,7 +720,7 @@ impl World {
     pub fn shell_muzzle(&self, angle: u16, speed: f64) -> Option<Particle> {
         let s = self.my_ship()?.last().p;
         let (dx, dy) = math::angle_to_dir(angle);
-        let speed = speed.clamp(self.rules.shell_speed_min, self.rules.shell_speed_max);
+        let speed = speed.clamp(self.rules.shell_speed_min, self.shell_speed_max());
         let muzzle = self.rules.ship_radius + 2.0 * self.rules.shell_radius;
         Some(Particle { x: s.x + dx * muzzle, y: s.y + dy * muzzle, vx: s.vx + dx * speed, vy: s.vy + dy * speed })
     }
@@ -670,4 +730,51 @@ impl PlayerRep {
     pub fn score(&self, rules: &GameRules) -> i64 {
         rules.score(self.kills, self.deaths, self.captures)
     }
+}
+
+impl World {
+    /// What a player carries, has banked and has bought, from `tick` on; their ship's engine
+    /// and tank follow.
+    fn loadout(&mut self, tick: Tick, player: PlayerId, cargo: Purse, bank: Purse, upgrades: Upgrades, magazine: Magazine) {
+        let Some(p) = self.players.get_mut(&player) else { return };
+        let (emptied, bought) = (!p.cargo.is_empty() && cargo.is_empty(), p.upgrades.0.iter().zip(upgrades.0).any(|(a, b)| b > *a));
+        let news = if player != self.my_id {
+            None
+        } else if bought {
+            let up = Upgrade::ALL.into_iter().find(|u| upgrades.tier(*u) > p.upgrades.tier(*u));
+            up.map(|u| (format!("{} {}", capitalised(u.name()), "I".repeat(upgrades.tier(u) as usize)), true))
+        } else if emptied {
+            Some(if bank != p.bank { (format!("Banked {}", p.cargo.describe()), true) } else { (format!("Lost {}", p.cargo.describe()), false) })
+        } else {
+            None
+        };
+        (p.cargo, p.bank, p.upgrades, p.magazine) = (cargo, bank, upgrades, magazine);
+        let kit = shop::kit(&self.rules, &upgrades, &cargo);
+        p.kits.insert(tick, kit);
+        // (Only the one in force at the oldest tick still kept, and those after it.)
+        let oldest = self.head.saturating_sub(HISTORY_TICKS as Tick);
+        while p.kits.range(..=oldest).count() > 1 {
+            p.kits.pop_first();
+        }
+        if let Some(ship) = p.ship.as_mut() {
+            ship.mark_dirty(tick.saturating_sub(1));
+        }
+        if let Some((text, good)) = news {
+            self.alert(tick, text, good);
+        }
+    }
+
+    pub fn piece_at(&self, id: PieceId, tick_f: f64) -> Option<Particle> {
+        sample(&self.pieces.get(&id)?.track, tick_f, |p| *p, self.rules.dt)
+    }
+
+    /// The fastest our guns fire a shell.
+    pub fn shell_speed_max(&self) -> f64 {
+        self.me().map_or(self.rules.shell_speed_max, |m| shop::shell_speed_max(&self.rules, &m.upgrades))
+    }
+}
+
+fn capitalised(word: &str) -> String {
+    let mut c = word.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }

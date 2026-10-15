@@ -502,6 +502,16 @@ fn gallery(ui: f32) {
     }
     game::draw_ship((w * 0.8, y), 0.4, style::rgb([255, 190, 60]), false, ui);
     style::shield_break((w * 0.8, y), 0.35, ui);
+    // Scrap and crystals turning, and being taken.
+    y += 50.0 * ui;
+    let t = get_time() as f32;
+    for (k, kind) in [gsim_proto::PieceKind::Scrap, gsim_proto::PieceKind::Crystal].into_iter().enumerate() {
+        for col in 0..5 {
+            let x = w / 12.0 * (col as f32 + 1.0 + 6.0 * k as f32);
+            style::piece((x, y), kind, t + 1.3 * col as f32, ui);
+        }
+        style::pickup((w / 12.0 * (6.0 * k as f32 + 5.5), y + 30.0 * ui), kind, 0.3, ui);
+    }
 }
 
 /// The page's script (`web/gsim.js`) is told apart by this.

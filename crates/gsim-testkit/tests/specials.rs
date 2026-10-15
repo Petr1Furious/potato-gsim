@@ -94,11 +94,11 @@ fn ammo_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
     take(&mut sim, ann, SpecialKind::Ammo);
     let mag = sim.server.magazine(ann).unwrap();
     let rules = sim.server.rules.clone();
-    assert!(mag.quick && mag.max == 2 * rules.shell_max, "{mag:?}");
-    assert_eq!(mag.cooldown(&rules), rules.shell_cooldown_ticks as u64 / 2);
+    assert!(mag.max == 2 * rules.shell_max, "{mag:?}");
+    assert_eq!(mag.cooldown(), rules.shell_cooldown_ticks as u64 / 2);
     // Shells come back twice as fast too.
     let later = (rules.shell_regen_delay_ticks + rules.shell_regen_ticks) as u64;
-    for (mut m, back) in [(Magazine::full(0, &rules), 1), (Magazine::ammo(0, &rules), 2)] {
+    for (mut m, back) in [(Magazine::full(0, &rules), 1), (gsim_proto::shop::magazine(0, &rules, &Default::default(), true), 2)] {
         let full = m.max;
         assert!(m.fire(0, &rules) && m.fire(0, &rules));
         assert_eq!(m.at(later, &rules), full - 2 + back);
@@ -121,8 +121,8 @@ fn ammo_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
 
     sim.clients[a].session.send_chat("/kill ann");
     sim.run_with(7.0, idle);
-    assert!(!sim.server.magazine(ann).unwrap().quick, "a new ship has the usual guns");
-    assert!(!sim.clients[b].session.world.as_ref().unwrap().players[&ann].magazine.quick);
+    assert_eq!(sim.server.magazine(ann).unwrap().max, rules.shell_max, "a new ship has the usual guns");
+    assert_eq!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].magazine.max, rules.shell_max);
     in_sync(&sim);
 }
 

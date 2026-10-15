@@ -327,7 +327,7 @@ impl Session {
                 self.pending.push_back(Cmd { seq: self.next_seq, tick: apply_tick, kind: CmdKind::Fire { angle, speed } });
                 self.next_seq += 1;
                 self.last_cmd_tick = apply_tick;
-                self.fire_ready_tick = apply_tick + w.me().map_or(w.rules.shell_cooldown_ticks as Tick, |m| m.magazine.cooldown(&w.rules));
+                self.fire_ready_tick = apply_tick + w.me().map_or(w.rules.shell_cooldown_ticks as Tick, |m| m.magazine.cooldown());
                 self.stats.cmds_sent += 1;
             }
         }
@@ -384,6 +384,11 @@ impl Session {
     /// Have our ship drawn in another colour.
     pub fn set_color(&mut self, color: [u8; 3]) {
         self.out.push(ClientMsg::Color(color));
+    }
+
+    /// Buy the next tier of an upgrade (at home).
+    pub fn buy(&mut self, upgrade: Upgrade) {
+        self.out.push(ClientMsg::Buy(upgrade));
     }
 
     /// Point at a spot on the map for everyone.

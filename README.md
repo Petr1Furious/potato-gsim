@@ -110,6 +110,14 @@ ship) lets the ship survive one shell. Each gives once, and another of the same 
 on another body 20 s later. There is one of each kind for every two players.
 Operators can name them in commands (`/orbit ammo`).
 
+Clouds of **scrap** float around the centre. A ship takes a piece by passing within 80 Mm of
+it, carries it, and banks it on coming home (into its zone). Every piece carried makes the ship
+5 % heavier, so the same burn gives less delta-v: a full hold is slow and easy to catch. A ship
+that is lost spills its cargo where it was. At home (or waiting there for a ship), `B` opens
+the shop: three tiers each of engine (thrust), tank (delta-v), magazine (shells), reload and
+guns (shell speed), for 10, 25 and 50 scrap (the last tier also takes crystals). A lost ship
+loses one tier of each.
+
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
 Ships are drawn in their players' colours: random at first, chosen in the settings.
@@ -168,6 +176,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | `/gamemode spectator\|play [PLAYER]` | Watch without a ship (`Space` follows the next player), or play again; with bases, at one's own base even if it has fallen |
 | `/target BODY` | Make a body a target |
 | `/targets count N`, `/targets per N` | A fixed number of targets, or one for every N players |
+| `/give scrap\|crystals N [PLAYER]` | Put scrap or crystals in a bank |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |
 
@@ -186,6 +195,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
+| B, 1 - 5 | Shop (bases, at home), buy |
 | Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 

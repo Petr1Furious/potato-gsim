@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -14,10 +14,13 @@ pub const MAX_CHAT_CHARS: usize = 200;
 
 pub type PlayerId = u32;
 pub type ShellId = u32;
+pub type PieceId = u32;
 
 pub mod command;
 pub mod identity;
+pub mod shop;
 pub use identity::Identity;
+pub use shop::{PieceKind, Purse, Upgrade, Upgrades};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CmdKind {
@@ -55,6 +58,8 @@ pub enum ClientMsg {
     Mark { x: f64, y: f64 },
     /// Reliable: my massive-tier hash disagreed, send a fresh snapshot.
     ResyncRequest,
+    /// Reliable: buy the next tier of this upgrade (at home, from what is banked).
+    Buy(Upgrade),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -76,6 +81,10 @@ pub struct PlayerInfo {
     pub spectating: bool,
     /// The ship survives one shell.
     pub shield: bool,
+    /// What the ship carries, what is banked at home, and what has been bought.
+    pub cargo: Purse,
+    pub bank: Purse,
+    pub upgrades: Upgrades,
 }
 
 /// What a round is about.
@@ -160,6 +169,14 @@ pub struct Objective {
     pub left: u32,
 }
 
+/// A piece of scrap or a crystal, floating free.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PieceInfo {
+    pub id: PieceId,
+    pub kind: PieceKind,
+    pub p: Particle,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShellInfo {
     pub id: ShellId,
@@ -188,6 +205,7 @@ pub struct Welcome {
     pub names: Vec<(u32, String)>,
     pub players: Vec<PlayerInfo>,
     pub shells: Vec<ShellInfo>,
+    pub pieces: Vec<PieceInfo>,
 }
 
 /// Reliable, ordered, tick-stamped facts. A `tick` is the first tick at which the fact holds.
@@ -222,6 +240,13 @@ pub enum Event {
     BaseDestroyed { tick: Tick, owner: PlayerId, by: Option<PlayerId> },
     /// Scores are final; a new world starts at `next_round_tick`. `winner`: the last player in play.
     RoundOver { tick: Tick, next_round_tick: Tick, winner: Option<PlayerId> },
+    /// These pieces are floating free from `tick` on.
+    Pieces { tick: Tick, pieces: Vec<PieceInfo> },
+    /// The piece is gone from `tick` on: taken by `by`, or lost (crashed, or far out).
+    PieceGone { tick: Tick, id: PieceId, by: Option<PlayerId> },
+    /// From `tick` on the player carries `cargo`, has `bank` at home and these upgrades and
+    /// shells (the ship's engine and tank follow from them, see [`shop::kit`]).
+    Loadout { tick: Tick, player: PlayerId, cargo: Purse, bank: Purse, upgrades: Upgrades, magazine: Magazine },
     /// Massive-tier hash at the start of `tick`.
     Hash { tick: Tick, hash: u64 },
 }

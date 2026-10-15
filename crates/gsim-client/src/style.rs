@@ -327,6 +327,55 @@ pub fn shield_break(s: (f32, f32), age: f32, ui: f32) {
     }
 }
 
+pub fn piece_colour(kind: gsim_proto::PieceKind) -> Color {
+    match kind {
+        gsim_proto::PieceKind::Scrap => Color::new(0.90, 0.72, 0.50, 1.0),
+        gsim_proto::PieceKind::Crystal => Color::new(0.55, 0.95, 1.0, 1.0),
+    }
+}
+
+/// A piece floating free: scrap a tumbling shard of metal, a crystal a glinting diamond.
+/// `spin` turns it (radians).
+pub fn piece(s: (f32, f32), kind: gsim_proto::PieceKind, spin: f32, ui: f32) {
+    use std::f32::consts::TAU;
+    let c = piece_colour(kind);
+    let at = |a: f32, r: f32| vec2(s.0 + r * ui * (spin + a).cos(), s.1 + r * ui * (spin + a).sin());
+    match kind {
+        gsim_proto::PieceKind::Scrap => {
+            disc(s.0, s.1, 5.5 * ui, alpha(c, 0.10));
+            // Lopsided, so that it is seen to tumble; lit on the side that faces up.
+            let (p, q, r) = (at(0.0, 5.2), at(0.36 * TAU, 3.3), at(0.68 * TAU, 4.2));
+            draw_triangle(p, q, r, mix(c, BACKGROUND, 0.35));
+            draw_triangle(p, q, vec2(s.0, s.1), c);
+            draw_triangle_lines(p, q, r, 0.8 * ui, alpha(WHITE, 0.35));
+        }
+        gsim_proto::PieceKind::Crystal => {
+            disc(s.0, s.1, 9.0 * ui, alpha(c, 0.10));
+            disc(s.0, s.1, 5.0 * ui, alpha(c, 0.14));
+            let tilt = 0.15 * spin.sin();
+            let tip = |a: f32, r: f32| vec2(s.0 + r * ui * (tilt + a).sin(), s.1 - r * ui * (tilt + a).cos());
+            let (top, right, bottom, left) = (tip(0.0, 5.5), tip(0.25 * TAU, 3.0), tip(0.5 * TAU, 5.5), tip(0.75 * TAU, 3.0));
+            draw_triangle(top, right, bottom, c);
+            draw_triangle(top, left, bottom, mix(c, BACKGROUND, 0.3));
+            // A glint now and then.
+            let glint = (spin * 1.7).sin().max(0.0).powi(6);
+            if glint > 0.02 {
+                let (l, k) = ((3.0 + 6.0 * glint) * ui, alpha(WHITE, glint));
+                draw_line(top.x - l, top.y, top.x + l, top.y, 1.0 * ui, k);
+                draw_line(top.x, top.y - l, top.x, top.y + l, 1.0 * ui, k);
+            }
+        }
+    }
+}
+
+/// A piece being taken: a spark that bursts outwards (`age` 0 to 1).
+pub fn pickup(s: (f32, f32), kind: gsim_proto::PieceKind, age: f32, ui: f32) {
+    let c = piece_colour(kind);
+    let fade = (1.0 - age) * (1.0 - age);
+    ring(s.0, s.1, (4.0 + 18.0 * age) * ui, (2.0 - 1.2 * age) * ui, alpha(c, fade));
+    disc(s.0, s.1, (5.0 - 3.0 * age) * ui, alpha(WHITE, 0.8 * fade));
+}
+
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1.0)
 }

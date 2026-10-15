@@ -114,6 +114,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
         style::key_row(ui, "Chat, command", "T, /");
         style::key_row(ui, "Point at the map", "G");
+        style::key_row(ui, "Shop (bases, at home), buy", "B, 1 - 5");
         style::key_row(ui, "Self-destruct (hold)", "BACKSPACE");
     }
     if large {

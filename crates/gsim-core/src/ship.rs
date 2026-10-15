@@ -12,6 +12,25 @@ pub struct ShipInput {
     pub thrust: u8,
 }
 
+/// What a ship's engine and tank can do: upgrades and the weight of its cargo change it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kit {
+    /// Delta-v taken from the tank per tick at full thrust, in mm/s.
+    pub burn: i64,
+    /// Delta-v that gives the ship per tick at full thrust (less than `burn` when it is
+    /// laden), in mm/s.
+    pub push: i64,
+    /// The most delta-v the tank holds, in mm/s.
+    pub tank: i64,
+}
+
+impl Kit {
+    /// A bare ship.
+    pub fn of(rules: &GameRules) -> Self {
+        Self { burn: rules.burn_per_tick_mmps, push: rules.burn_per_tick_mmps, tank: rules.fuel_max_mmps }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ShipState {
     pub p: Particle,
@@ -19,11 +38,23 @@ pub struct ShipState {
     pub fuel: i64,
     /// Ticks since the engine last fired (drives regeneration).
     pub idle_ticks: u32,
+    pub kit: Kit,
 }
 
 impl ShipState {
+    /// A bare ship with a full tank.
     pub fn new(p: Particle, rules: &GameRules) -> Self {
-        Self { p, fuel: rules.fuel_max_mmps, idle_ticks: 0 }
+        Self::with_kit(p, Kit::of(rules))
+    }
+
+    pub fn with_kit(p: Particle, kit: Kit) -> Self {
+        Self { p, fuel: kit.tank, idle_ticks: 0, kit }
+    }
+
+    /// Another engine and tank from now on; a bigger tank comes with the extra delta-v.
+    pub fn refit(&mut self, kit: Kit) {
+        self.fuel += (kit.tank - self.kit.tank).max(0);
+        self.kit = kit;
     }
 }
 
@@ -37,30 +68,31 @@ pub struct Magazine {
     pub since: Tick,
     /// The most it holds.
     pub max: u32,
-    /// Fires and gets shells back twice as fast (from ammo, until the ship is lost).
-    pub quick: bool,
+    /// Ticks between two shots.
+    pub cooldown: u32,
+    /// Ticks for one shell to come back.
+    pub regen: u32,
 }
 
 impl Magazine {
+    /// The rules' magazine, full.
     pub fn full(tick: Tick, rules: &GameRules) -> Self {
-        Self { left: rules.shell_max, since: tick, max: rules.shell_max, quick: false }
+        Self::new(tick, rules.shell_max, rules.shell_cooldown_ticks, rules.shell_regen_ticks)
     }
 
-    /// Twice the shells, filled up, fired and coming back twice as fast.
-    pub fn ammo(tick: Tick, rules: &GameRules) -> Self {
-        Self { left: 2 * rules.shell_max, since: tick, max: 2 * rules.shell_max, quick: true }
+    /// A full magazine of `max` shells.
+    pub fn new(tick: Tick, max: u32, cooldown: u32, regen: u32) -> Self {
+        Self { left: max, since: tick, max, cooldown, regen: regen.max(1) }
     }
 
     /// Ticks between two shots.
-    pub fn cooldown(&self, rules: &GameRules) -> Tick {
-        let ticks = rules.shell_cooldown_ticks as Tick;
-        if self.quick { ticks / 2 } else { ticks }
+    pub fn cooldown(&self) -> Tick {
+        self.cooldown as Tick
     }
 
     /// Ticks for one shell to come back.
-    fn regen_every(&self, rules: &GameRules) -> Tick {
-        let ticks = rules.shell_regen_ticks.max(1) as Tick;
-        if self.quick { (ticks / 2).max(1) } else { ticks }
+    fn regen_every(&self) -> Tick {
+        self.regen.max(1) as Tick
     }
 
     /// Ticks towards shells coming back at `tick`: none until the delay is over.
@@ -70,13 +102,13 @@ impl Magazine {
 
     /// Shells that can be fired at `tick`.
     pub fn at(&self, tick: Tick, rules: &GameRules) -> u32 {
-        let back = self.restoring(tick, rules) / self.regen_every(rules);
+        let back = self.restoring(tick, rules) / self.regen_every();
         (self.left as Tick + back).min(self.max as Tick) as u32
     }
 
     /// How far along the next shell is, 0 to 1 (0 while none is on its way).
     pub fn next(&self, tick: Tick, rules: &GameRules) -> f32 {
-        let every = self.regen_every(rules);
+        let every = self.regen_every();
         if self.at(tick, rules) >= self.max {
             return 0.0;
         }
@@ -91,6 +123,13 @@ impl Magazine {
         }
         have > 0
     }
+
+    /// The same shells in another magazine (`new`, as it is when full): what the old one
+    /// had at `tick`, and whatever more the new one holds.
+    pub fn refit(&self, tick: Tick, new: Magazine, rules: &GameRules) -> Magazine {
+        let have = self.at(tick, rules) + new.max.saturating_sub(self.max);
+        Magazine { left: have.min(new.max), since: tick, ..new }
+    }
 }
 
 /// Advance a ship one tick under `input`. Fuel bookkeeping is pure integer arithmetic.
@@ -102,19 +141,22 @@ pub fn step_ship(
     rules: &GameRules,
     scratch: &mut Scratch,
 ) -> Option<u32> {
-    let want = rules.burn_per_tick_mmps * (input.thrust.min(100) as i64) / 100;
+    let kit = s.kit;
+    let want = kit.burn * (input.thrust.min(100) as i64) / 100;
     let used = want.min(s.fuel).max(0);
     let mut thrust = (0.0, 0.0);
     if used > 0 {
         s.fuel -= used;
         s.idle_ticks = 0;
-        let a = (used as f64 * 1.0e-3) / rules.dt;
+        // A laden ship gets less out of the same burn.
+        let gained = if kit.push == kit.burn { used } else { used * kit.push / kit.burn };
+        let a = (gained as f64 * 1.0e-3) / rules.dt;
         let (dx, dy) = math::angle_to_dir(input.angle);
         thrust = (a * dx, a * dy);
     } else {
         s.idle_ticks = s.idle_ticks.saturating_add(1);
-        if s.idle_ticks >= rules.regen_delay_ticks {
-            s.fuel = (s.fuel + rules.regen_per_tick_mmps).min(rules.fuel_max_mmps);
+        if s.idle_ticks >= rules.regen_delay_ticks && s.fuel < kit.tank {
+            s.fuel = (s.fuel + rules.regen_per_tick_mmps).min(kit.tank);
         }
     }
     step_particle(&mut s.p, thrust, rules.ship_radius, view, rules, scratch)

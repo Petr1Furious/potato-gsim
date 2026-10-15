@@ -145,7 +145,10 @@ impl Authority {
         let rules = self.rules.clone();
         let Some(p) = self.players.get_mut(&player) else { return };
         match special.kind {
-            SpecialKind::Ammo => p.magazine = Magazine::ammo(tick, &rules),
+            SpecialKind::Ammo => {
+                p.quick = true;
+                p.magazine = gsim_proto::shop::magazine(tick, &rules, &p.upgrades, true);
+            }
             SpecialKind::Shield => p.shield = true,
             SpecialKind::Repair => {
                 if let Some(b) = self.bases.iter_mut().find(|b| b.owner == player && b.hp > 0) {

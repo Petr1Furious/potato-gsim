@@ -188,6 +188,7 @@ impl Authority {
         let tick = self.tick();
         let respawn_tick = tick + self.rules.respawn_ticks as Tick;
         let playing = self.next_round_tick.is_none();
+        self.spill(tick, id);
         if let Some(p) = self.players.get_mut(&id) {
             p.ship = None;
             p.hold = None;
@@ -434,7 +435,7 @@ impl Authority {
                 let mut filled = Vec::new();
                 for id in who {
                     if let Ok(ship) = self.ship_of(id) {
-                        self.place_ship(id, ShipState { fuel: self.rules.fuel_max_mmps, ..ship });
+                        self.place_ship(id, ShipState { fuel: ship.kit.tank, ..ship });
                         filled.push(id);
                     }
                 }
@@ -442,6 +443,19 @@ impl Authority {
                     return Err("nobody there has a ship right now".into());
                 }
                 done(format!("Refuelled {}", self.names_of(&filled)))
+            }
+            "give" => {
+                let amount = args.get(1).and_then(|s| s.parse::<u32>().ok()).filter(|n| *n <= 100_000).ok_or("")?;
+                let purse = match args[0].as_str() {
+                    "scrap" => Purse { scrap: amount, crystals: 0 },
+                    "crystals" => Purse { scrap: 0, crystals: amount },
+                    _ => return Err(String::new()),
+                };
+                let who = self.select_or_me(args.get(2), me)?;
+                for id in &who {
+                    self.grant(*id, purse);
+                }
+                done(format!("Gave {} {}", self.names_of(&who), purse.describe()))
             }
             "gamemode" => {
                 let spectating = args.first().map(String::as_str) == Some("spectator");

@@ -92,14 +92,14 @@ impl Authority {
     }
 
     /// A circular orbit around the player's base, if they have one.
-    pub(super) fn base_spawn(&mut self, player: PlayerId) -> Option<ShipState> {
+    pub(super) fn base_spawn(&mut self, player: PlayerId) -> Option<Particle> {
         let slot = self.base_of(player)?.slot as usize;
         let (m, a) = (&self.massive, self.rng.angle());
         let r = SPAWN_RADII * m.radius[slot];
         let v = (self.rules.g * m.pull[slot] / r).sqrt();
         let (c, s) = (a.cos(), a.sin());
         let p = Particle { x: m.x[slot] + r * c, y: m.y[slot] + r * s, vx: -v * s, vy: v * c };
-        Some(ShipState::new(p, &self.rules))
+        Some(p)
     }
 
     /// Out of the round: watching until the next one.
@@ -139,6 +139,7 @@ impl Authority {
     pub(super) fn tend_bases(&mut self, tick: Tick, merges: &[MergeEvent], playing: bool) {
         let rules = self.rules.clone();
         let holds = self.tend_specials(tick, merges, playing);
+        self.tend_scrap(tick, playing);
         let mut sieges = Vec::new();
         if playing {
             for p in self.players.values() {
