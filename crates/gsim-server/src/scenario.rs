@@ -126,7 +126,7 @@ impl Preset {
 /// Parse `key=value`. The value is a plain number (`2e25`) or a length with a unit (`50Gm`).
 pub fn parse_setting(text: &str) -> Result<(String, f64), String> {
     let (key, value) = text.split_once('=').filter(|(k, _)| !k.is_empty()).ok_or_else(|| format!("expected key=value, got '{text}'"))?;
-    let number = gsim_proto::command::parse_metres(value).ok_or_else(|| format!("{key}='{value}' is not a number"))?;
+    let number = gsim_proto::command::parse_meters(value).ok_or_else(|| format!("{key}='{value}' is not a number"))?;
     Ok((key.to_string(), number))
 }
 
@@ -177,7 +177,7 @@ pub struct Scenario {
     pub name: String,
     pub bodies: Vec<Body>,
     pub names: Vec<(u32, String)>,
-    /// Ships spawn on a circular orbit at a radius in this range around the barycentre.
+    /// Ships spawn on a circular orbit at a radius in this range around the barycenter.
     pub spawn_r: (f64, f64),
 }
 

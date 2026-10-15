@@ -1,16 +1,16 @@
 //! Bodies of interest (targets, and mines in the bases mode) that stop being worth flying
-//! to: one that drifts far from the centre of the world or races away from it, and one swung
-//! around by a much heavier neighbour, which leaves no room for an orbit around it.
+//! to: one that drifts far from the center of the world or races away from it, and one swung
+//! around by a much heavier neighbor, which leaves no room for an orbit around it.
 
 use super::*;
 
 /// An orbit around a body needs room: once the body's Hill sphere (where its own pull beats
-/// the tides of a heavier neighbour) is smaller than this many of its radii, no qualifying
+/// the tides of a heavier neighbor) is smaller than this many of its radii, no qualifying
 /// orbit around it lasts.
 const HILL_RADII: f64 = 20.0;
 /// Within 30° of straight at a body.
 const AIM_COS: f64 = 0.866;
-/// A body leaving the centre faster than this share of a ship's whole delta-v is not worth
+/// A body leaving the center faster than this share of a ship's whole delta-v is not worth
 /// chasing.
 const FAST_SHARE: f64 = 0.25;
 /// When a body has to be replaced by one like it: how many seconds of play a difference in
@@ -20,21 +20,21 @@ const ALIKE_SECONDS: f64 = 10.0;
 /// What is wrong with a body of interest.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Trouble {
-    /// Far from the centre, or racing away from it, and nobody on the way to it.
+    /// Far from the center, or racing away from it, and nobody on the way to it.
     Far,
     /// Swung around by this much heavier body.
     Swung(u32),
 }
 
 impl Authority {
-    /// How far from the centre a body of interest may be: targets up to half again as far as
-    /// the world reached when it was made, mines (which start near the centre) within half
+    /// How far from the center a body of interest may be: targets up to half again as far as
+    /// the world reached when it was made, mines (which start near the center) within half
     /// of that.
     pub(super) fn interest_limit(&self, mine: bool) -> f64 {
         if mine { 0.5 * self.world_r } else { 1.5 * self.world_r }
     }
 
-    pub(super) fn distance_from_centre(&self, frame: &SystemFrame, j: usize) -> f64 {
+    pub(super) fn distance_from_center(&self, frame: &SystemFrame, j: usize) -> f64 {
         let m = &self.massive;
         ((m.x[j] - frame.x).powi(2) + (m.y[j] - frame.y).powi(2)).sqrt()
     }
@@ -46,11 +46,11 @@ impl Authority {
             return Some(Trouble::Swung(heavy));
         }
         // A body somebody is on the way to stays, or they would arrive at nothing.
-        let away = self.distance_from_centre(frame, j) > self.interest_limit(mine) || self.racing_away(frame, j);
+        let away = self.distance_from_center(frame, j) > self.interest_limit(mine) || self.racing_away(frame, j);
         (away && !self.sought(j)).then_some(Trouble::Far)
     }
 
-    /// Leaving the centre too fast to be worth chasing.
+    /// Leaving the center too fast to be worth chasing.
     fn racing_away(&self, frame: &SystemFrame, j: usize) -> bool {
         let m = &self.massive;
         let (dx, dy) = (m.x[j] - frame.x, m.y[j] - frame.y);
@@ -113,12 +113,12 @@ impl Authority {
         })
     }
 
-    /// Fit to become a body of interest: there, positive, no base, near enough to the centre
+    /// Fit to become a body of interest: there, positive, no base, near enough to the center
     /// (with room to drift), not racing away and not swung around by anything; and no star,
     /// for a mine.
     pub(super) fn fit_for_interest(&self, frame: &SystemFrame, j: usize, mine: bool) -> bool {
         let m = &self.massive;
-        m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && !(mine && m.mass[j] >= 1.0e29) && self.distance_from_centre(frame, j) < 0.7 * self.interest_limit(mine) && !self.racing_away(frame, j) && self.swung_by(j).is_none()
+        m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && !(mine && m.mass[j] >= 1.0e29) && self.distance_from_center(frame, j) < 0.7 * self.interest_limit(mine) && !self.racing_away(frame, j) && self.swung_by(j).is_none()
     }
 
     /// Move a target or a mine somewhere else at once (an operator's call).

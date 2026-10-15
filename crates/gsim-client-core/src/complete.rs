@@ -1,12 +1,14 @@
-//! What the chat input should show while typing, modelled on Minecraft's command
+//! What the chat input should show while typing, modeled on Minecraft's command
 //! suggestions: a list of completions for the word under the cursor, or (when there is
-//! nothing to suggest) a grey hint of the arguments still expected, or a red error when
-//! the input cannot be right. Also says how to colour the typed command.
+//! nothing to suggest) a gray hint of the arguments still expected, or a red error when
+//! the input cannot be right. Also says how to color the typed command.
 
-use gsim_proto::command::{self, parse_metres, quote, Arg, Command};
+use gsim_proto::command::{self, parse_meters, quote, Arg, Command};
 
 pub struct Context<'a> {
     pub players: &'a [String],
+    /// The operators, online or not (known only to operators).
+    pub ops: &'a [String],
     pub bodies: &'a [String],
     /// Each preset with the keys of its parameters.
     pub presets: &'a [(&'a str, Vec<&'a str>)],
@@ -18,7 +20,7 @@ pub struct Context<'a> {
 pub enum SpanKind {
     /// The command name.
     Literal,
-    /// The n-th argument (colours cycle).
+    /// The n-th argument (colors cycle).
     Arg(usize),
     Error,
 }
@@ -33,7 +35,7 @@ pub struct Analysis {
     pub usage: Option<String>,
     /// Why the input cannot be a valid command.
     pub error: Option<String>,
-    /// How to colour the input: (start, end, kind) byte ranges.
+    /// How to color the input: (start, end, kind) byte ranges.
     pub spans: Vec<(usize, usize, SpanKind)>,
 }
 
@@ -76,7 +78,7 @@ fn error_at(message: &str, input: &str, pos: usize) -> String {
 
 fn is_coordinate(word: &str) -> bool {
     let w = word.strip_prefix('~').unwrap_or(word);
-    (word.starts_with('~') && w.is_empty()) || parse_metres(w).is_some()
+    (word.starts_with('~') && w.is_empty()) || parse_meters(w).is_some()
 }
 
 fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
@@ -88,6 +90,7 @@ fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
     };
     match arg {
         Arg::Player => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
+        Arg::Operator => with(names(&[ctx.ops]), &["@a", "@r", "@s"]),
         Arg::Body => with(names(&[ctx.bodies]), &["@t", "mine"]),
         Arg::Place => with(names(&[ctx.players]), &["@a", "@r", "@s"]),
         Arg::PlayerOrBody => with(names(&[ctx.players, ctx.bodies]), &["@a", "@r", "@s", "@t"]),
@@ -109,7 +112,7 @@ fn setting_keys<'a>(spec: &Command, args: &[Word], ctx: &Context<'a>) -> Vec<&'a
 
 /// Is `word` a finished `key=number` with one of `keys`?
 fn is_setting(word: &str, keys: &[&str]) -> bool {
-    word.split_once('=').is_some_and(|(key, value)| keys.contains(&key) && if key == "seed" { value.parse::<u64>().is_ok() } else { parse_metres(value).is_some() })
+    word.split_once('=').is_some_and(|(key, value)| keys.contains(&key) && if key == "seed" { value.parse::<u64>().is_ok() } else { parse_meters(value).is_some() })
 }
 
 fn matching(pool: Vec<String>, partial: &str, quoted: bool) -> Vec<String> {
@@ -167,7 +170,7 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
         _ => spec.params.get(i).map(|p| (i, p)),
     };
 
-    // Colour the arguments typed so far; flag the first one that cannot be right.
+    // Color the arguments typed so far; flag the first one that cannot be right.
     for (i, w) in args.iter().enumerate() {
         let complete = trailing_space || i < index;
         let bad = match param_at(i) {
@@ -261,7 +264,7 @@ pub fn apply(input: &str, start: usize, suggestion: &str) -> String {
     format!("{}{suggestion}", &input[..start.min(input.len())])
 }
 
-/// What `suggestion` would add after what is already typed, for the grey inline preview.
+/// What `suggestion` would add after what is already typed, for the gray inline preview.
 pub fn suffix<'a>(input: &str, start: usize, suggestion: &'a str) -> Option<&'a str> {
     let typed = &input[start.min(input.len())..];
     suggestion.get(..typed.len()).filter(|head| head.eq_ignore_ascii_case(typed)).map(|_| &suggestion[typed.len()..])
@@ -275,8 +278,16 @@ mod tests {
         vec![("random", vec!["count", "spread", "star_mass"]), ("solar", vec!["scale", "star_mass"]), ("disc", vec!["count"])]
     }
 
+    #[test]
+    fn deop_offers_every_operator_online_or_not() {
+        let (players, ops, presets) = (vec!["ann".to_string()], vec!["ann".to_string(), "carl".to_string()], presets());
+        let c = Context { players: &players, ops: &ops, bodies: &[], presets: &presets, op: true };
+        assert_eq!(analyze("/deop c", &c, false).suggestions, ["carl"]);
+        assert_eq!(analyze("/op c", &c, false).suggestions, Vec::<String>::new(), "/op offers who is online");
+    }
+
     fn ctx<'a>(players: &'a [String], bodies: &'a [String], presets: &'a [(&'a str, Vec<&'a str>)], op: bool) -> Context<'a> {
-        Context { players, bodies, presets, op }
+        Context { players, ops: &[], bodies, presets, op }
     }
 
     #[test]
@@ -318,7 +329,7 @@ mod tests {
         assert!(an("/preset random spread=80Gm count=3e2 star_mass=2e30 ").error.is_none());
         assert!(an("/preset nowhere count=5").error.is_some());
 
-        // Every setting is coloured as the one settings argument.
+        // Every setting is colored as the one settings argument.
         let spans = an("/preset random count=50 seed=7").spans;
         assert_eq!(spans, [(0, 7, SpanKind::Literal), (8, 14, SpanKind::Arg(0)), (15, 23, SpanKind::Arg(1)), (24, 30, SpanKind::Arg(1))]);
         assert_eq!(an("/preset random count=50 nope=1 seed=7").spans.last(), Some(&(24, 37, SpanKind::Error)));
@@ -363,7 +374,7 @@ mod tests {
         assert_eq!(an("/msg \"Ann Droid\" ").usage, None, "closed: on to the message");
         assert_eq!(an("/orbit \"Ann Droid\" sa").suggestions, ["Saturn"]);
 
-        // Nothing to suggest: the grey hint lists what is still expected from here.
+        // Nothing to suggest: the gray hint lists what is still expected from here.
         let a = an("/score bob ");
         assert!(a.suggestions.is_empty());
         assert_eq!(a.usage.as_deref(), Some("<kills> <orbits>"));
@@ -382,7 +393,7 @@ mod tests {
         assert!(analyze("/tp ", &guest, false).error.is_some(), "operator commands do not exist for others");
         assert!(an("/round new").error.is_none() && an("/timescale 3600").error.is_none());
 
-        // Colouring: command, then one colour per argument; errors run to the end.
+        // Coloring: command, then one color per argument; errors run to the end.
         assert_eq!(an("/score bob 3").spans, [(0, 6, SpanKind::Literal), (7, 10, SpanKind::Arg(0)), (11, 12, SpanKind::Arg(1))]);
         assert_eq!(an("/round later now").spans, [(0, 6, SpanKind::Literal), (7, 16, SpanKind::Error)]);
 

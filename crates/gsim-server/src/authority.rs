@@ -15,6 +15,7 @@ use std::net::IpAddr;
 mod bases;
 mod commands;
 mod interest;
+mod log;
 mod scrap;
 mod mines;
 
@@ -131,7 +132,7 @@ pub struct Authority {
     preset: String,
     names: Vec<(u32, String)>,
     spawn_r: (f64, f64),
-    /// How far from the centre the world reached when it was made.
+    /// How far from the center the world reached when it was made.
     world_r: f64,
     players: BTreeMap<PlayerId, Player>,
     by_conn: BTreeMap<ConnId, PlayerId>,
@@ -148,6 +149,8 @@ pub struct Authority {
     addrs: BTreeMap<ConnId, IpAddr>,
     /// Connections the transport should close once their last message is out.
     kicks: Vec<ConnId>,
+    /// Lines for the server log, not yet printed: (level, text).
+    log: Vec<(&'static str, String)>,
     /// Used to restart the same world when no generator is configured.
     initial: Scenario,
     generator: Option<(String, Params)>,
@@ -176,7 +179,7 @@ pub struct Authority {
     mines: Vec<Mine>,
     /// When mines that ran out open again.
     mine_due: Vec<Tick>,
-    /// When crystals next turn up near the centre.
+    /// When crystals next turn up near the center.
     crystals_due: Option<Tick>,
     /// Gravity wells: (tick fired, where each is now).
     wells: Vec<(Tick, Particle)>,
@@ -254,6 +257,7 @@ impl Authority {
             pending: BTreeMap::new(),
             addrs: BTreeMap::new(),
             kicks: Vec::new(),
+            log: Vec::new(),
         }
     }
 
@@ -320,6 +324,10 @@ impl Authority {
         self.pending.remove(&conn);
         self.addrs.remove(&conn);
         if let Some(id) = self.by_conn.remove(&conn) {
+            if let Some(p) = self.players.get(&id) {
+                let line = format!("{} left the game", p.name);
+                self.log(line);
+            }
             self.players.remove(&id);
             self.sieges.retain(|s| s.0 != id);
             self.event(Event::PlayerLeft { id });
@@ -358,7 +366,9 @@ impl Authority {
     }
 
     /// Refuse a connection: tell it why, then have the transport close it.
-    fn reject(&mut self, conn: ConnId, reason: String) {
+    fn reject(&mut self, conn: ConnId, who: &str, reason: String) {
+        let at = self.addrs.get(&conn).map_or("?".to_string(), |ip| ip.to_string());
+        self.log(format!("Disconnecting {who} (/{at}): {reason}"));
         self.send(Target::One(conn), ServerMsg::Reject { reason });
         self.pending.remove(&conn);
         self.kicks.push(conn);
@@ -386,7 +396,7 @@ impl Authority {
             })
         };
         if let Some(reason) = refusal {
-            return self.reject(conn, reason);
+            return self.reject(conn, &name, reason);
         }
         let nonce = identity::random_bytes();
         self.pending.insert(conn, PendingJoin { name, key, color: gsim_proto::visible_color(color), nonce });
@@ -397,11 +407,11 @@ impl Authority {
     fn auth(&mut self, conn: ConnId, signature: Vec<u8>) {
         let Some(PendingJoin { name, key, color, nonce }) = self.pending.remove(&conn) else { return };
         if !identity::verify(&key, &nonce, &name, &signature) {
-            return self.reject(conn, "identity check failed".to_string());
+            return self.reject(conn, &name, "identity check failed".to_string());
         }
         let ip = self.addrs.get(&conn).copied();
         if let Err(reason) = self.state.claim(&name, &key, ip) {
-            return self.reject(conn, reason);
+            return self.reject(conn, &name, reason);
         }
         // Use the spelling the name was registered with.
         let name = self.state.record(&name).map_or(name, |r| r.name.clone());
@@ -426,6 +436,9 @@ impl Authority {
         // Everyone already here learns about the newcomer; the newcomer learns everything
         // (itself included) from the snapshot.
         self.event(Event::PlayerJoined { id, name: name.clone(), color, team: reclaimed.map_or(0, |r| r.0) });
+        let at = self.addrs.get(&conn).map_or("?".to_string(), |ip| ip.to_string());
+        self.log(format!("{name}[/{at}] logged in (key {})", identity::fingerprint(&key)));
+        self.log(format!("{name} joined the game"));
         self.players.insert(
             id,
             Player {
@@ -466,8 +479,7 @@ impl Authority {
             let w = self.welcome(id);
             self.send(Target::One(conn), ServerMsg::Welcome(Box::new(w)));
         }
-        let op = self.is_op(id);
-        self.send(Target::One(conn), ServerMsg::Operator(op));
+        self.refresh_ops();
     }
 
     fn welcome(&self, your_id: PlayerId) -> Welcome {
@@ -562,9 +574,9 @@ impl Authority {
         }
     }
 
-    /// The barycentre (weighing every body by its mass, pushes too) and how it moves:
+    /// The barycenter (weighing every body by its mass, pushes too) and how it moves:
     /// (x, y, vx, vy).
-    fn barycentre(&self) -> (f64, f64, f64, f64) {
+    fn barycenter(&self) -> (f64, f64, f64, f64) {
         let m = &self.massive;
         let (mut w, mut cx, mut cy, mut cvx, mut cvy) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for j in 0..m.len() {
@@ -582,7 +594,7 @@ impl Authority {
         }
     }
 
-    /// A circular orbit about the barycentre `c` through (x, y), around whatever is closer in.
+    /// A circular orbit about the barycenter `c` through (x, y), around whatever is closer in.
     fn circular_at(&self, x: f64, y: f64, c: (f64, f64, f64, f64)) -> Particle {
         let m = &self.massive;
         let (cx, cy, cvx, cvy) = c;
@@ -593,9 +605,9 @@ impl Authority {
         Particle { x, y, vx: cvx - v * ry / r, vy: cvy + v * rx / r }
     }
 
-    /// Circular orbit around the barycentre, clear of every body, near the objective if any.
+    /// Circular orbit around the barycenter, clear of every body, near the objective if any.
     fn spawn_state(&mut self) -> Particle {
-        let c = self.barycentre();
+        let c = self.barycenter();
         let (cx, cy) = (c.0, c.1);
         let m = &self.massive;
         // With objectives, spawn in a ring around one of them: near enough to be in the game at
@@ -651,7 +663,7 @@ impl Authority {
                 None => self.spawn_state(),
             };
             let p = self.players.get_mut(&id).unwrap();
-            // A new ship comes fully armed, as it comes fully fuelled, with an empty hold.
+            // A new ship comes fully armed, as it comes fully fueled, with an empty hold.
             let state = ShipState::with_kit(at, shop::kit(&rules, &p.upgrades, &Purse::default()));
             p.ship = Some(state);
             p.respawn_tick = None;
@@ -808,6 +820,10 @@ impl Authority {
                 }
             }
             self.event(Event::ShipDied { tick: next, player: victim, killer, body, respawn_tick });
+            if playing_now {
+                let line = self.death_line(victim, killer, body);
+                self.log(line);
+            }
             // Without a base standing there is no new ship.
             if self.mode == GameMode::Bases && playing_now && !self.base_alive(victim) {
                 self.eliminate(victim);
@@ -851,6 +867,10 @@ impl Authority {
 impl Authority {
     pub fn player_of(&self, conn: ConnId) -> Option<PlayerId> {
         self.by_conn.get(&conn).copied()
+    }
+
+    pub fn name(&self, player: PlayerId) -> Option<String> {
+        self.players.get(&player).map(|p| p.name.clone())
     }
 
     pub fn ship(&self, player: PlayerId) -> Option<ShipState> {
@@ -969,7 +989,7 @@ impl Authority {
         }
         // Gone (annihilated or escaped), or the same body as another objective after a merge;
         // or (checked once a second) swung around by a heavier body, which becomes the target
-        // instead, or far from the centre or racing away with nobody on the way to it.
+        // instead, or far from the center or racing away with nobody on the way to it.
         let check = tick.is_multiple_of(rules.tick_hz as Tick);
         let frame = SystemFrame::of(&self.massive.kinematics());
         for k in (0..self.objectives.len()).rev() {
@@ -1112,7 +1132,12 @@ impl Authority {
     }
 
     /// Scores are final; the next world starts after the intermission.
-    fn end_round(&mut self, tick: Tick, winner: Option<PlayerId>) {
+    fn end_round(&mut self, tick: Tick, winner: Option<TeamId>) {
+        let line = match winner {
+            Some(w) if self.mode == GameMode::Bases => format!("{} wins the round", self.team_label(w)),
+            _ => format!("Round {} is over", self.round),
+        };
+        self.log(line);
         let next_round_tick = tick + self.intermission_ticks.max(1);
         self.next_round_tick = Some(next_round_tick);
         self.event(Event::RoundOver { tick, next_round_tick, winner });
@@ -1168,6 +1193,15 @@ impl Authority {
             p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }
+        // For the log: what kind of round, in which world.
+        let mut what = vec![format!("Round {} started: {} (seed {seed}, {} bodies), {}", self.round, self.preset, self.massive.alive_count(), self.mode.name())];
+        if self.mode == GameMode::Bases {
+            what.push(self.roll.twist.name().to_string());
+            if self.roll.teams > 1 {
+                what.push(format!("teams of {}", self.roll.teams));
+            }
+        }
+        self.log(what.join(", "));
         let ids: Vec<(ConnId, PlayerId)> = self.by_conn.iter().map(|(c, p)| (*c, *p)).collect();
         for (conn, id) in ids {
             let w = self.welcome(id);
@@ -1179,9 +1213,9 @@ impl Authority {
 
 impl Authority {
     /// A body worth orbiting: positive mass and within `frac` of the escape radius from the
-    /// barycentre. With `settled`, also not currently moving outwards faster than escape speed.
+    /// barycenter. With `settled`, also not currently moving outwards faster than escape speed.
     ///
-    /// `settled` is only for choosing a new target. A body swinging past a heavy neighbour
+    /// `settled` is only for choosing a new target. A body swinging past a heavy neighbor
     /// exceeds the escape speed for a moment without going anywhere, so an existing target
     /// is judged on distance alone; one that really leaves crosses the distance limit soon.
     fn target_eligible(&self, frame: &SystemFrame, j: usize, frac: f64, settled: bool) -> bool {

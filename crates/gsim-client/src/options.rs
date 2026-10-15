@@ -54,7 +54,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
             .on_hover_text("Sandbox: light lingers and fades, so orbits draw streaks.");
     }
     ui.horizontal(|ui| {
-        ui.label("Colour shows");
+        ui.label("Color shows");
         for mode in ColorMode::ALL {
             // Exact worlds have no groups to tell apart.
             if large || mode != ColorMode::Origin {
@@ -64,7 +64,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_hint(ui, "C");
     })
     .response
-    .on_hover_text("What colour shows: mass, speed, or (sandbox) the galaxy or cloud a body started in.");
+    .on_hover_text("What color shows: mass, speed, or (sandbox) the galaxy or cloud a body started in.");
 
     style::section(ui, "INTERFACE");
     ui.horizontal(|ui| {
@@ -84,10 +84,10 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::section(ui, "SHIP");
         ui.horizontal(|ui| {
             ship_color(ui, settings);
-            ui.label("ship colour");
+            ui.label("ship color");
         })
         .response
-        .on_hover_text("Colour of your ship, name and shells, as everyone sees them. Dark colours are lightened.");
+        .on_hover_text("Color of your ship, name and shells, as everyone sees them. Dark colors are lightened.");
         ui.add(egui::Slider::new(&mut settings.burn_preview, 0.5..=20.0).suffix(" km/s").text("burn preview")).on_hover_text(
             "While thrusting: the yellow line shows your path if the burn went on for this much delta-v.",
         );
@@ -155,7 +155,7 @@ fn copy(ui: &egui::Ui, text: &str) {
     ui.ctx().copy_text(text.to_string());
 }
 
-/// The player as a whole (name, ship colour and key: the key is what makes them the same
+/// The player as a whole (name, ship color and key: the key is what makes them the same
 /// player in the program and in a browser, or on another machine), copied out of one copy of
 /// the game and pasted into another.
 fn transfer(ui: &mut egui::Ui, settings: &mut Settings) {
@@ -167,9 +167,9 @@ fn transfer(ui: &mut egui::Ui, settings: &mut Settings) {
     let mut entry = ui.data_mut(|d| d.get_temp::<String>(entry_id)).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.label(format!("key {shown}")).on_hover_text(
-            "Your names on servers belong to this key. Copy it, with your name and colour, into the game elsewhere (the program, a browser) to play there as the same player.",
+            "Your names on servers belong to this key. Copy it, with your name and color, into the game elsewhere (the program, a browser) to play there as the same player.",
         );
-        if ui.small_button("Copy").on_hover_text("Your name, colour and key. Anyone with your key can play as you: keep it to yourself.").clicked() {
+        if ui.small_button("Copy").on_hover_text("Your name, color and key. Anyone with your key can play as you: keep it to yourself.").clicked() {
             copy(ui, &settings.exported());
         }
     });
@@ -177,7 +177,7 @@ fn transfer(ui: &mut egui::Ui, settings: &mut Settings) {
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut entry).desired_width(200.0).hint_text("paste a copied player"));
         let valid = crate::settings::player(&entry).is_some();
-        let use_it = ui.add_enabled(valid, egui::Button::new("Use")).on_hover_text("Become that player: their name and colour now, their key from the next game on. Your current key is replaced.");
+        let use_it = ui.add_enabled(valid, egui::Button::new("Use")).on_hover_text("Become that player: their name and color now, their key from the next game on. Your current key is replaced.");
         adopted = use_it.clicked() && settings.adopt(&entry);
     });
     if adopted {
@@ -189,7 +189,7 @@ fn transfer(ui: &mut egui::Ui, settings: &mut Settings) {
     ui.data_mut(|d| d.insert_temp(entry_id, entry));
 }
 
-/// The button that opens the picker for the ship's colour.
+/// The button that opens the picker for the ship's color.
 pub fn ship_color(ui: &mut egui::Ui, settings: &mut Settings) -> egui::Response {
     let button = ui.color_edit_button_srgb(&mut settings.ship_color);
     settings.ship_color = gsim_proto::visible_color(settings.ship_color);

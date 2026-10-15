@@ -346,7 +346,7 @@ fn a_round_of_bases_ends_in_sudden_death_not_on_a_clock() {
     sim.run_with(5.0, idle);
     let lost = BASE_HP - hp(&sim, bob);
     assert!((5 * 60..=7 * 60).contains(&lost), "lost {lost} in about 6 s");
-    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == "Every base is wearing down"));
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == "Sudden death: every base is wearing down"));
     // No repairs now.
     sim.server.grant(ann, gsim_proto::Purse { scrap: 100, crystals: 0 });
     sim.clients[a].session.buy(gsim_proto::Ware::Supply(gsim_proto::Supply::Repair));
@@ -387,7 +387,7 @@ fn each_round_rolls_its_scrap_mines_and_twist() {
     assert_eq!(w.rules, sim.server.rules);
     let ann = sim.player_id(a).unwrap();
     assert_eq!(sim.server.ship(ann).unwrap().kit.tank, 2 * plain.fuel_max_mmps);
-    assert!(chat(&sim.clients[a].session).iter().any(|l| l.starts_with("This round:") && l.contains("deep tanks")));
+    assert!(chat(&sim.clients[a].session).iter().any(|l| l.starts_with("Round ") && l.contains("deep tanks")));
     sim.clients[a].session.send_chat("/twist quick-guns");
     sim.clients[a].session.send_chat("/round new");
     sim.run_with(1.0, idle);

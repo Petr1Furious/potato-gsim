@@ -4,8 +4,10 @@
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Arg {
     Player,
+    /// An operator, online or not.
+    Operator,
     Body,
-    /// A player, or `~dx ~dy` / `x y` coordinates in metres.
+    /// A player, or `~dx ~dy` / `x y` coordinates in meters.
     Place,
     PlayerOrBody,
     Preset,
@@ -78,7 +80,7 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "tp",
-        help: "teleport to a player or to coordinates in metres (~ is relative to the ship); name a player first to move them instead",
+        help: "teleport to a player or to coordinates in meters (~ is relative to the ship); name a player first to move them instead",
         op: true,
         params: &[req("player|x", Arg::Place), opt("player|x|y", Arg::Place), opt("y", Arg::Place)],
     },
@@ -153,7 +155,7 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "ban-ip", help: "ban an address", op: true, params: &[req("player|address", Arg::Player), opt("reason", Arg::Text)] },
     Command { name: "unban-ip", help: "lift an address ban", op: true, params: &[req("address", Arg::Text)] },
     Command { name: "op", help: "make players operators", op: true, params: &[req("players", Arg::Player)] },
-    Command { name: "deop", help: "take operator rights away", op: true, params: &[req("players", Arg::Player)] },
+    Command { name: "deop", help: "take operator rights away", op: true, params: &[req("players", Arg::Operator)] },
     Command {
         name: "whitelist",
         help: "manage the whitelist",
@@ -204,8 +206,8 @@ pub fn quote(word: &str) -> String {
     }
 }
 
-/// A length in metres: a plain number (`2.5e9`) or one with a unit (`300km`, `5Mm`, `2Gm`, `1Tm`).
-pub fn parse_metres(word: &str) -> Option<f64> {
+/// A length in meters: a plain number (`2.5e9`) or one with a unit (`300km`, `5Mm`, `2Gm`, `1Tm`).
+pub fn parse_meters(word: &str) -> Option<f64> {
     let units = [("km", 1e3), ("Mm", 1e6), ("Gm", 1e9), ("Tm", 1e12), ("m", 1.0)];
     let (number, scale) = units.iter().find_map(|(u, k)| word.strip_suffix(u).map(|n| (n, *k))).unwrap_or((word, 1.0));
     number.parse::<f64>().ok().filter(|v| v.is_finite()).map(|v| v * scale)
@@ -220,11 +222,11 @@ mod tests {
         assert_eq!(split("  tp \"Ann Droid\"   ~1e9 ~-5Mm "), ["tp", "Ann Droid", "~1e9", "~-5Mm"]);
         assert_eq!(split("msg bob \"\" x"), ["msg", "bob", "", "x"]);
         assert_eq!(quote("Ann Droid"), "\"Ann Droid\"");
-        assert_eq!(parse_metres("2Gm"), Some(2.0e9));
-        assert_eq!(parse_metres("-300km"), Some(-3.0e5));
-        assert_eq!(parse_metres("1e9"), Some(1.0e9));
-        assert_eq!(parse_metres("12m"), Some(12.0));
-        assert_eq!(parse_metres("abc"), None);
+        assert_eq!(parse_meters("2Gm"), Some(2.0e9));
+        assert_eq!(parse_meters("-300km"), Some(-3.0e5));
+        assert_eq!(parse_meters("1e9"), Some(1.0e9));
+        assert_eq!(parse_meters("12m"), Some(12.0));
+        assert_eq!(parse_meters("abc"), None);
         assert!(find("TP").is_some() && find("nope").is_none());
     }
 }

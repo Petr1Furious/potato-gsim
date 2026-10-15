@@ -83,7 +83,7 @@ fn agree(sim: &Sim) {
 }
 
 #[test]
-fn scrap_floats_around_the_centre_and_everyone_sees_the_same() {
+fn scrap_floats_around_the_center_and_everyone_sees_the_same() {
     let (mut sim, _, _, _, _) = duel(1);
     let pieces = sim.server.pieces();
     assert!(pieces.len() >= 40, "{} pieces", pieces.len());

@@ -12,3 +12,11 @@ pub mod web;
 
 pub use authority::{Authority, ConnId, Outgoing, Target};
 pub use scenario::{Params, Scenario};
+
+/// A line of the server log, as Minecraft writes it: `[12:34:56] [Server thread/INFO]: ...`
+/// (the time in UTC).
+pub fn log(level: &str, text: &str) {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let (h, m, s) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    println!("[{h:02}:{m:02}:{s:02}] [Server thread/{level}]: {text}");
+}

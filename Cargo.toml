@@ -23,7 +23,7 @@ clap = { version = "4", features = ["derive", "env"] }
 renet = "2"
 renet_netcode = "2"
 
-# The simulation is unusably slow unoptimised; keep debug builds and tests fast.
+# The simulation is unusably slow unoptimized; keep debug builds and tests fast.
 [profile.dev.package.gsim-core]
 opt-level = 3
 

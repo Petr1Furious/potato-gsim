@@ -1,10 +1,10 @@
-//! The density picture drawn by the graphics card instead of the rasteriser threads: bodies
+//! The density picture drawn by the graphics card instead of the rasterizer threads: bodies
 //! go up as one buffer of points and are added into a floating-point image; a quarter-size
 //! copy is blurred into the glow; a last shader tone-maps both onto the screen.
 //!
 //! Everything here is optional. [`Gpu::new`] fails cleanly on anything it cannot work with
 //! (no float render targets, a shader the driver rejects, a backend other than OpenGL), and
-//! the caller then keeps using the CPU rasteriser.
+//! the caller then keeps using the CPU rasterizer.
 
 use macroquad::miniquad::{
     self, Backend, BlendFactor, BlendState, BlendValue, BufferId, BufferLayout, BufferSource, BufferType, BufferUsage, Equation, FilterMode, PassAction, Pipeline,
@@ -13,7 +13,7 @@ use macroquad::miniquad::{
 };
 use macroquad::prelude::*;
 
-/// One body: position in buffer pixels, its light (colour times brightness), how many of
+/// One body: position in buffer pixels, its light (color times brightness), how many of
 /// those pixels it is across, and how much of its light glows (times the pixels it lights).
 pub type Vertex = [f32; 7];
 
@@ -24,7 +24,7 @@ attribute vec2 shape;
 uniform highp vec4 view;
 uniform highp vec4 target;
 varying highp vec3 c;
-varying highp vec2 centre;
+varying highp vec2 center;
 varying highp float across;
 void main() {
     gl_Position = vec4(pos.x * view.x - 1.0, pos.y * view.y - 1.0, 0.0, 1.0);
@@ -49,11 +49,11 @@ void main() {
         gl_PointSize = ceil(across) + 1.0;
         c = light;
     }
-    centre = pos * view.xy * 0.5 * target.xy;
+    center = pos * view.xy * 0.5 * target.xy;
 }"#;
 
 /// With `target.z` set, a point two pixels across shares its light between the pixels it
-/// touches by how near their centres are to its own: it then moves smoothly across a coarse
+/// touches by how near their centers are to its own: it then moves smoothly across a coarse
 /// image instead of jumping from pixel to pixel. Otherwise a point more than a cell across
 /// is a disc `across` pixels wide whose edge fades over one pixel, or (negative `across`)
 /// light that falls off smoothly from the middle to nothing at that width.
@@ -61,17 +61,17 @@ const POINT_FRAGMENT: &str = r#"#version 100
 precision highp float;
 uniform highp vec4 target;
 varying highp vec3 c;
-varying highp vec2 centre;
+varying highp vec2 center;
 varying highp float across;
 void main() {
     float share = 1.0;
     if (target.z > 0.5) {
-        vec2 off = abs(gl_FragCoord.xy - centre);
+        vec2 off = abs(gl_FragCoord.xy - center);
         share = max(0.0, 1.0 - off.x) * max(0.0, 1.0 - off.y);
     } else if (across > 0.0) {
-        share = clamp(0.5 * across - length(gl_FragCoord.xy - centre) + 0.5, 0.0, 1.0);
+        share = clamp(0.5 * across - length(gl_FragCoord.xy - center) + 0.5, 0.0, 1.0);
     } else if (across < 0.0) {
-        float d = min(1.0, -2.0 * length(gl_FragCoord.xy - centre) / across);
+        float d = min(1.0, -2.0 * length(gl_FragCoord.xy - center) / across);
         share = exp(-5.0 * d * d) * (1.0 - d * d);
     }
     gl_FragColor = vec4(c * share, 1.0);
@@ -115,7 +115,7 @@ void main() {
     uv = texcoord;
 }"#;
 
-/// Compress highlights, lift faint light, lay the result over the background colour.
+/// Compress highlights, lift faint light, lay the result over the background color.
 const TONE_FRAGMENT: &str = r#"#version 100
 precision highp float;
 varying highp vec2 uv;

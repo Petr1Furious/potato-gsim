@@ -33,7 +33,7 @@ pub struct Settings {
     pub preset: String,
     pub mouse_aim: bool,
     pub fullscreen: bool,
-    /// The colour of our ship, as other players see it too.
+    /// The color of our ship, as other players see it too.
     pub ship_color: [u8; 3],
     /// Multiplier on top of the automatic, window-height-proportional UI size.
     pub ui_scale: f32,
@@ -41,7 +41,7 @@ pub struct Settings {
     pub zoom_speed: f32,
     /// How much delta-v (km/s) the line drawn while thrusting assumes the burn will spend.
     pub burn_preview: f32,
-    /// Draw large-scale worlds on the graphics card instead of on rasteriser threads.
+    /// Draw large-scale worlds on the graphics card instead of on rasterizer threads.
     pub gpu: bool,
     // What is drawn; see `options` for what each one means.
     pub prediction: bool,
@@ -188,7 +188,7 @@ impl Settings {
             }
         }
         if !text.lines().any(|l| l.starts_with("ship_color=")) {
-            // The colour picked at random the first time stays.
+            // The color picked at random the first time stays.
             s.save();
         }
         s
@@ -226,7 +226,7 @@ impl Settings {
     }
 }
 
-/// A bright colour of any hue.
+/// A bright color of any hue.
 fn random_color() -> [u8; 3] {
     let hue = gsim_proto::identity::random_bytes()[0] as f32 / 256.0 * 6.0;
     // One channel full, one at the floor, one in between.
@@ -268,12 +268,12 @@ impl Settings {
     }
 }
 
-/// What a copied player starts with: the rest is `<key>:<colour>:<name>`, the first two in hex.
+/// What a copied player starts with: the rest is `<key>:<color>:<name>`, the first two in hex.
 const PLAYER_PREFIX: &str = "gsim1:";
 
 impl Settings {
     /// This player in one line, to be copied into the game elsewhere (the program, a browser):
-    /// the key, the ship's colour and the name.
+    /// the key, the ship's color and the name.
     pub fn exported(&self) -> String {
         use gsim_proto::identity::to_hex;
         format!("{PLAYER_PREFIX}{}:{}:{}", to_hex(&self.identity().secret()), to_hex(&self.ship_color), self.name)
@@ -302,7 +302,7 @@ pub struct Copied {
 }
 
 /// The player in `text`: a line from [`Settings::exported`], or a bare key (with no name or
-/// colour to go with it).
+/// color to go with it).
 pub fn player(text: &str) -> Option<Copied> {
     use gsim_proto::identity::from_hex;
     let text = text.trim();
@@ -332,7 +332,7 @@ mod copied_players {
     use super::*;
 
     #[test]
-    fn a_copied_player_brings_key_colour_and_name() {
+    fn a_copied_player_brings_key_color_and_name() {
         let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         let Copied { secret, color, name } = player(&format!(" gsim1:{key}:ff8040:Ann: the second ")).unwrap();
         assert_eq!(gsim_proto::identity::to_hex(&secret), key);

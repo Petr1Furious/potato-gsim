@@ -351,9 +351,9 @@ async fn run(args: Args, mut settings: Settings) {
                             let wide = |ui: &mut egui::Ui, text: &str| ui.add_sized([ui.available_width(), 32.0], egui::Button::new(text)).clicked();
                             style::section(ui, "PLAYER");
                             ui.horizontal(|ui| {
-                                // The colour button keeps its size; the name takes the rest.
+                                // The color button keeps its size; the name takes the rest.
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    options::ship_color(ui, &mut settings).on_hover_text("The colour of your ship.");
+                                    options::ship_color(ui, &mut settings).on_hover_text("The color of your ship.");
                                     ui.add(egui::TextEdit::singleline(&mut settings.name).desired_width(f32::INFINITY).hint_text("name"));
                                 });
                             });
@@ -474,14 +474,14 @@ fn gallery(ui: f32) {
         y += r.max(8.0 * ui) + h * 0.05;
     }
     // Bases: health from full to fallen, under siege, at two sizes.
-    let colours = [[230, 80, 230], [90, 200, 255], [255, 190, 60]];
+    let colors = [[230, 80, 230], [90, 200, 255], [255, 190, 60]];
     let cases = [(1.0, false), (0.6, false), (0.6, true), (0.2, true), (0.0, false)];
     for (k, size) in [8.0, 30.0].into_iter().enumerate() {
         y += 40.0 * ui;
         for (col, (health, siege)) in cases.iter().enumerate() {
             let x = w / (cases.len() as f32 + 1.0) * (col as f32 + 1.0);
-            let colour = style::rgb(colours[(col + k) % colours.len()]);
-            style::base((x, y), size * ui, colour, *health, *siege, col as u32, ui);
+            let color = style::rgb(colors[(col + k) % colors.len()]);
+            style::base((x, y), size * ui, color, *health, *siege, col as u32, ui);
         }
         y += 40.0 * ui;
     }
@@ -496,9 +496,9 @@ fn gallery(ui: f32) {
     style::well((w / 6.0 * 5.0, y), 40.0 * ui, 0.7, ui);
     // Ships with a shield, and one breaking.
     y += 70.0 * ui;
-    for (k, colour) in [[230u8, 80, 230], [90, 200, 255], [255, 255, 255]].into_iter().enumerate() {
+    for (k, color) in [[230u8, 80, 230], [90, 200, 255], [255, 255, 255]].into_iter().enumerate() {
         let x = w / 5.0 * (k as f32 + 1.0);
-        game::draw_ship((x, y), -0.6, style::rgb(colour), k == 1, ui);
+        game::draw_ship((x, y), -0.6, style::rgb(color), k == 1, ui);
         style::ship_shield((x, y), k as u32, ui);
     }
     game::draw_ship((w * 0.8, y), 0.4, style::rgb([255, 190, 60]), false, ui);

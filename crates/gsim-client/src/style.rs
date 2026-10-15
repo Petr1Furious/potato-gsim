@@ -99,7 +99,7 @@ pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {
     });
 }
 
-/// Text horizontally centred on `x`, baseline at `y`.
+/// Text horizontally centered on `x`, baseline at `y`.
 pub fn centered(s: &str, x: f32, y: f32, size: f32, color: Color) {
     FONT.with(|f| {
         let font = f.borrow();
@@ -113,7 +113,7 @@ fn sides(r: f32) -> u8 {
     (16.0 + 0.5 * r).clamp(20.0, 255.0) as u8
 }
 
-/// A ring around `s` from the radius `from` to `to`, its colour running through `colors`
+/// A ring around `s` from the radius `from` to `to`, its color running through `colors`
 /// (evenly spaced between the two radii) without steps. Drawn once, however large: layers of
 /// see-through discs would cost a screenful each when zoomed in.
 fn gradient(s: (f32, f32), from: f32, to: f32, colors: &[Color]) {
@@ -160,10 +160,10 @@ pub fn arc(x: f32, y: f32, r: f32, a0: f32, a1: f32, thickness: f32, color: Colo
     }
 }
 
-/// A player's base: a glowing core in their colour inside a slowly turning shield whose
+/// A player's base: a glowing core in their color inside a slowly turning shield whose
 /// segments go dark as it loses health; under siege the shield flickers red. A fallen base is
 /// a dark hulk among the scattered pieces of its shield.
-pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, slot: u32, ui: f32) {
+pub fn base(s: (f32, f32), r: f32, color: Color, health: f32, besieged: bool, slot: u32, ui: f32) {
     let time = get_time() as f32;
     let r = r.max(6.0 * ui).min(1.0e5);
     const SEGMENTS: usize = 12;
@@ -180,41 +180,41 @@ pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, s
             }
             let a = k as f32 * span + 0.2 * (h as f32 - 5.0) / 5.0;
             let out = shield + (h as f32 - 4.0) * 1.2 * ui;
-            arc(s.0, s.1, out, a, a + 0.55 * span, 2.0 * ui, alpha(mix(colour, DIM, 0.75), 0.45));
+            arc(s.0, s.1, out, a, a + 0.55 * span, 2.0 * ui, alpha(mix(color, DIM, 0.75), 0.45));
         }
         return;
     }
     let pulse = 0.5 + 0.5 * (time * 2.0 + slot as f32).sin();
     // A wide soft glow, then the core: dark at the rim, bright in the middle.
     for k in 1..=5 {
-        disc(s.0, s.1, r + (4.0 + 5.0 * k as f32) * ui, alpha(colour, 0.035 + 0.015 * pulse));
+        disc(s.0, s.1, r + (4.0 + 5.0 * k as f32) * ui, alpha(color, 0.035 + 0.015 * pulse));
     }
-    disc(s.0, s.1, r, mix(BACKGROUND, colour, 0.25));
+    disc(s.0, s.1, r, mix(BACKGROUND, color, 0.25));
     for (k, f) in [(0.8, 0.45), (0.55, 0.7), (0.3, 1.0)] {
-        disc(s.0, s.1, r * k, mix(BACKGROUND, colour, f));
+        disc(s.0, s.1, r * k, mix(BACKGROUND, color, f));
     }
     disc(s.0, s.1, (r * 0.12).max(1.5 * ui), alpha(WHITE, 0.6 + 0.4 * pulse));
     // The shield: lit segments for the health left.
     let lit = (health.clamp(0.0, 1.0) * SEGMENTS as f32).ceil() as usize;
     let flicker = besieged && (time * 14.0).sin() > 0.0;
-    let on = if flicker { EMBER } else { colour };
+    let on = if flicker { EMBER } else { color };
     let turn = time * 0.35;
     for k in 0..SEGMENTS {
         let a = turn + k as f32 * span;
-        let c = if k < lit { alpha(on, 0.9) } else { alpha(colour, 0.12) };
+        let c = if k < lit { alpha(on, 0.9) } else { alpha(color, 0.12) };
         arc(s.0, s.1, shield, a, a + 0.78 * span, 2.5 * ui, c);
     }
     // A thin outer ring of ticks turning the other way.
     let ticks = shield + 5.0 * ui;
     for k in 0..24 {
         let a = -turn * 0.6 + k as f32 * span / 2.0;
-        arc(s.0, s.1, ticks, a, a + 0.12, 1.0 * ui, alpha(colour, 0.35));
+        arc(s.0, s.1, ticks, a, a + 0.12, 1.0 * ui, alpha(color, 0.35));
     }
 }
 
-/// A team's colour (in the order of [`gsim_proto::TEAM_NAMES`]).
-pub fn team_colour(team: gsim_proto::TeamId) -> Color {
-    const COLOURS: [Color; 8] = [
+/// A team's color (in the order of [`gsim_proto::TEAM_NAMES`]).
+pub fn team_color(team: gsim_proto::TeamId) -> Color {
+    const COLORS: [Color; 8] = [
         Color::new(1.0, 0.42, 0.42, 1.0),
         Color::new(0.42, 0.66, 1.0, 1.0),
         Color::new(0.45, 0.92, 0.52, 1.0),
@@ -224,21 +224,21 @@ pub fn team_colour(team: gsim_proto::TeamId) -> Color {
         Color::new(1.0, 0.62, 0.25, 1.0),
         Color::new(0.92, 0.92, 0.95, 1.0),
     ];
-    COLOURS[(team.max(1) as usize - 1) % COLOURS.len()]
+    COLORS[(team.max(1) as usize - 1) % COLORS.len()]
 }
 
-/// A shield's colour.
+/// A shield's color.
 pub const SHIELD: Color = Color::new(0.62, 0.72, 1.0, 1.0);
 /// A gravity well's.
 pub const WELL: Color = Color::new(0.78, 0.45, 1.0, 1.0);
 
 /// The mark around a crystal mine (radius `r` on screen): a breathing halo in the crystals'
-/// colour, the crystals still in it circling it (dim once taken), and `held` (0 to 1) of the
+/// color, the crystals still in it circling it (dim once taken), and `held` (0 to 1) of the
 /// way to the next one as an arc.
 pub fn mine(s: (f32, f32), r: f32, left: u32, held: f32, ui: f32) {
     use std::f32::consts::{FRAC_PI_2, TAU};
     let time = get_time() as f32;
-    let c = piece_colour(gsim_proto::PieceKind::Crystal);
+    let c = piece_color(gsim_proto::PieceKind::Crystal);
     let ring = r.min(4000.0) + 9.0 * ui;
     let pulse = 0.75 + 0.25 * (time * 2.2).sin();
     for k in 1..=4 {
@@ -293,47 +293,47 @@ pub fn well_seed(s: (f32, f32), ready: f32, ui: f32) {
 }
 
 /// A ship jumping away (`age` 0 to 1): a flash, and a ring closing in on it.
-pub fn warp(s: (f32, f32), colour: Color, age: f32, ui: f32) {
+pub fn warp(s: (f32, f32), color: Color, age: f32, ui: f32) {
     let fade = (1.0 - age) * (1.0 - age);
-    ring(s.0, s.1, (40.0 * (1.0 - age) + 3.0) * ui, 2.0 * ui, alpha(colour, fade));
+    ring(s.0, s.1, (40.0 * (1.0 - age) + 3.0) * ui, 2.0 * ui, alpha(color, fade));
     disc(s.0, s.1, 10.0 * ui * (1.0 - age), alpha(WHITE, 0.7 * fade));
 }
 
 /// A zone around `s` of radius `r` (screen pixels): a faint tint with a rim, brighter when
 /// `lit`. However far in the view is zoomed: when the screen lies wholly inside, it is tinted
 /// all over; when only the rim crosses it, the visible stretch of the rim is drawn.
-pub fn zone(s: (f32, f32), r: f32, colour: Color, lit: bool, ui: f32) {
+pub fn zone(s: (f32, f32), r: f32, color: Color, lit: bool, ui: f32) {
     let (w, h) = (screen_width(), screen_height());
     let (fill, rim, width) = if lit { (0.07, 0.7, 2.0 * ui) } else { (0.035, 0.35, 1.2 * ui) };
-    // Nearest and farthest points of the screen from the centre.
+    // Nearest and farthest points of the screen from the center.
     let near = ((s.0.clamp(0.0, w) - s.0).powi(2) + (s.1.clamp(0.0, h) - s.1).powi(2)).sqrt();
     let far = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().map(|c: &(f32, f32)| ((c.0 - s.0).powi(2) + (c.1 - s.1).powi(2)).sqrt()).fold(0.0, f32::max);
     if r < near {
         return;
     }
     if r >= far {
-        draw_rectangle(0.0, 0.0, w, h, alpha(colour, fill));
+        draw_rectangle(0.0, 0.0, w, h, alpha(color, fill));
     } else {
-        disc(s.0, s.1, r, alpha(colour, fill));
-        ring(s.0, s.1, r, width, alpha(colour, rim));
+        disc(s.0, s.1, r, alpha(color, fill));
+        ring(s.0, s.1, r, width, alpha(color, rim));
     }
 }
 
 /// The rim of a zone far too big to draw whole, where it crosses the screen: straight there,
 /// through `p`, with the inside towards `inward` (a unit vector), tinted.
-pub fn zone_edge(p: (f32, f32), inward: (f32, f32), colour: Color, lit: bool, ui: f32) {
+pub fn zone_edge(p: (f32, f32), inward: (f32, f32), color: Color, lit: bool, ui: f32) {
     let (fill, rim, width) = if lit { (0.07, 0.7, 2.0 * ui) } else { (0.035, 0.35, 1.2 * ui) };
     let reach = 2.0 * (screen_width() + screen_height());
     let along = (-inward.1 * reach, inward.0 * reach);
     let (a, b) = (vec2(p.0 - along.0, p.1 - along.1), vec2(p.0 + along.0, p.1 + along.1));
     let deep = vec2(inward.0 * reach, inward.1 * reach);
-    draw_triangle(a, b, b + deep, alpha(colour, fill));
-    draw_triangle(a, b + deep, a + deep, alpha(colour, fill));
-    draw_line(a.x, a.y, b.x, b.y, width, alpha(colour, rim));
+    draw_triangle(a, b, b + deep, alpha(color, fill));
+    draw_triangle(a, b + deep, a + deep, alpha(color, fill));
+    draw_line(a.x, a.y, b.x, b.y, width, alpha(color, rim));
 }
 
 /// A ship's shield: a faint bubble around it with a bright rim, two highlights gliding round
-/// it, breathing slowly. `seed` keeps neighbouring ships out of step.
+/// it, breathing slowly. `seed` keeps neighboring ships out of step.
 pub fn ship_shield(s: (f32, f32), seed: u32, ui: f32) {
     use std::f32::consts::PI;
     let c = SHIELD;
@@ -358,7 +358,7 @@ pub fn shield_break(s: (f32, f32), age: f32, ui: f32) {
     }
 }
 
-pub fn piece_colour(kind: gsim_proto::PieceKind) -> Color {
+pub fn piece_color(kind: gsim_proto::PieceKind) -> Color {
     match kind {
         gsim_proto::PieceKind::Scrap => Color::new(0.90, 0.72, 0.50, 1.0),
         gsim_proto::PieceKind::Crystal => Color::new(0.55, 0.95, 1.0, 1.0),
@@ -369,7 +369,7 @@ pub fn piece_colour(kind: gsim_proto::PieceKind) -> Color {
 /// `spin` turns it (radians).
 pub fn piece(s: (f32, f32), kind: gsim_proto::PieceKind, spin: f32, ui: f32) {
     use std::f32::consts::TAU;
-    let c = piece_colour(kind);
+    let c = piece_color(kind);
     let at = |a: f32, r: f32| vec2(s.0 + r * ui * (spin + a).cos(), s.1 + r * ui * (spin + a).sin());
     match kind {
         gsim_proto::PieceKind::Scrap => {
@@ -401,7 +401,7 @@ pub fn piece(s: (f32, f32), kind: gsim_proto::PieceKind, spin: f32, ui: f32) {
 
 /// A piece being taken: a spark that bursts outwards (`age` 0 to 1).
 pub fn pickup(s: (f32, f32), kind: gsim_proto::PieceKind, age: f32, ui: f32) {
-    let c = piece_colour(kind);
+    let c = piece_color(kind);
     let fade = (1.0 - age) * (1.0 - age);
     ring(s.0, s.1, (4.0 + 18.0 * age) * ui, (2.0 - 1.2 * age) * ui, alpha(c, fade));
     disc(s.0, s.1, (5.0 - 3.0 * age) * ui, alpha(WHITE, 0.8 * fade));
@@ -451,14 +451,14 @@ pub fn is_star(mass: f64) -> bool {
     kind(mass) == Kind::Star
 }
 
-/// Colour tells mass, and with it what a body is: grey and tan for rock, pale blue for ice
+/// Color tells mass, and with it what a body is: gray and tan for rock, pale blue for ice
 /// giants, sand and rust for gas giants, a dull dark red for brown dwarfs, and stars from red
 /// through orange, yellow and white to blue-white, as real ones are. It changes smoothly all
 /// the way, so that no two bodies nearly alike look unlike. Negative masses run from dusky
 /// violet to hot pink.
 pub fn mass_color(mass: f64) -> Color {
-    // (log10 of the mass in kg, colour)
-    // Each kind has colours of its own from its lightest to its heaviest, and one runs into
+    // (log10 of the mass in kg, color)
+    // Each kind has colors of its own from its lightest to its heaviest, and one runs into
     // the next over a fifth of a power of ten.
     const POSITIVE: [(f32, Color); 15] = [
         (19.0, Color::new(0.42, 0.40, 0.40, 1.0)),
@@ -582,14 +582,14 @@ pub fn body(s: (f32, f32), r: f32, mass: f64, slot: u32, fade: f32, ui: f32, lig
     if kind == Kind::Lump {
         // Not round: a fan of wedges of uneven reach, and a lighter one inside it towards the light.
         let corners = 9;
-        let reach = |k: usize, scale: f32, centre: (f32, f32)| {
+        let reach = |k: usize, scale: f32, center: (f32, f32)| {
             let a = k as f32 / corners as f32 * std::f32::consts::TAU + hash01(slot, 5) * 6.0;
             let d = r * scale * (0.68 + 0.42 * hash01(slot, 20 + (k % corners) as u32));
-            vec2(centre.0 + a.cos() * d, centre.1 + a.sin() * d)
+            vec2(center.0 + a.cos() * d, center.1 + a.sin() * d)
         };
-        for (scale, centre, color) in [(1.0, s, shade(0.6, 1.0)), (0.8, lit(0.1), shade(0.85, 1.0)), (0.55, lit(0.22), shade(1.05, 1.0))] {
+        for (scale, center, color) in [(1.0, s, shade(0.6, 1.0)), (0.8, lit(0.1), shade(0.85, 1.0)), (0.55, lit(0.22), shade(1.05, 1.0))] {
             for k in 0..corners {
-                draw_triangle(vec2(centre.0, centre.1), reach(k, scale, centre), reach(k + 1, scale, centre), color);
+                draw_triangle(vec2(center.0, center.1), reach(k, scale, center), reach(k + 1, scale, center), color);
             }
         }
         return;
@@ -647,12 +647,12 @@ pub fn light_from(s: (f32, f32), star: Option<(f32, f32)>) -> (f32, f32) {
     }
 }
 
-/// Scale bar: a ruler of a round length. Returns nothing; draws centred on `x`.
-pub fn scale_bar(x: f32, y: f32, metres_per_pixel: f64, label: impl Fn(f64) -> String, ui: f32) {
-    let want = metres_per_pixel * 140.0 * ui as f64;
+/// Scale bar: a ruler of a round length. Returns nothing; draws centered on `x`.
+pub fn scale_bar(x: f32, y: f32, meters_per_pixel: f64, label: impl Fn(f64) -> String, ui: f32) {
+    let want = meters_per_pixel * 140.0 * ui as f64;
     let pow = 10f64.powf(want.log10().floor());
     let nice = [5.0, 2.0, 1.0].into_iter().map(|k| k * pow).find(|l| *l <= want).unwrap_or(pow);
-    let half = (nice / metres_per_pixel) as f32 * 0.5;
+    let half = (nice / meters_per_pixel) as f32 * 0.5;
     let c = alpha(DIM, 0.9);
     draw_line(x - half, y, x + half, y, ui, c);
     for end in [x - half, x + half] {
@@ -741,7 +741,7 @@ pub fn key_row(ui: &mut egui::Ui, what: &str, key: &str) {
     });
 }
 
-/// The key to how bodies are drawn: each kind with its colours and the masses it covers.
+/// The key to how bodies are drawn: each kind with its colors and the masses it covers.
 pub fn mass_legend(ui: &mut egui::Ui) {
     let row = |ui: &mut egui::Ui, name: &str, range: String, color: &dyn Fn(f32) -> Color| {
         ui.horizontal(|ui| {
@@ -784,7 +784,7 @@ pub enum Rank {
     Selection,
 }
 
-/// One label: one or more centred lines that belong together.
+/// One label: one or more centered lines that belong together.
 struct Label {
     lines: Vec<String>,
     x: f32,
@@ -806,7 +806,7 @@ pub struct Labels {
 }
 
 impl Labels {
-    /// Single line centred on `x` with its baseline at `y`.
+    /// Single line centered on `x` with its baseline at `y`.
     pub fn push(&mut self, text: impl Into<String>, x: f32, y: f32, size: f32, color: Color, rank: Rank) {
         self.block(vec![text.into()], x, y, size, color, rank);
     }

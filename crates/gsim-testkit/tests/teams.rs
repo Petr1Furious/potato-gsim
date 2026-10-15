@@ -83,13 +83,13 @@ fn teams_of_two_share_a_base_a_bank_and_its_upgrades() {
     let p = home_orbit(&sim, ids[mate], 60.0);
     place(&mut sim, ids[mate], p);
     sim.run_with(0.3, idle);
-    sim.clients[mate].session.buy(Ware::Upgrade(Upgrade::Armour));
+    sim.clients[mate].session.buy(Ware::Upgrade(Upgrade::Armor));
     sim.clients[mate].session.buy(Ware::Upgrade(Upgrade::Thrust));
     sim.run_with(0.5, idle);
-    assert_eq!(sim.server.purse(ids[0]).unwrap().1.scrap, 50 - Upgrade::Armour.price(1).scrap - Upgrade::Thrust.price(1).scrap);
-    assert_eq!(sim.server.purse(ids[0]).unwrap().2.tier(Upgrade::Armour), 1, "the base's, so ann's too");
+    assert_eq!(sim.server.purse(ids[0]).unwrap().1.scrap, 50 - Upgrade::Armor.price(1).scrap - Upgrade::Thrust.price(1).scrap);
+    assert_eq!(sim.server.purse(ids[0]).unwrap().2.tier(Upgrade::Armor), 1, "the base's, so ann's too");
     assert_eq!(sim.server.purse(ids[0]).unwrap().2.tier(Upgrade::Thrust), 0, "the ship's own");
-    assert_eq!(sim.clients[0].session.world.as_ref().unwrap().players[&ids[0]].upgrades.tier(Upgrade::Armour), 1);
+    assert_eq!(sim.clients[0].session.world.as_ref().unwrap().players[&ids[0]].upgrades.tier(Upgrade::Armor), 1);
     sim.ships_agree().unwrap();
 }
 

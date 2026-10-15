@@ -98,7 +98,7 @@ jobs:
             **Download**
             - Windows: `potato-gsim-windows-x86_64.zip`, run `Potato Gravity Simulator.exe`.
             - macOS (Apple Silicon and Intel): `potato-gsim-macos-universal.dmg`. The app is not
-              notarised: the first time, right-click it and choose **Open**, or run
+              notarized: the first time, right-click it and choose **Open**, or run
               `xattr -dr com.apple.quarantine "/Applications/Potato Gravity Simulator.app"`.
             - Linux: `potato-gsim-linux-x86_64.tar.gz` (also contains the dedicated server).
 

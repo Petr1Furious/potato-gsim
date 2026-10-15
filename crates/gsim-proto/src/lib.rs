@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -54,7 +54,7 @@ pub enum ClientMsg {
     Ping { client_time: f64 },
     /// Reliable: a chat line; a leading `/` makes it a command (see [`command`]).
     Chat { text: String },
-    /// Reliable: draw my ship in this colour from now on.
+    /// Reliable: draw my ship in this color from now on.
     Color([u8; 3]),
     /// Reliable: show everyone a marker at this point on the map.
     Mark { x: f64, y: f64 },
@@ -143,7 +143,7 @@ pub enum Twist {
     LongShots,
     /// Two and a half times the scrap.
     ScrapRush,
-    /// Crystals at the centre every 30 s, and more of them.
+    /// Crystals at the center every 30 s, and more of them.
     CrystalFever,
     /// Ramming a base does two and a half times the damage.
     HeavyRams,
@@ -184,7 +184,7 @@ impl Twist {
             Twist::QuickGuns => "shells fire and come back twice as fast",
             Twist::LongShots => "faster shells that fly twice as long",
             Twist::ScrapRush => "scrap everywhere",
-            Twist::CrystalFever => "crystals at the centre every 30 s",
+            Twist::CrystalFever => "crystals at the center every 30 s",
             Twist::HeavyRams => "ramming a base does 2.5x the damage",
         }
     }
@@ -208,7 +208,7 @@ pub const HOME_RADII: f64 = 100.0;
 /// How big a base is (m): an Earth, small enough for a ship to circle close in.
 pub const BASE_RADIUS: f64 = 6.4e6;
 
-/// What teams are called (and coloured), from team 1 on.
+/// What teams are called (and colored), from team 1 on.
 pub const TEAM_NAMES: [&str; 8] = ["red", "blue", "green", "gold", "violet", "cyan", "orange", "white"];
 
 pub fn team_name(team: TeamId) -> &'static str {
@@ -293,7 +293,7 @@ pub struct Welcome {
     pub objectives: Vec<Objective>,
     pub bases: Vec<Base>,
     pub mines: Vec<Mine>,
-    /// When crystals next turn up near the centre.
+    /// When crystals next turn up near the center.
     pub crystals_due: Option<Tick>,
     /// Gravity wells on their way or pulling: (tick fired, state at `massive.tick`).
     pub wells: Vec<(Tick, Particle)>,
@@ -331,7 +331,7 @@ pub enum Event {
     Mines { tick: Tick, mines: Vec<Mine> },
     /// `player` held an orbit around the mine on `slot` long enough for a crystal.
     Mined { tick: Tick, player: PlayerId, slot: u32 },
-    /// Crystals turn up near the centre at `due`.
+    /// Crystals turn up near the center at `due`.
     CrystalsDue { due: Option<Tick> },
     /// `player` fired a gravity well at `tick`, from `p`. It flies as a shell does and pulls
     /// ships in for `GameRules::well_ticks` from `GameRules::well_arm_ticks` on.
@@ -371,8 +371,9 @@ pub enum ServerMsg {
     Chat(ChatLine),
     /// Reliable: `player` pointed at this spot on the map.
     Mark { player: PlayerId, x: f64, y: f64 },
-    /// Reliable: whether the receiver may use operator commands.
-    Operator(bool),
+    /// Reliable: whether the receiver may use operator commands, and (only for operators) who
+    /// the operators are, online or not.
+    Operator { op: bool, ops: Vec<String> },
     /// Unreliable, a few times a second: how long each objective has left, and who has held
     /// a qualifying orbit around which body for how many ticks.
     Progress { objectives: Vec<Objective>, holds: Vec<(PlayerId, u32, u32)> },
@@ -385,7 +386,7 @@ pub enum ServerMsg {
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }
 
-/// A ship colour that stands out from the dark sky: one that is too dark is lightened.
+/// A ship color that stands out from the dark sky: one that is too dark is lightened.
 pub fn visible_color(c: [u8; 3]) -> [u8; 3] {
     let luma = (30 * c[0] as u32 + 59 * c[1] as u32 + 11 * c[2] as u32) / 100;
     let lift = 90u32.saturating_sub(luma) as u8;
@@ -393,7 +394,7 @@ pub fn visible_color(c: [u8; 3]) -> [u8; 3] {
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
-    postcard::to_allocvec(msg).expect("message serialisation cannot fail")
+    postcard::to_allocvec(msg).expect("message serialization cannot fail")
 }
 
 pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {

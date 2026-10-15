@@ -1,4 +1,4 @@
-//! Scrap, in the bases mode. Clouds of it float around the centre; a ship takes a piece by
+//! Scrap, in the bases mode. Clouds of it float around the center; a ship takes a piece by
 //! passing close, carries it (heavier for every piece), and banks it on coming home, to spend
 //! on upgrades. A ship that is lost spills what it carried, and loses a tier of every upgrade.
 
@@ -11,12 +11,12 @@ const SCRAP_PER_PLAYER: usize = 24;
 /// They turn up in clouds of this many, one cloud every so often while there are too few.
 const CLOUD: usize = 4;
 const CLOUD_EVERY_SECONDS: f64 = 3.0;
-/// Clouds turn up this far from the centre, as a share of how far out the bases are.
+/// Clouds turn up this far from the center, as a share of how far out the bases are.
 const FIELD: (f64, f64) = (0.08, 0.55);
 /// How far apart the pieces of a cloud start, and how fast they drift apart (m, m/s).
 const CLOUD_SPREAD: f64 = 6.0e7;
 const CLOUD_DRIFT: f64 = 15.0;
-/// Crystals turn up this far from the centre (as for scrap), first this long into a round and
+/// Crystals turn up this far from the center (as for scrap), first this long into a round and
 /// then every so often (s).
 const CRYSTAL_FIELD: (f64, f64) = (0.0, 0.15);
 const CRYSTALS_FIRST_SECONDS: f64 = 60.0;
@@ -36,7 +36,7 @@ pub(super) struct Piece {
 
 /// One tick of every piece. Returns those gone: taken by a ship passing close (one of `ships`:
 /// where each was at the start and at the end of the tick), crashed, or further than `far`
-/// from the centre.
+/// from the center.
 pub(super) fn step_pieces(
     pieces: &mut [Piece],
     ships: &[Sweep],
@@ -147,11 +147,11 @@ impl Authority {
     }
 
     /// A cloud of `n` pieces somewhere `field` (a share of how far out the bases are) from the
-    /// centre, clear of bodies and of the bases, going round with everything else. `None` if
+    /// center, clear of bodies and of the bases, going round with everything else. `None` if
     /// no clear spot turned up.
     fn cloud(&mut self, kind: PieceKind, n: usize, field: (f64, f64)) -> Option<Vec<(PieceKind, Particle)>> {
         let ring = self.spawn_r.1;
-        let (cx, cy, cvx, cvy) = self.barycentre();
+        let (cx, cy, cvx, cvy) = self.barycenter();
         for _ in 0..32 {
             let (a, r) = (self.scrap_rng.angle(), ring * self.scrap_rng.range(field.0, field.1));
             let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
@@ -163,8 +163,8 @@ impl Authority {
             if !clear {
                 continue;
             }
-            let centre = self.circular_at(x, y, (cx, cy, cvx, cvy));
-            return Some((0..n).map(|_| (kind, self.scatter(centre, CLOUD_SPREAD, CLOUD_DRIFT))).collect());
+            let center = self.circular_at(x, y, (cx, cy, cvx, cvy));
+            return Some((0..n).map(|_| (kind, self.scatter(center, CLOUD_SPREAD, CLOUD_DRIFT))).collect());
         }
         None
     }

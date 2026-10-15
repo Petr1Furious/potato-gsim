@@ -1,4 +1,4 @@
-//! Crystal mines, in the bases mode: ordinary bodies near the centre that give a crystal to
+//! Crystal mines, in the bases mode: ordinary bodies near the center that give a crystal to
 //! whoever holds an orbit around them for a while (the same orbit as for a target), and another
 //! for every while longer, until the mine runs out and moves on to another body.
 
@@ -14,7 +14,7 @@ impl Authority {
         1 + self.players.values().filter(|p| !p.spectating).count() / 2 + self.roll.mines as usize
     }
 
-    /// A body for a new mine: a planet among the few closest to the centre that is fit for it
+    /// A body for a new mine: a planet among the few closest to the center that is fit for it
     /// (see `fit_for_interest`), no mine already and not one of `avoid`. `None` if there is none.
     pub(super) fn choose_mine(&mut self, avoid: &[u32]) -> Option<u32> {
         let frame = SystemFrame::of(&self.massive.kinematics());
@@ -61,7 +61,7 @@ impl Authority {
         }
         // Once a second: a mine swung around by a heavier body moves to it (or, when that one is
         // a mine already, to the body most like it in place and motion); one far out or racing
-        // away (that nobody is on the way to) somewhere near the centre again.
+        // away (that nobody is on the way to) somewhere near the center again.
         if tick.is_multiple_of(rules.tick_hz.max(1) as Tick) {
             let frame = SystemFrame::of(&self.massive.kinematics());
             for k in 0..self.mines.len() {

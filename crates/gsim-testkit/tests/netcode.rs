@@ -102,7 +102,7 @@ fn forced_divergence_is_detected_and_resynced() {
     sim.add_client("ann", Link::new(30.0, 0.0, 0.0));
     sim.run_with(3.0, flying);
     assert_eq!(sim.clients[0].session.stats.hash_mismatches, 0);
-    // Move a body by one metre on the server only.
+    // Move a body by one meter on the server only.
     sim.server.massive.nudge(3, 1.0, 0.0);
     sim.run_with(4.0, flying);
     let s = sim.clients[0].session.stats;
@@ -211,7 +211,8 @@ fn holding_an_orbit_captures_the_target() {
         let w = c.session.world.as_ref().unwrap();
         assert_eq!(w.players[&pa].captures, 1);
         assert_eq!(w.players[&pa].score(&w.rules), rules.capture_points as i64);
-        assert!(c.session.chat.iter().any(|l| l.text == "ann captured Star"), "{:?}", c.session.chat);
+        let news = if c.session.world.as_ref().unwrap().my_id == pa { "You captured Star" } else { "ann captured Star" };
+        assert!(w.alerts.iter().any(|al| al.text == news), "{:?}", w.alerts);
     }
     sim.ships_agree().unwrap();
 }
@@ -360,7 +361,7 @@ fn ships_spawn_near_the_target_but_not_on_top_of_it() {
 }
 
 #[test]
-fn a_target_swung_around_a_much_heavier_neighbour_moves_to_it() {
+fn a_target_swung_around_a_much_heavier_neighbor_moves_to_it() {
     use gsim_core::Body;
     let mut sc = quiet_scenario();
     // A light body in a tight, fast orbit around a heavy one, far from the star: it moves
@@ -500,7 +501,7 @@ fn a_target_moves_on_when_its_time_is_up_unless_somebody_orbits_it() {
     assert_eq!(sim.server.stats.target_expired, 1);
     assert_eq!(seen(&sim)[0].slot, second);
     let said = format!("New target: {}", sim.clients[a].session.world.as_ref().unwrap().body_name(second));
-    assert!(sim.clients[a].session.chat.iter().any(|l| l.text == said), "{:?}", sim.clients[a].session.chat);
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == said));
 
     // On an orbit around it: the time stands still for as long as that lasts.
     park_around(&mut sim, pa, second as usize);
@@ -601,7 +602,7 @@ fn deaths_cost_a_point_and_scores_can_go_below_zero() {
 }
 
 #[test]
-fn everyone_sees_a_ships_colour_and_its_changes() {
+fn everyone_sees_a_ships_color_and_its_changes() {
     let mut sim = Sim::new(quiet_scenario(), 91);
     let a = sim.add_client("ann", Link::new(20.0, 0.0, 0.0));
     sim.run_with(1.0, idle);

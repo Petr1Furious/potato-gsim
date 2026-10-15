@@ -7,7 +7,7 @@ pub fn cbrt(x: f64) -> f64 {
 
 pub const TAU: f64 = std::f64::consts::TAU;
 
-/// Unit vector for a quantised heading (`0..65536` maps to a full turn).
+/// Unit vector for a quantized heading (`0..65536` maps to a full turn).
 pub fn angle_to_dir(angle: u16) -> (f64, f64) {
     let a = angle as f64 * (TAU / 65536.0);
     (libm::cos(a), libm::sin(a))

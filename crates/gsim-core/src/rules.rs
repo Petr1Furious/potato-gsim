@@ -13,7 +13,7 @@ pub struct GameRules {
     /// Overlapping bodies whose summed mass is below this fraction of the summed |mass|
     /// annihilate instead of merging (only possible with negative masses).
     pub annihilate_frac: f64,
-    /// Bodies further than this from the barycentre that are unbound and moving outwards
+    /// Bodies further than this from the barycenter that are unbound and moving outwards
     /// are removed (0 = never). Set per world by the server.
     pub escape_radius: f64,
     pub escape_check_ticks: u32,

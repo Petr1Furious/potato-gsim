@@ -78,7 +78,7 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "collision",
-        about: "Two disc galaxies that pass through each other, throw out tidal tails, fall back and merge (colour by origin, C, tells them apart)",
+        about: "Two disc galaxies that pass through each other, throw out tidal tails, fall back and merge (color by origin, C, tells them apart)",
         params: &[
             COUNT,
             p("radius", "Disc radius", "Outer edge of the larger galaxy", "m", Kind::Log, 8.0e10, 2.0e10, 6.0e11),
@@ -187,7 +187,7 @@ fn enclosed(x: f64) -> f64 {
 }
 
 struct Disc {
-    centre: (f64, f64),
+    center: (f64, f64),
     velocity: (f64, f64),
     count: usize,
     radius: f64,
@@ -203,7 +203,7 @@ struct Disc {
 /// A core with an exponential disc on near-circular orbits around it.
 fn disc(rng: &mut Rng, d: &Disc, out: &mut Bodies) {
     let first = out.len();
-    out.push(d.centre.0, d.centre.1, d.velocity.0, d.velocity.1, d.core_mass, radius_from_mass(d.core_mass, STAR_DENSITY), d.group);
+    out.push(d.center.0, d.center.1, d.velocity.0, d.velocity.1, d.core_mass, radius_from_mass(d.core_mass, STAR_DENSITY), d.group);
     let n = d.count.saturating_sub(1);
     // Scale length a quarter of the radius; nothing closer than 4 % (orbits there would be
     // too fast for the time step).
@@ -229,7 +229,7 @@ fn disc(rng: &mut Rng, d: &Disc, out: &mut Bodies) {
         let vx = -s * v * d.spin + nx * v * d.heat;
         let vy = c * v * d.spin + ny * v * d.heat;
         let mass = w * unit;
-        out.push(d.centre.0 + r * c, d.centre.1 + r * s, d.velocity.0 + vx, d.velocity.1 + vy, mass, radius_from_mass(mass, DENSITY) * d.size, d.group);
+        out.push(d.center.0 + r * c, d.center.1 + r * s, d.velocity.0 + vx, d.velocity.1 + vy, mass, radius_from_mass(mass, DENSITY) * d.size, d.group);
     }
     settle(out, first, d.velocity);
 }
@@ -275,7 +275,7 @@ fn cloud(rng: &mut Rng, count: usize, radius: f64, mass: f64, rotation: f64, hea
 pub enum Structure {
     /// A core with a rotating disc.
     Galaxy,
-    /// A slowly turning cloud with no centre.
+    /// A slowly turning cloud with no center.
     Cloud,
     /// Small bodies circling a body that is already there.
     Ring,
@@ -294,14 +294,14 @@ impl Structure {
 }
 
 /// `count` bodies of `mass` in all, within `radius` of the origin and at rest as a whole.
-/// A ring is given the mass of the body it circles as `centre`, and does not include it.
-pub fn structure(kind: Structure, seed: u64, count: usize, radius: f64, mass: f64, centre: f64, group: u8) -> Bodies {
+/// A ring is given the mass of the body it circles as `center`, and does not include it.
+pub fn structure(kind: Structure, seed: u64, count: usize, radius: f64, mass: f64, center: f64, group: u8) -> Bodies {
     let mut rng = Rng(seed ^ 0x5EED_0F5A);
     let mut out = Bodies::default();
     let count = count.max(1);
     match kind {
         Structure::Galaxy => {
-            let d = Disc { centre: (0.0, 0.0), velocity: (0.0, 0.0), count, radius, core_mass: 0.7 * mass, disc_mass: 0.3 * mass, heat: 0.03, spin: 1.0, size: 0.1, group };
+            let d = Disc { center: (0.0, 0.0), velocity: (0.0, 0.0), count, radius, core_mass: 0.7 * mass, disc_mass: 0.3 * mass, heat: 0.03, spin: 1.0, size: 0.1, group };
             disc(&mut rng, &d, &mut out);
         }
         Structure::Cloud => cloud(&mut rng, count, radius, mass, 0.6, 0.04, 0.3, group, &mut out),
@@ -310,7 +310,7 @@ pub fn structure(kind: Structure, seed: u64, count: usize, radius: f64, mass: f6
             for _ in 0..count {
                 // A band a fifth of the radius wide, each body on its own circle.
                 let (r, a) = (radius * (0.9 + 0.2 * rng.f64()), rng.f64() * TAU);
-                let v = (G * centre.max(1.0) / r).sqrt();
+                let v = (G * center.max(1.0) / r).sqrt();
                 out.push(r * a.cos(), r * a.sin(), -v * a.sin(), v * a.cos(), each, radius_from_mass(each, DENSITY) * 0.3, group);
             }
         }
@@ -329,7 +329,7 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
         "galaxy" => {
             let radius = get("radius");
             let d = Disc {
-                centre: (0.0, 0.0),
+                center: (0.0, 0.0),
                 velocity: (0.0, 0.0),
                 count,
                 radius,
@@ -356,7 +356,7 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
             let (f1, f2) = (m2 / total, m1 / total);
             let second = ((count as f64 * ratio / (1.0 + ratio)) as usize).max(2);
             let a = Disc {
-                centre: (-apart * f1, 0.0),
+                center: (-apart * f1, 0.0),
                 velocity: (inwards * f1, -sideways * f1),
                 count: count.saturating_sub(second).max(2),
                 radius,
@@ -368,7 +368,7 @@ pub fn build(name: &str, seed: u64, params: &Params) -> Result<Setup, String> {
                 group: 0,
             };
             let b = Disc {
-                centre: (apart * f2, 0.0),
+                center: (apart * f2, 0.0),
                 velocity: (-inwards * f2, sideways * f2),
                 count: second,
                 radius: radius * ratio.sqrt(),

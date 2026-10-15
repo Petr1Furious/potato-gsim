@@ -328,10 +328,10 @@ fn operators_see_what_other_operators_do() {
     let (mut sim, a, b, c) = trio(11);
     say(&mut sim, a, "/op bob");
     say(&mut sim, a, "/fuel cat");
-    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Refuelled cat");
-    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "[ann: Refuelled cat]");
+    assert_eq!(system(&sim.clients[a].session).last().unwrap(), "Refueled cat");
+    assert_eq!(system(&sim.clients[b].session).last().unwrap(), "[ann: Refueled cat]");
     // Not an operator: cat hears nothing about it.
-    assert!(!system(&sim.clients[c].session).iter().any(|l| l.contains("Refuelled")));
+    assert!(!system(&sim.clients[c].session).iter().any(|l| l.contains("Refueled")));
     // Commands anyone may use are nobody else's business.
     say(&mut sim, a, "/list");
     assert!(!system(&sim.clients[b].session).iter().any(|l| l.contains("players online")));

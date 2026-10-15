@@ -113,6 +113,7 @@ pub fn build_authority(opts: &ServerOptions) -> Result<Authority, String> {
 
 /// Run until `stop` is set. Returns an error only if the socket cannot be set up.
 pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
+    let started = Instant::now();
     let mut authority = build_authority(&opts)?;
     let socket = UdpSocket::bind(opts.bind).map_err(|e| format!("bind {}: {e}", opts.bind))?;
     let local = socket.local_addr().map_err(|e| e.to_string())?;
@@ -132,18 +133,15 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
     };
 
     let period = 1.0 / authority.rules.tick_hz as f64;
-    if !opts.quiet {
-        eprintln!(
-            "gsim-server listening on {local}{} | preset={} seed={} bodies={} | {} Hz, {:.0} sim-s per tick, time x{}",
-            opts.web.map_or(String::new(), |web| format!(" (browsers: tcp {web})")),
-            opts.preset,
-            opts.seed,
-            authority.massive.len(),
-            authority.rules.tick_hz,
-            authority.rules.dt,
-            opts.time_scale
-        );
-    }
+    let say = |level: &str, text: &str| {
+        if !opts.quiet {
+            crate::log(level, text);
+        }
+    };
+    say("INFO", &format!("Starting gsim server version {} (protocol {})", env!("CARGO_PKG_VERSION"), gsim_proto::PROTOCOL_VERSION));
+    say("INFO", &format!("Game mode: {}, world: {}, {} Hz, time x{}", authority.mode().name(), opts.preset, authority.rules.tick_hz, opts.time_scale));
+    say("INFO", &format!("Starting gsim server on {local}{}", opts.web.map_or(String::new(), |web| format!(" (browsers on tcp {web})"))));
+    say("INFO", &format!("Done ({:.3}s)!", started.elapsed().as_secs_f64()));
 
     let mut last = Instant::now();
     let mut debt = 0.0f64;
@@ -151,7 +149,8 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
     let mut reload_at = Instant::now();
     // Connections being refused: closed a moment later so the reason reaches them first.
     let mut closing: Vec<(u64, Instant)> = Vec::new();
-    let (mut step_sum, mut step_max, mut steps, mut dropped) = (0.0f64, 0.0f64, 0u64, 0.0f64);
+    // Simulated time given up because the steps could not keep up.
+    let mut dropped = 0.0f64;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -159,7 +158,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         last = now;
         server.update(elapsed);
         if let Err(e) = transport.update(elapsed, &mut server) {
-            eprintln!("[net] transport error: {e}");
+            say("WARN", &format!("Network error: {e}"));
         }
         debt += elapsed.as_secs_f64();
         if debt > MAX_DEBT_SECONDS {
@@ -173,8 +172,8 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
                     authority.connected(client_id, transport.client_addr(client_id).map(|a| a.ip()));
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
-                    if !opts.quiet {
-                        eprintln!("[disconnect] conn {client_id}: {reason}");
+                    if let Some(name) = authority.player_of(client_id).and_then(|id| authority.name(id)) {
+                        say("INFO", &format!("{name} lost connection: {reason}"));
                     }
                     authority.disconnect(client_id);
                 }
@@ -184,17 +183,9 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         for event in web.iter_mut().flat_map(|web| web.poll()) {
             match event {
                 Event::Connected(conn, ip) => authority.connected(conn, Some(ip)),
-                Event::Disconnected(conn) => {
-                    if !opts.quiet {
-                        eprintln!("[disconnect] conn {conn} (browser)");
-                    }
-                    authority.disconnect(conn);
-                }
+                Event::Disconnected(conn) => authority.disconnect(conn),
                 Event::Message(conn, bytes) => {
                     if let Some(msg) = decode::<ClientMsg>(&bytes) {
-                        if let (ClientMsg::Hello { name, key, .. }, false) = (&msg, opts.quiet) {
-                            eprintln!("[hello] conn {conn} from a browser name={name:?} key={}", gsim_proto::identity::fingerprint(key));
-                        }
                         authority.handle(conn, msg, tick_frac);
                     }
                 }
@@ -204,10 +195,6 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             for channel in [CH_RELIABLE, CH_UNRELIABLE] {
                 while let Some(bytes) = server.receive_message(client, channel) {
                     if let Some(msg) = decode::<ClientMsg>(&bytes) {
-                        if let (ClientMsg::Hello { name, key, .. }, false) = (&msg, opts.quiet) {
-                            let from = transport.client_addr(client).map_or("?".to_string(), |a| a.ip().to_string());
-                            eprintln!("[hello] conn {client} from {from} name={name:?} key={}", gsim_proto::identity::fingerprint(key));
-                        }
                         authority.handle(client, msg, tick_frac);
                     }
                 }
@@ -220,12 +207,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         }
         let mut n = 0;
         while debt >= period && n < MAX_STEPS_PER_LOOP {
-            let t0 = Instant::now();
             authority.step();
-            let ms = t0.elapsed().as_secs_f64() * 1e3;
-            step_sum += ms;
-            step_max = step_max.max(ms);
-            steps += 1;
             debt -= period;
             n += 1;
         }
@@ -261,33 +243,22 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
             authority.reload_state();
         }
 
-        if !opts.quiet && now >= report_at {
-            report_at = now + Duration::from_secs(10);
-            let s = authority.stats;
-            eprintln!(
-                "[status] tick={} players={} bodies={} step avg={:.2}ms max={:.2}ms | cmds={} late={} resyncs={} | targets: {} captured, {} timed out, {} merged, {} vanished, {} left play{}",
-                authority.tick(),
-                authority.player_count(),
-                authority.massive.alive_count(),
-                if steps > 0 { step_sum / steps as f64 } else { 0.0 },
-                step_max,
-                s.cmds,
-                s.late_cmds,
-                s.resyncs,
-                s.captures,
-                s.target_expired,
-                s.target_merged,
-                s.target_gone,
-                s.target_ineligible,
-                if dropped > 0.05 { format!(" | STRESS: dropped {dropped:.2}s of sim time") } else { String::new() }
-            );
-            (step_sum, step_max, steps, dropped) = (0.0, 0.0, 0, 0.0);
+        for (level, text) in authority.drain_log() {
+            say(level, &text);
+        }
+        // Falling behind, as Minecraft says it (at most every 15 s).
+        if dropped > 0.5 && now >= report_at {
+            report_at = now + Duration::from_secs(15);
+            let ticks = (dropped / period).round();
+            say("WARN", &format!("Can't keep up! Is the server overloaded? Running {:.0}ms or {ticks:.0} ticks behind", dropped * 1e3));
+            dropped = 0.0;
         }
 
         // Sleep until the next tick is due, but keep servicing the socket.
         let wait = (period - debt).clamp(0.0, 0.002);
         std::thread::sleep(Duration::from_secs_f64(wait.max(0.0002)));
     }
+    say("INFO", "Stopping server");
     transport.disconnect_all(&mut server);
     if let Some(web) = &mut web {
         web.close_all();

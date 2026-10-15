@@ -7,9 +7,9 @@ use super::*;
 
 /// What ships and shells feel: an Earth, near the base (see [`REACH_RADII`]).
 const BASE_PULL: f64 = 6.0e24;
-/// What other bodies feel: a push that keeps the neighbourhood of a base clear, so that ships
+/// What other bodies feel: a push that keeps the neighborhood of a base clear, so that ships
 /// circling it are not thrown about by passing bodies. (Three times as much hardly clears it
-/// better and halves the bodies left near the centre within three minutes.)
+/// better and halves the bodies left near the center within three minutes.)
 const BASE_MASS: f64 = -3.0e25;
 /// Ships feel a base's pull this many base radii out; beyond, it turns into the push bodies
 /// feel (wholly at 1.41 times as far): a ship circling some planet far away is not dragged off
@@ -45,7 +45,7 @@ impl Authority {
     }
 
     /// One base for every team (made of everyone who plays, not those an operator set to
-    /// watch, as the round rolled), evenly on a ring around the centre. Called with the new
+    /// watch, as the round rolled), evenly on a ring around the center. Called with the new
     /// world's bodies, before it is built.
     pub(super) fn lay_bases(&mut self, sc: &mut Scenario) {
         self.bases.clear();
@@ -67,7 +67,7 @@ impl Authority {
             let slot = sc.bodies.len() as u32;
             sc.bodies.push(gsim_core::Body { x: ring * a.cos(), y: ring * a.sin(), vx: 0.0, vy: 0.0, mass: BASE_MASS, radius: BASE_RADIUS });
             let names: Vec<String> = members.iter().filter_map(|id| self.players.get(id)).map(|p| p.name.clone()).collect();
-            let label = if self.roll.teams > 1 { format!("{} base", capitalised(team_name(team))) } else { format!("{}'s base", names[0]) };
+            let label = if self.roll.teams > 1 { format!("{} base", capitalized(team_name(team))) } else { format!("{}'s base", names[0]) };
             sc.names.push((slot, label));
             for id in &members {
                 if let Some(p) = self.players.get_mut(id) {
@@ -162,13 +162,15 @@ impl Authority {
         let Some(p) = self.players.get_mut(&player).filter(|p| !p.spectating) else { return };
         (p.spectating, p.benched) = (true, true);
         (p.ship, p.respawn_tick, p.hold, p.shield) = (None, None, None, false);
+        let line = format!("{} is out", p.name);
+        self.log(line);
         self.event(Event::Gamemode { tick, player, spectating: true });
     }
 
     /// `by` hurts the base on `slot` (their own too: shells and rams do not tell friend from
-    /// foe), if it still stands, as much as its armour lets them.
+    /// foe), if it still stands, as much as its armor lets them.
     pub(super) fn damage_base(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
-        let amount = self.bases.iter().find(|b| b.slot == slot).map_or(amount, |b| shop::armoured(amount, &b.upgrades));
+        let amount = self.bases.iter().find(|b| b.slot == slot).map_or(amount, |b| shop::armored(amount, &b.upgrades));
         self.hurt(tick, slot, Some(by), amount);
     }
 
@@ -188,6 +190,13 @@ impl Authority {
             p.captures += 1;
         }
         self.event(Event::BaseDestroyed { tick, team, by });
+        let base = if self.roll.teams > 1 { format!("the {} base", team_name(team)) } else { format!("{}'s base", self.team_label(team)) };
+        let line = match by.and_then(|by| self.players.get(&by)) {
+            Some(p) if p.team == team => format!("{} destroyed their own base", p.name),
+            Some(p) => format!("{} destroyed {base}", p.name),
+            None => format!("{}{} fell", base[..1].to_uppercase(), &base[1..]),
+        };
+        self.log(line);
         // Whoever is waiting for a ship gets none.
         let waiting: Vec<PlayerId> = self.players.values().filter(|p| p.team == team && p.ship.is_none()).map(|p| p.id).collect();
         for id in waiting {
@@ -215,11 +224,11 @@ impl Authority {
             }
         }
         // Spread evenly over the ticks of a second, in whole points (as much a second as the
-        // armour lets through).
+        // armor lets through).
         let hz = rules.tick_hz.max(1) as Tick;
         for (by, team) in sieges.clone() {
             let Some(b) = self.bases.iter().find(|b| b.team == team) else { continue };
-            let rate = shop::armoured(SIEGE_PER_SECOND, &b.upgrades) as Tick;
+            let rate = shop::armored(SIEGE_PER_SECOND, &b.upgrades) as Tick;
             let per_tick = (rate * (tick % hz + 1) / hz - rate * (tick % hz) / hz) as u32;
             let slot = b.slot;
             self.hurt(tick, slot, Some(by), per_tick);
@@ -347,7 +356,7 @@ impl Authority {
 }
 
 /// "Red" for "red".
-fn capitalised(word: &str) -> String {
+fn capitalized(word: &str) -> String {
     let mut c = word.chars();
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }

@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
     pub name: String,
-    /// The colour our ship is drawn in.
+    /// The color our ship is drawn in.
     pub color: [u8; 3],
     /// The key that proves who we are; the server ties our name to it.
     pub identity: Identity,
@@ -75,6 +75,8 @@ pub struct Session {
     pub marks: VecDeque<Mark>,
     /// We may use operator commands.
     pub op: bool,
+    /// Who the operators are (told only to operators).
+    pub ops: Vec<String>,
     pub rejected: Option<String>,
 }
 
@@ -107,6 +109,7 @@ impl Session {
             chat: VecDeque::new(),
             marks: VecDeque::new(),
             op: false,
+            ops: Vec::new(),
             rejected: None,
         }
     }
@@ -167,7 +170,7 @@ impl Session {
                 }
             }
             ServerMsg::Chat(line) => self.log(now, line.kind, line.from, line.text),
-            ServerMsg::Operator(op) => self.op = op,
+            ServerMsg::Operator { op, ops } => (self.op, self.ops) = (op, ops),
             ServerMsg::Mark { player, x, y } => {
                 let name = self.world.as_ref().map_or("?", |w| w.player_name(player)).to_string();
                 self.marks.push_back(Mark { name, x, y, at: now });
@@ -220,22 +223,16 @@ impl Session {
         let resync = self.world.is_some();
         let mut world = World::from_welcome(w, self.cfg.eph);
         if !same_world && w.mode == GameMode::Bases {
-            // What this round rolled.
-            let scrap = match w.roll.scrap {
-                0..=79 => "little scrap",
-                80..=129 => "some scrap",
-                _ => "plenty of scrap",
-            };
-            let mines = if w.roll.mines > 0 { ", a mine more" } else { "" };
-            let teams = if w.roll.teams > 1 { format!(", teams of {}", w.roll.teams) } else { String::new() };
+            // What this round rolled, in a line: the twist, and who plays with whom.
             let twist = w.roll.twist;
-            self.log(now, ChatKind::System, None, format!("This round: {scrap}{mines}{teams}, {} ({})", twist.name(), twist.about()));
+            let mut line = vec![format!("Round {}: {}", w.round, twist.name())];
             if world.in_teams() {
-                // Who plays with whom.
                 let mut teams: Vec<TeamId> = w.bases.iter().map(|b| b.team).collect();
                 teams.sort_unstable();
-                let line: Vec<String> = teams.iter().map(|t| format!("{}: {}", world.team_label(*t), world.members(*t).iter().map(|id| world.player_name(*id)).collect::<Vec<_>>().join(", "))).collect();
-                self.log(now, ChatKind::System, None, line.join("  ·  "));
+                line.extend(teams.iter().map(|t| format!("{}: {}", team_name(*t), world.members(*t).iter().map(|id| world.player_name(*id)).collect::<Vec<_>>().join(", "))));
+            }
+            self.log(now, ChatKind::System, None, line.join("  ·  "));
+            if world.in_teams() {
                 let mine = world.team_of(w.your_id);
                 if mine != 0 {
                     world.alert(w.massive.tick, format!("You play for {}", team_name(mine)), true);
@@ -321,7 +318,7 @@ impl Session {
         let synced = clock.synced();
         self.check_hashes();
         if !synced {
-            return; // do not schedule inputs against an unsynchronised clock
+            return; // do not schedule inputs against an unsynchronized clock
         }
 
         let lead = self.input_lead_ticks();
@@ -406,7 +403,7 @@ impl Session {
         }
     }
 
-    /// Have our ship drawn in another colour.
+    /// Have our ship drawn in another color.
     pub fn set_color(&mut self, color: [u8; 3]) {
         self.out.push(ClientMsg::Color(color));
     }

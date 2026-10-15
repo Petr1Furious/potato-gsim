@@ -20,7 +20,7 @@
 //! 5. [`Engine::finish`] (writes): second half of the world's kick, merge the overlapping.
 //!
 //! Positions and velocities are double precision. Forces are computed in single precision on
-//! coordinates relative to each group's centre, in units of that group's own size, and two
+//! coordinates relative to each group's center, in units of that group's own size, and two
 //! bodies too close together for that are tied as well (see [`kernel::CLOSE`]): bodies are
 //! told apart however small what they form is next to the world, and nothing in the engine
 //! is a length, a mass or a time of some fixed size.
@@ -241,7 +241,7 @@ struct Node {
     /// 0 = leaf.
     left: u32,
     right: u32,
-    /// Centre of mass and its velocity.
+    /// Center of mass and its velocity.
     cx: f64,
     cy: f64,
     vx: f64,
@@ -257,7 +257,7 @@ struct Node {
     /// The length (m) that forces on the bodies of this cell are worked out in units of: its
     /// own size, so that single precision resolves bodies as finely as they are packed.
     unit: f64,
-    /// Traceless quadrupole about the centre of mass, in scaled units.
+    /// Traceless quadrupole about the center of mass, in scaled units.
     qxx: f64,
     qxy: f64,
     qyy: f64,
@@ -372,7 +372,7 @@ fn permute<T: Copy + Send + Sync + Default>(v: &mut Vec<T>, scratch: &mut Vec<T>
 struct Lists {
     /// The bodies of the group whose pull is wanted.
     who: Vec<u32>,
-    /// Those bodies relative to the group centre, and what comes out for them.
+    /// Those bodies relative to the group center, and what comes out for them.
     /// (x, y, mass, radius)
     target: [Vec<f32>; 4],
     ax: Vec<f32>,
@@ -398,7 +398,7 @@ thread_local! {
 struct Acting {
     /// Runs of nearby bodies, each taken by itself.
     near: Vec<(u32, u32)>,
-    /// Distant cells taken as lumps: where they are relative to the group centre, in units
+    /// Distant cells taken as lumps: where they are relative to the group center, in units
     /// of the group's size, their mass and their quadrupole.
     far: [Vec<f32>; 6],
     /// Which cell each of those is.
@@ -812,7 +812,7 @@ struct Census {
     y: f64,
     vx: f64,
     vy: f64,
-    /// Radius around the centre of mass holding [`CROWD`] of the mass.
+    /// Radius around the center of mass holding [`CROWD`] of the mass.
     crowd: f64,
 }
 
@@ -1302,7 +1302,7 @@ impl Engine {
         self.leaves = leaves.into_iter().map(|l| l.1).collect();
     }
 
-    /// Recompute every node's mass, centre, velocity, box and quadrupole.
+    /// Recompute every node's mass, center, velocity, box and quadrupole.
     fn refit(&mut self, b: &Bodies) {
         let (inv_mu, inv_lu) = (1.0 / self.mass_unit, 1.0 / self.len_unit);
         let nodes = &self.nodes;
@@ -1329,7 +1329,7 @@ impl Engine {
                     rmax = rmax.max(b.r[i]);
                 }
                 let inv = if m > 0.0 { 1.0 / m } else { 0.0 };
-                // A group of only massless bodies still needs a centre inside its box.
+                // A group of only massless bodies still needs a center inside its box.
                 let (cx, cy) = if m > 0.0 { (sx * inv, sy * inv) } else { (0.5 * (x0 + x1), 0.5 * (y0 + y1)) };
                 let (mut qxx, mut qxy, mut qyy) = (0.0, 0.0, 0.0);
                 for i in range {
@@ -1357,7 +1357,7 @@ impl Engine {
             let inv = if m > 0.0 { 1.0 / m } else { 0.0 };
             let (wl, wr) = if m > 0.0 { (l.mass * inv, r.mass * inv) } else { (0.5, 0.5) };
             let (cx, cy) = (l.cx * wl + r.cx * wr, l.cy * wl + r.cy * wr);
-            // Shift each child's quadrupole to the parent's centre and add.
+            // Shift each child's quadrupole to the parent's center and add.
             let (mut qxx, mut qxy, mut qyy) = (0.0, 0.0, 0.0);
             for child in [l, r] {
                 let (rx, ry) = ((child.cx - cx) * inv_lu, (child.cy - cy) * inv_lu);
@@ -1488,7 +1488,7 @@ impl Engine {
     /// enough from the group count as lumps, the bodies of the rest one by one.
     fn acting(&self, at: u32, a: &mut Acting) {
         // A zero opening angle opens every cell: the sum over every pair, through the same
-        // code, with each group still measuring from its own centre.
+        // code, with each group still measuring from its own center.
         let theta = if self.mode == Mode::Pairwise { 0.0 } else { self.theta };
         let theta2 = theta * theta;
         let group = &self.nodes[at as usize];
@@ -1506,7 +1506,7 @@ impl Engine {
         a.stack.push(0);
         while let Some(i) = a.stack.pop() {
             let w = &self.walk[i as usize];
-            // Distance from the cell's centre of mass to the nearest point of the group.
+            // Distance from the cell's center of mass to the nearest point of the group.
             let dx = (me.x0 - w.cx).max(w.cx - me.x1).max(0.0);
             let dy = (me.y0 - w.cy).max(w.cy - me.y1).max(0.0);
             let gx = (me.x0 - w.x1).max(w.x0 - me.x1).max(0.0);
@@ -1516,7 +1516,7 @@ impl Engine {
             let clear = me.r + w.r + 2.0e-6;
             if w.size2 < theta2 * (dx * dx + dy * dy) && gx * gx + gy * gy > clear * clear {
                 // Single precision is plenty for where a distant cell is, once that is taken
-                // from the group's centre.
+                // from the group's center.
                 let (n, m) = (&self.nodes[i as usize], &self.moments[i as usize]);
                 let place = [(n.cx - ox) * inv_u, (n.cy - oy) * inv_u].map(|v| v.clamp(-FURTHEST, FURTHEST) as f32);
                 for (list, v) in a.far.iter_mut().zip([place[0], place[1], m[0], m[1] * wide, m[2] * wide, m[3] * wide]) {
@@ -1546,7 +1546,7 @@ impl Engine {
     fn pull(&self, b: &Bodies, at: u32, acting: &Acting, l: &mut Lists, touching: &mut Vec<(u32, u32)>, tied: &mut Vec<(u32, With)>) -> usize {
         let group = &self.nodes[at as usize];
         let (ox, oy) = (0.5 * (group.min_x + group.max_x), 0.5 * (group.min_y + group.max_y));
-        // Everything is measured from the group's centre in units of its size.
+        // Everything is measured from the group's center in units of its size.
         let inv_lu = 1.0 / group.unit;
         let inv_mu = (1.0 / self.mass_unit) as f32;
         let inv_lu32 = inv_lu as f32;
@@ -1560,7 +1560,7 @@ impl Engine {
         let cut = if self.tied_for > 0.0 { ((TIE_TURN / self.tied_for).powi(2) / rate_unit).min(f32::MAX as f64) as f32 } else { f32::INFINITY };
         let place = |v: f64| v.clamp(-FURTHEST, FURTHEST) as f32;
 
-        // The nearby bodies, relative to the group centre.
+        // The nearby bodies, relative to the group center.
         let bodies: usize = acting.near.iter().map(|run| (run.1 - run.0) as usize).sum();
         l.ids.clear();
         for list in l.near.iter_mut().chain(l.target.iter_mut()) {
@@ -1808,8 +1808,8 @@ impl Engine {
         self.stats.took(Part::Leave, t0);
     }
 
-    /// Centre of mass of the world and its velocity, as of the last force pass.
-    pub fn barycentre(&self) -> (f64, f64, f64, f64) {
+    /// Center of mass of the world and its velocity, as of the last force pass.
+    pub fn barycenter(&self) -> (f64, f64, f64, f64) {
         self.nodes.first().map_or((0.0, 0.0, 0.0, 0.0), |n| (n.cx, n.cy, n.vx, n.vy))
     }
 

@@ -196,7 +196,7 @@ pub struct Effect {
 pub struct Alert {
     pub tick: Tick,
     pub text: String,
-    /// Good news (in our favour) or bad.
+    /// Good news (in our favor) or bad.
     pub good: bool,
 }
 
@@ -231,7 +231,7 @@ pub struct World {
     pub bases: Vec<Base>,
     /// The bodies that give something to whoever holds an orbit around them.
     pub mines: Vec<Mine>,
-    /// When crystals next turn up near the centre.
+    /// When crystals next turn up near the center.
     pub crystals_due: Option<Tick>,
     /// Gravity wells on their way or pulling.
     pub wells: Vec<WellRep>,
@@ -352,7 +352,7 @@ impl World {
     /// What to call a team: "Red" with teams, otherwise its player's name.
     pub fn team_label(&self, team: TeamId) -> String {
         if self.in_teams() {
-            capitalised(team_name(team))
+            capitalized(team_name(team))
         } else {
             self.members(team).first().map_or("?".to_string(), |id| self.player_name(*id).to_string())
         }
@@ -516,14 +516,8 @@ impl World {
                     (None, Some(b)) => format!("{victim} crashed into {}", self.body_name(b)),
                     _ => format!("{victim} was destroyed"),
                 };
+                // In chat only, as Minecraft's death messages are.
                 self.say(tick, text);
-                let me = self.my_id;
-                match (killer, body) {
-                    (Some(k), _) if player == me && k != me => self.alert(tick, format!("{} destroyed your ship", self.player_name(k)), false),
-                    (None, Some(b)) if player == me => self.alert(tick, format!("You crashed into {}", self.body_name(b)), false),
-                    (Some(k), _) if k == me && player != me => self.alert(tick, format!("You destroyed {victim}"), true),
-                    _ => {}
-                }
                 let counts = self.next_round_tick.is_none();
                 if let Some(k) = killer.filter(|k| *k != player && counts) {
                     if let Some(p) = self.players.get_mut(&k) {
@@ -555,7 +549,7 @@ impl World {
             Event::Objectives { tick, objectives } => {
                 for o in &objectives {
                     if !self.is_target(o.slot) {
-                        self.say(tick, format!("New target: {}", self.body_name(o.slot)));
+                        self.alert(tick, format!("New target: {}", self.body_name(o.slot)), true);
                     }
                 }
                 self.objectives = objectives;
@@ -563,11 +557,11 @@ impl World {
                 self.holds.retain(|_, hold| slots.contains(&hold.0));
             }
             Event::Captured { tick, player, target } => {
-                self.say(tick, format!("{} captured {}", self.player_name(player), self.body_name(target)));
                 if player == self.my_id {
                     self.alert(tick, format!("You captured {}", self.body_name(target)), true);
-                } else if self.holds.get(&self.my_id).is_some_and(|h| h.0 == target) {
-                    self.alert(tick, format!("{} captured it first", self.player_name(player)), false);
+                } else {
+                    let mine = self.holds.get(&self.my_id).is_some_and(|h| h.0 == target);
+                    self.alert(tick, format!("{} captured {}", self.player_name(player), self.body_name(target)), !mine);
                 }
                 // Mark the spot (the event can be a few ticks old; the nearest row will do).
                 if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))) {
@@ -598,13 +592,11 @@ impl World {
             }
             Event::CrystalsDue { due } => {
                 if self.crystals_due.is_some_and(|d| d <= self.head) {
-                    self.say(self.head, "Crystals turned up near the centre".to_string());
-                    self.alert(self.head, "Crystals at the centre".to_string(), true);
+                    self.alert(self.head, "Crystals at the center".to_string(), true);
                 }
                 self.crystals_due = due;
             }
-            Event::Well { tick, player, p } => {
-                self.say(tick, format!("{} fired a gravity well", self.player_name(player)));
+            Event::Well { tick, p, .. } => {
                 self.wells.push(WellRep { fired: tick, start: tick, path: vec![p], ended: false });
                 // Every ship feels it once it is armed.
                 let armed = tick + self.rules.well_arm_ticks as Tick;
@@ -615,13 +607,11 @@ impl World {
                 }
             }
             Event::Warped { tick, player } => {
-                self.say(tick, format!("{} jumped home", self.player_name(player)));
                 if let Some(at) = self.players.get(&player).and_then(|p| p.ship.as_ref()).map(|s| s.at(tick).unwrap_or(s.last()).p) {
                     self.effects.push_back(Effect { tick, at, kind: EffectKind::Warped });
                 }
             }
             Event::ShieldSpent { tick, player } => {
-                self.say(tick, format!("{}'s shield broke", self.player_name(player)));
                 if player == self.my_id {
                     self.alert(tick, "Your shield broke".to_string(), false);
                 }
@@ -638,7 +628,7 @@ impl World {
                 let text = match by {
                     Some(by) if self.team_of(by) == team => format!("{} destroyed their own base", self.player_name(by)),
                     Some(by) => format!("{} destroyed {base}", self.player_name(by)),
-                    None => capitalised(&format!("{base} fell")),
+                    None => capitalized(&format!("{base} fell")),
                 };
                 self.say(tick, text);
                 let me = self.my_id;
@@ -668,7 +658,8 @@ impl World {
                     Some(w) => format!("{} wins the round", self.team_label(w)),
                     None => "Round over".to_string(),
                 };
-                self.say(tick, text);
+                self.say(tick, text.clone());
+                self.alert(tick, text, winner.is_some_and(|w| w == self.team_of(self.my_id)));
             }
             Event::Pieces { tick, pieces } => {
                 for p in pieces {
@@ -752,8 +743,7 @@ impl World {
         let gone = (self.rules.well_arm_ticks + self.rules.well_ticks) as Tick + HISTORY_TICKS as Tick;
         self.wells.retain(|w| w.fired + gone > target);
         if let Some(t) = self.sudden_death.filter(|t| self.head < *t && *t <= target && self.next_round_tick.is_none()) {
-            self.say(t, "Sudden death: every base is wearing down".to_string());
-            self.alert(t, "Every base is wearing down".to_string(), false);
+            self.alert(t, "Sudden death: every base is wearing down".to_string(), false);
         }
         if target > self.head {
             self.head = target;
@@ -816,7 +806,7 @@ impl World {
         let news = if player != self.my_id {
             None
         } else if let Some(u) = raised {
-            Some((format!("{} {}", capitalised(u.name()), "I".repeat(new.upgrades.tier(u) as usize)), true))
+            Some((format!("{} {}", capitalized(u.name()), "I".repeat(new.upgrades.tier(u) as usize)), true))
         } else if emptied {
             Some(if new.bank != p.bank { (format!("Banked {}", p.cargo.describe()), true) } else { (format!("Lost {}", p.cargo.describe()), false) })
         } else {
@@ -848,7 +838,7 @@ impl World {
     }
 }
 
-fn capitalised(word: &str) -> String {
+fn capitalized(word: &str) -> String {
     let mut c = word.chars();
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }

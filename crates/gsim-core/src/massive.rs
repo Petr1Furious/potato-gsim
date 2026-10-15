@@ -590,7 +590,7 @@ impl MassiveState {
     }
 }
 
-/// Centre-of-mass frame of the whole system, for deciding which bodies have left it for good.
+/// Center-of-mass frame of the whole system, for deciding which bodies have left it for good.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemFrame {
     pub x: f64,
@@ -626,7 +626,7 @@ impl SystemFrame {
         f
     }
 
-    /// Distance from the barycentre, and whether the body is leaving for good: moving
+    /// Distance from the barycenter, and whether the body is leaving for good: moving
     /// outwards faster than the escape speed of everything else combined.
     pub fn escape_state(&self, view: &MassiveView, j: usize, g: f64) -> (f64, bool) {
         let (dx, dy) = (view.x[j] - self.x, view.y[j] - self.y);

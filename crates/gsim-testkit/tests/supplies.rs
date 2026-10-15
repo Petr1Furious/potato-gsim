@@ -93,7 +93,7 @@ fn a_shield_stops_one_shell() {
     sim.run_with(2.0, shoot);
     assert_eq!(sim.server.shielded(ann), Some(false));
     assert!(sim.server.ship(ann).is_some(), "the shield took the first shell");
-    assert!(chat(&sim.clients[a].session).contains(&"ann's shield broke".to_string()));
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == "Your shield broke"));
     sim.run_with(2.0, shoot);
     assert!(sim.server.ship(ann).is_none(), "the second one gets through");
     agree(&sim);
@@ -124,18 +124,18 @@ fn ammo_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
 }
 
 #[test]
-fn repair_mends_part_of_the_base_and_armour_takes_less() {
+fn repair_mends_part_of_the_base_and_armor_takes_less() {
     let (mut sim, a, _, ann, bob) = duel(4);
     sim.server.hurt_base(ann, bob, BASE_HP / 2);
     buy(&mut sim, a, Ware::Supply(Supply::Repair));
     assert_eq!(hp(&sim, ann), BASE_HP / 2 + REPAIR_HP);
-    // Armour: a shell takes less off the base.
-    buy(&mut sim, a, Ware::Upgrade(Upgrade::Armour));
+    // Armor: a shell takes less off the base.
+    buy(&mut sim, a, Ware::Upgrade(Upgrade::Armor));
     let before = hp(&sim, ann);
     let (_, x, y) = base_at(&sim, ann);
     place(&mut sim, bob, Particle { x: x + 2.0e8, y, vx: -20_000.0, vy: 0.0 });
     sim.run_with(4.0, idle);
-    assert_eq!(before - hp(&sim, ann), DAMAGE.1 * 2 / 3, "a ram, through the armour");
+    assert_eq!(before - hp(&sim, ann), DAMAGE.1 * 2 / 3, "a ram, through the armor");
     sim.run_with(0.5, idle);
     assert_eq!(sim.clients[a].session.world.as_ref().unwrap().base_of(ann).unwrap().hp, hp(&sim, ann));
 }
@@ -177,7 +177,7 @@ fn a_warp_jumps_home_and_leaves_the_cargo_behind() {
     assert_eq!(sim.server.pieces().len(), pieces + carried as usize);
     assert_eq!(sim.server.items(ann).unwrap().warps, 0);
     sim.run_with(1.0, idle);
-    assert!(chat(&sim.clients[b].session).contains(&"ann jumped home".to_string()));
+    assert!(!chat(&sim.clients[b].session).iter().any(|l| l.contains("jumped")), "no news of it");
     agree(&sim);
 }
 
@@ -205,7 +205,7 @@ fn a_gravity_well_pulls_ships_in_for_a_while() {
     sim.run_with(1.0, idle);
     let v = sim.server.ship(bob).unwrap().p.vx;
     assert!(v.abs() < 1.0, "{v} m/s after the well is gone");
-    assert!(chat(&sim.clients[b].session).contains(&"ann fired a gravity well".to_string()));
+    assert!(!chat(&sim.clients[b].session).iter().any(|l| l.contains("gravity well")), "no news of it");
     agree(&sim);
 }
 

@@ -46,7 +46,7 @@ fn orbit(b: &Bodies, i: u32, j: u32) -> Option<Orbit> {
     Some(Orbit { a: -mu / (2.0 * energy), e: (1.0 + 2.0 * energy * h * h / (mu * mu)).max(0.0).sqrt(), angle: ry.atan2(rx), energy })
 }
 
-/// Velocity of the centre of mass of everything.
+/// Velocity of the center of mass of everything.
 fn drift(b: &Bodies) -> (f64, f64) {
     let (mut m, mut px, mut py) = (0.0, 0.0, 0.0);
     for i in 0..b.len() {

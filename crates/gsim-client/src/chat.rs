@@ -1,6 +1,6 @@
-//! The chat box, modelled on Minecraft's: recent lines that fade, scrollback while open,
+//! The chat box, modeled on Minecraft's: recent lines that fade, scrollback while open,
 //! an input line with history, a suggestion list above the word being typed (arrows to move,
-//! Tab to accept and cycle), a grey usage hint or red error when there is nothing to
+//! Tab to accept and cycle), a gray usage hint or red error when there is nothing to
 //! suggest, and clickable mentions of players and bodies.
 
 use crate::style;
@@ -97,7 +97,7 @@ pub struct ChatBox {
     scroll: usize,
     list: Option<List>,
     /// What the analysis below was computed for (the input, and the cursor in it).
-    analysed: (String, usize),
+    analyzed: (String, usize),
     analysis: Analysis,
     /// Byte offset of the cursor in the input, as of the last frame.
     cursor: usize,
@@ -119,7 +119,7 @@ impl ChatBox {
         self.list = None;
         self.hidden_for = None;
         // Force a fresh analysis even if the text matches the last one.
-        self.analysed = ("\u{0}".to_string(), 0);
+        self.analyzed = ("\u{0}".to_string(), 0);
         self.cursor = text.len();
     }
 
@@ -191,14 +191,14 @@ impl ChatBox {
         out
     }
 
-    /// Recompute suggestions, hint and colours if the input or the cursor moved since the last
+    /// Recompute suggestions, hint and colors if the input or the cursor moved since the last
     /// look. Suggestions are for the word under the cursor, from what comes before it.
     fn refresh(&mut self, ctx: &Context) {
         let cursor = self.cursor.min(self.input.len());
-        if self.analysed.0 == self.input && self.analysed.1 == cursor {
+        if self.analyzed.0 == self.input && self.analyzed.1 == cursor {
             return;
         }
-        self.analysed = (self.input.clone(), cursor);
+        self.analyzed = (self.input.clone(), cursor);
         self.analysis = self.at_cursor(ctx, false);
         // A line recalled from history gets no suggestions until it is edited, as in Minecraft.
         if self.recall.is_some_and(|i| self.history.get(i) == Some(&self.input)) {
@@ -254,7 +254,7 @@ impl ChatBox {
         self.cursor = at;
         self.cursor_to = Some(self.input[..at].chars().count());
         // (The analysis follows the input and cursor, which keeps this list while they stay.)
-        self.analysed = (self.input.clone(), at);
+        self.analyzed = (self.input.clone(), at);
     }
 
     fn input_row(&mut self, ui: &mut egui::Ui, complete_ctx: &Context, wheel: f32) -> Option<String> {
@@ -276,18 +276,18 @@ impl ChatBox {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let plain = style::c32(style::TEXT);
         let spans = complete::analyze(&self.input, complete_ctx, false).spans;
-        let analysed = self.input.clone();
-        // Text typed this frame is laid out before the analysis above has seen it; colour it
+        let analyzed = self.input.clone();
+        // Text typed this frame is laid out before the analysis above has seen it; color it
         // from an analysis of its own, or the line flashes plain for a frame on every key.
         let fresh = |text: &str| complete::analyze(text, complete_ctx, false).spans;
         let layout_font = font.clone();
         let mut layouter = move |ui: &egui::Ui, text: &str, _wrap: f32| {
             let mut job = egui::text::LayoutJob::default();
-            let piece = |colour| egui::TextFormat { font_id: layout_font.clone(), color: colour, ..Default::default() };
-            // Colours belong to the analysed text; anything typed since is drawn plain.
+            let piece = |color| egui::TextFormat { font_id: layout_font.clone(), color, ..Default::default() };
+            // Colors belong to the analyzed text; anything typed since is drawn plain.
             let mut at = 0;
             let fresh_spans;
-            let spans = if text == analysed {
+            let spans = if text == analyzed {
                 &spans
             } else {
                 fresh_spans = fresh(text);
@@ -300,12 +300,12 @@ impl ChatBox {
                         continue;
                     }
                     job.append(&text[at..start], 0.0, piece(plain));
-                    let colour = match kind {
+                    let color = match kind {
                         SpanKind::Literal => C_LITERAL,
                         SpanKind::Arg(i) => C_ARGS[i % C_ARGS.len()],
                         SpanKind::Error => C_ERROR,
                     };
-                    job.append(&text[start..end], 0.0, piece(colour));
+                    job.append(&text[start..end], 0.0, piece(color));
                     at = end;
                 }
             }
@@ -392,8 +392,8 @@ impl ChatBox {
                         clicked_row = Some(i);
                     }
                 }
-                let colour = if i == list.selected { C_SELECTED } else { C_LITERAL };
-                painter.text(egui::pos2(rect.left() + 3.0, top + 1.0), egui::Align2::LEFT_TOP, &list.items[i], font.clone(), colour);
+                let color = if i == list.selected { C_SELECTED } else { C_LITERAL };
+                painter.text(egui::pos2(rect.left() + 3.0, top + 1.0), egui::Align2::LEFT_TOP, &list.items[i], font.clone(), color);
             }
             // Dotted edges where the list continues, as in Minecraft.
             let dots = |y: f32| {
@@ -409,7 +409,7 @@ impl ChatBox {
             if list.offset + rows < list.items.len() {
                 dots(rect.bottom() - 2.0);
             }
-            // Grey preview of what accepting the selected entry would add.
+            // Gray preview of what accepting the selected entry would add.
             if list.applied.is_none() {
                 let at_end = self.cursor >= self.input.len();
                 if let Some(rest) = complete::suffix(&list.base, list.start, &list.items[list.selected]).filter(|_| list.base == self.input && at_end) {
@@ -417,8 +417,8 @@ impl ChatBox {
                 }
             }
         } else if self.hidden_for.as_deref() != Some(self.input.as_str()) {
-            // No list: the red error, or the grey hint of what is still expected.
-            let (text, colour, x) = match (&self.analysis.error, &self.analysis.usage) {
+            // No list: the red error, or the gray hint of what is still expected.
+            let (text, color, x) = match (&self.analysis.error, &self.analysis.usage) {
                 (Some(error), _) => (error.as_str(), C_ERROR, text_left),
                 (None, Some(usage)) => (usage.as_str(), C_LITERAL, text_left + width_of(&self.input[..self.analysis.start.min(self.input.len())])),
                 _ => ("", C_LITERAL, 0.0),
@@ -428,7 +428,7 @@ impl ChatBox {
                 let rect = egui::Rect::from_min_size(egui::pos2(x - 2.0, text_top - 6.0 - row_h), egui::vec2(width_of(text) + 8.0, row_h));
                 let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("chat-suggestions")));
                 painter.rect_filled(rect, 0.0, C_POPUP);
-                painter.text(egui::pos2(rect.left() + 3.0, rect.top() + 1.0), egui::Align2::LEFT_TOP, text, font.clone(), colour);
+                painter.text(egui::pos2(rect.left() + 3.0, rect.top() + 1.0), egui::Align2::LEFT_TOP, text, font.clone(), color);
             }
         }
         if let Some(i) = clicked_row {
@@ -516,18 +516,18 @@ fn find_mentions(text: &str, mentions: &[(String, Mention)]) -> Vec<(usize, usiz
 /// One chat line. Returns the mention that was clicked, if any.
 fn line(ui: &mut egui::Ui, entry: &ChatEntry, opacity: f32, mentions: &[(String, Mention)]) -> Option<Mention> {
     let fade = |c| style::c32(style::alpha(c, opacity));
-    // Minecraft's formats: `<name> text`, grey italic whispers, yellow joins, red errors.
-    const GREY: Color = Color::new(0.67, 0.67, 0.67, 1.0);
+    // Minecraft's formats: `<name> text`, gray italic whispers, yellow joins, red errors.
+    const GRAY: Color = Color::new(0.67, 0.67, 0.67, 1.0);
     const YELLOW: Color = Color::new(1.0, 1.0, 0.33, 1.0);
-    let (prefix, colour, italic) = match (&entry.kind, &entry.from) {
+    let (prefix, color, italic) = match (&entry.kind, &entry.from) {
         (ChatKind::Say, Some(from)) => (format!("<{from}> "), style::TEXT, false),
-        (ChatKind::Private { outgoing: true }, Some(to)) => (format!("You whisper to {to}: "), GREY, true),
-        (ChatKind::Private { .. }, Some(from)) => (format!("{from} whispers to you: "), GREY, true),
+        (ChatKind::Private { outgoing: true }, Some(to)) => (format!("You whisper to {to}: "), GRAY, true),
+        (ChatKind::Private { .. }, Some(from)) => (format!("{from} whispers to you: "), GRAY, true),
         (ChatKind::Error, _) => (String::new(), Color::new(1.0, 0.33, 0.33, 1.0), false),
         _ if entry.text.ends_with(" joined the game") || entry.text.ends_with(" left the game") => (String::new(), YELLOW, false),
         _ => (String::new(), style::TEXT, false),
     };
-    let (prefix_colour, text_colour) = (colour, colour);
+    let (prefix_color, text_color) = (color, color);
     let styled = |text: &str, c| {
         let t = egui::RichText::new(text).color(fade(c));
         if italic { t.italics() } else { t }
@@ -536,25 +536,25 @@ fn line(ui: &mut egui::Ui, entry: &ChatEntry, opacity: f32, mentions: &[(String,
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if !prefix.is_empty() {
-            ui.label(styled(&prefix, prefix_colour));
+            ui.label(styled(&prefix, prefix_color));
         }
         let mut at = 0;
         for (start, end, target) in find_mentions(&entry.text, mentions) {
             if start > at {
-                ui.label(styled(&entry.text[at..start], text_colour));
+                ui.label(styled(&entry.text[at..start], text_color));
             }
-            let colour = match target {
+            let color = match target {
                 Mention::Body(_) => style::GOLD,
                 Mention::Player(_) => style::OTHER_SHIP,
             };
-            let word = egui::Label::new(egui::RichText::new(&entry.text[start..end]).color(fade(colour)).underline()).sense(egui::Sense::click());
+            let word = egui::Label::new(egui::RichText::new(&entry.text[start..end]).color(fade(color)).underline()).sense(egui::Sense::click());
             if ui.add(word).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 clicked = Some(target);
             }
             at = end;
         }
         if at < entry.text.len() {
-            ui.label(styled(&entry.text[at..], text_colour));
+            ui.label(styled(&entry.text[at..], text_color));
         }
     });
     clicked

@@ -23,7 +23,7 @@ fn a_name_belongs_to_the_first_key_that_uses_it() {
     sim.run_with(1.0, idle);
     assert!(sim.clients[a].session.joined());
 
-    // Someone else wants the same name, even with different capitalisation, even after
+    // Someone else wants the same name, even with different capitalization, even after
     // the owner has left: no.
     let thief = sim.add_client_as("ann", Identity::generate(), LINK);
     sim.run_with(1.0, idle);

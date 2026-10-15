@@ -40,7 +40,7 @@ On NixOS prefix commands with `./x` (e.g. `./x cargo test --workspace`) or use `
 
 ```sh
 mkdir -p data && docker compose up -d --build   # builds the image, runs it on 27777 (udp and tcp)
-docker logs -f potato-gsim          # one status line every 10 s
+docker logs -f potato-gsim          # who joins and leaves, chat, commands, rounds
 ```
 
 Settings are environment variables in `docker-compose.yml` (`GSIM_PRESET`, `GSIM_SET`,
@@ -103,16 +103,16 @@ leaves and comes back while their base stands gets it back. `R` selects the near
 base, the top-left panel shows your base and the siege orbit, and the board shows each
 base's health and how many bases each player has destroyed (KO).
 
-Clouds of **scrap** float around the centre. A ship takes a piece by passing within 80 Mm of
+Clouds of **scrap** float around the center. A ship takes a piece by passing within 80 Mm of
 it, carries it, and banks it on coming home (into its zone). Every piece carried makes the ship
 5 % heavier (a crystal 15 %), so the same burn gives less delta-v: a full hold is slow and easy
 to catch. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
 round what it hit.
 
-**Crystals** come from **mines**: planets near the centre (one, and one more for every two
+**Crystals** come from **mines**: planets near the center (one, and one more for every two
 players) that give a crystal to a ship holding a qualifying orbit around them, every 16 s while
 it stays, until their three are gone; then the mine opens on another body 20 s later. A crystal
-or two also turn up at the centre a minute into the round and every 90 s after (announced
+or two also turn up at the center a minute into the round and every 90 s after (announced
 10 s ahead). Operators can name the first mine in commands (`/orbit mine`).
 
 Within its home zone a ship feels only its own base: other bodies' pull fades out over the same
@@ -121,7 +121,7 @@ stretch as the base's own pull fades in, so orbits around home keep their shape.
 At home (or waiting there for a ship), `B` opens the shop, even once the base has fallen. Ship
 upgrades, three tiers each, kept when the ship is lost: thrust (up to x3), delta-v (up to
 60 km/s), shells (up to 50), fire rate (up to x3) and shell speed (up to 24 km/s), for 4, 8 and
-16 scrap (the last also takes 4 crystals). Base upgrades, shared by its team: armour (up to x3),
+16 scrap (the last also takes 4 crystals). Base upgrades, shared by its team: armor (up to x3),
 home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
 Supplies: a shield (drawn around the ship; it survives one shell), rapid fire (twice the
 shells, fired and coming back twice as fast, until the ship is lost), base repair (+20 %), and
@@ -132,16 +132,16 @@ for 10 s).
 Every round of bases rolls how much scrap floats about, whether there is a mine more, and a
 twist: deep tanks (twice the delta-v), quick guns (shells fire and come back twice as fast),
 long shots (faster shells that fly twice as long), scrap rush, crystal fever (crystals at the
-centre every 30 s) or heavy rams (2.5 times the damage to a base), or none; the chat says
+center every 30 s) or heavy rams (2.5 times the damage to a base), or none; the chat says
 which, and the twist shows by the round number. With four or more playing, a round may also be played in
 **teams** of two (or of three, with six or more): split at random, each team shares one base,
 its bank and the upgrades bought for it (ship upgrades stay each player's own), and the last
-team in play wins. Ships wear a ring in their team's colour. A round of bases has no time limit: 12 minutes
+team in play wins. Ships wear a ring in their team's color. A round of bases has no time limit: 12 minutes
 in comes **sudden death**, when every base loses 1 % a second and cannot be repaired.
 
 A round of targets lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
-Ships are drawn in their players' colours: random at first, chosen in the settings.
+Ships are drawn in their players' colors: random at first, chosen in the settings.
 Bodies flung out of the system for good fade out and are removed, and are never targets.
 
 ## Players, bans and the whitelist
@@ -175,7 +175,7 @@ is what address bans and the whitelist are for.
 suggestions for the word being typed appear in a list above it (arrows to move, `Tab` to
 accept and to cycle, `Shift+Tab` back, click or wheel with the mouse, `Esc` to hide; after a
 bare `/` the list waits for `Tab`); when
-there is nothing to suggest, a grey hint shows the arguments still expected, or a red
+there is nothing to suggest, a gray hint shows the arguments still expected, or a red
 message shows where the command went wrong. In plain messages `Tab` completes names of
 players and bodies. `Up`/`Down` recall earlier lines, the wheel and `PgUp`/`PgDn` scroll. Joins,
 kills, captures and new targets appear in chat too. Names of players and bodies in a message
@@ -190,7 +190,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Command | Effect |
 |---|---|
 | `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left (with bases: until sudden death); set the round length |
-| `/tp [PLAYER] PLAYER\|~DX ~DY\|X Y` | Teleport onto a player or to coordinates in metres (`~` is relative, units like `5Gm` work) |
+| `/tp [PLAYER] PLAYER\|~DX ~DY\|X Y` | Teleport onto a player or to coordinates in meters (`~` is relative, units like `5Gm` work) |
 | `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body, 20 radii up |
 | `/preset NAME [KEY=VALUE ...]`, `/timescale X` | New round in another world (e.g. `/preset random count=300 seed=7`; what is not set returns to its default) or at another time scale |
 | `/mode targets\|bases` | New round with targets or with bases |
@@ -222,7 +222,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 
-Colour shows mass: dim slate for the lightest bodies, through ice blue and pale sand to amber
+Color shows mass: dim slate for the lightest bodies, through ice blue and pale sand to amber
 and ember for the heaviest; stars glow white-gold, negative masses are violet to pink.
 
 The green line is where the ship goes if the engine stays off; yellow is with the current
@@ -266,7 +266,7 @@ ones `--set` and `/preset` take) and a seed. There are two kinds:
   many, drop a whole galaxy, cloud or ring, erase, shatter. The selected body's mass, size
   and velocity can be edited. Space pauses; holding `<` or `>` changes how much time one
   second is worth. `X` makes light linger so orbits draw themselves, `C` switches what
-  colour shows. Worlds can be saved and loaded from the Esc menu, where saves can
+  color shows. Worlds can be saved and loaded from the Esc menu, where saves can
   also be deleted.
 
 How the large-scale engine works: there is no fixed step rate. It steps as fast as it can,
@@ -297,15 +297,15 @@ thousands of revolutions that moves a moon in the outer part of its planet's rea
 percent of its distance. And two bodies passing each other so fast that they cross many
 times their closest distance in one step of the world are turned too little.
 
-Nothing in the engine is a fixed length, mass or time: a pair of pebbles a millimetre apart
+Nothing in the engine is a fixed length, mass or time: a pair of pebbles a millimeter apart
 is followed like a pair of stars, also when the world around them is ten thousand million
-times wider. Forces are single precision, worked out from each group's own centre in units
+times wider. Forces are single precision, worked out from each group's own center in units
 of the group's own size; two bodies too close together for that to tell how far apart they
 are (a thousandth of the group's size) are tied like those that turn too fast, and get
 double precision.
 
 Above 4000 bodies they are kept sorted along a Z-order curve (laid over where most of
-them are, so that a few far away do not blur the rest) and grouped into a tree, and each group of up to 64 neighbours gathers one list of what
+them are, so that a few far away do not blur the rest) and grouped into a tree, and each group of up to 64 neighbors gathers one list of what
 acts on it (nearby bodies one by one, distant cells as a point mass plus quadrupole) and
 evaluates it with AVX-512, AVX2 or NEON. Up to 4000, every pair is summed through the same
 kernels; up to 192, in double precision with a fourth-order integrator. Positions are double
@@ -331,7 +331,7 @@ cargo test --workspace
 ```
 
 - `gsim-core`: merges and negative-mass annihilation, thread-count-independent hashes,
-  snapshot continuity, low-orbit stability, anti-tunnelling, prediction equals reality
+  snapshot continuity, low-orbit stability, anti-tunneling, prediction equals reality
   bit for bit, golden self-test.
 - `gsim-server`: every preset runs, at its defaults and at the extremes of its parameters;
   the repulsor's negative bodies stay finite.
@@ -347,5 +347,5 @@ cargo test --workspace
 ## Credits
 
 The app icon combines a hand-drawn potato with the "rocket" glyph from
-[Lucide](https://lucide.dev) (ISC licence). Fonts: Rajdhani and Share Tech Mono (SIL Open Font
+[Lucide](https://lucide.dev) (ISC license). Fonts: Rajdhani and Share Tech Mono (SIL Open Font
 Licence; texts in `crates/gsim-client/assets`).

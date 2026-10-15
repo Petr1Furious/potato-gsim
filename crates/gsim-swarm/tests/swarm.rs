@@ -578,7 +578,7 @@ fn a_pair_is_followed_in_a_world_vastly_wider_than_itself() {
 
 #[test]
 fn nothing_depends_on_how_large_or_heavy_things_are() {
-    // The same pair a millimetre and a hundred million million kilometres across.
+    // The same pair a millimeter and a hundred million million kilometers across.
     for (size, mass) in [(1.0e-3, 1.0e-3), (1.0, 1.0e3), (1.0e20, 1.0e37)] {
         let mut b = Bodies::default();
         let ids = pair(&mut b, mass, 16.0, size, 0.6);

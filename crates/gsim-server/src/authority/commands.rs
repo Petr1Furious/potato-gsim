@@ -1,7 +1,7 @@
 //! Chat, map markers and the `/commands` typed into chat.
 
 use super::*;
-use gsim_proto::command::{self, parse_metres};
+use gsim_proto::command::{self, parse_meters};
 
 /// At most this many chat lines per window, per player.
 const CHAT_BURST: u32 = 10;
@@ -27,7 +27,9 @@ impl Authority {
         let online: Vec<(ConnId, PlayerId)> = self.by_conn.iter().map(|(c, p)| (*c, *p)).collect();
         for (conn, id) in online {
             let op = self.is_op(id);
-            self.send(Target::One(conn), ServerMsg::Operator(op));
+            // (As the names were registered, where they were.)
+            let ops = if op { self.state.ops().map(|n| self.state.record(n).map_or(n.clone(), |r| r.name.clone())).collect() } else { Vec::new() };
+            self.send(Target::One(conn), ServerMsg::Operator { op, ops });
         }
     }
 
@@ -46,7 +48,9 @@ impl Authority {
     }
 
     fn announce(&mut self, text: impl Into<String>) {
-        self.send(Target::All, ServerMsg::Chat(ChatLine { kind: ChatKind::System, from: None, text: text.into() }));
+        let text = text.into();
+        self.log(text.clone());
+        self.send(Target::All, ServerMsg::Chat(ChatLine { kind: ChatKind::System, from: None, text }));
     }
 
     fn conn_of(&self, id: PlayerId) -> Option<ConnId> {
@@ -76,8 +80,9 @@ impl Authority {
         match text.strip_prefix('/') {
             Some(line) => self.command(conn, id, line),
             None => {
-                let from = Some(self.name_of(id));
-                self.send(Target::All, ServerMsg::Chat(ChatLine { kind: ChatKind::Say, from, text }));
+                let from = self.name_of(id);
+                self.log(format!("<{from}> {text}"));
+                self.send(Target::All, ServerMsg::Chat(ChatLine { kind: ChatKind::Say, from: Some(from), text }));
             }
         }
     }
@@ -97,6 +102,8 @@ impl Authority {
     fn command(&mut self, conn: ConnId, id: PlayerId, line: &str) {
         let words = command::split(line);
         let Some(name) = words.first() else { return };
+        let who = self.name_of(id);
+        self.log(format!("{who} issued server command: /{line}"));
         let Some(spec) = command::find(name) else {
             return self.tell(conn, ChatKind::Error, format!("Unknown command: /{name}"));
         };
@@ -107,6 +114,7 @@ impl Authority {
             Ok(Some(reply)) => {
                 if spec.op {
                     self.tell_operators(conn, id, &reply);
+                    self.log(format!("[{who}: {reply}]"));
                 }
                 self.tell(conn, ChatKind::System, reply);
             }
@@ -170,7 +178,7 @@ impl Authority {
         slot.filter(|s| self.massive.alive.get(*s as usize).copied().unwrap_or(false)).ok_or_else(|| format!("no body called {word:?}"))
     }
 
-    fn body_name(&self, slot: u32) -> String {
+    pub(super) fn body_name(&self, slot: u32) -> String {
         self.names.iter().find(|(s, _)| *s == slot).map_or_else(|| format!("B{slot}"), |(_, n)| n.clone())
     }
 
@@ -197,6 +205,10 @@ impl Authority {
             p.respawn_tick = Some(respawn_tick);
         }
         self.event(Event::ShipDied { tick, player: id, killer: None, body: None, respawn_tick });
+        if playing {
+            let line = self.death_line(id, None, None);
+            self.log(line);
+        }
         if self.mode == GameMode::Bases && playing && !self.base_alive(id) {
             self.eliminate(id);
         }
@@ -219,8 +231,8 @@ impl Authority {
             [x, y] if is_coordinate(x) && is_coordinate(y) => {
                 let axis = |word: &str, current: f64| match word.strip_prefix('~') {
                     Some("") => Some(current),
-                    Some(offset) => parse_metres(offset).map(|d| current + d),
-                    None => parse_metres(word),
+                    Some(offset) => parse_meters(offset).map(|d| current + d),
+                    None => parse_meters(word),
                 };
                 match (axis(x, ship.x), axis(y, ship.y)) {
                     (Some(x), Some(y)) => Ok((Particle { x, y, ..ship }, format!("{x:.4e}, {y:.4e}"))),
@@ -449,7 +461,7 @@ impl Authority {
                 if filled.is_empty() {
                     return Err("nobody there has a ship right now".into());
                 }
-                done(format!("Refuelled {}", self.names_of(&filled)))
+                done(format!("Refueled {}", self.names_of(&filled)))
             }
             "twist" => {
                 let word = args.first().ok_or("")?;
@@ -651,5 +663,5 @@ impl Authority {
 /// `~`, `~1e9`, `-5Gm`, `3e11`: something `/tp` reads as a coordinate rather than a name.
 fn is_coordinate(word: &str) -> bool {
     let w = word.strip_prefix('~').unwrap_or(word);
-    word.starts_with('~') && w.is_empty() || parse_metres(w).is_some()
+    word.starts_with('~') && w.is_empty() || parse_meters(w).is_some()
 }

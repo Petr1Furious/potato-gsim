@@ -39,7 +39,7 @@ fn world() -> (Sim, usize) {
             body(-1.0e11, 0.0, 1.0e20),
             // Circling the heavy one too, further out: the most like the moon.
             moon(1.3e10, 1.0e22, 1.0e27, 3.0e9),
-            // Near the centre, but leaving fast.
+            // Near the center, but leaving fast.
             body(-2.0e10, -8.0e3, 1.0e22),
         ],
         names: Vec::new(),

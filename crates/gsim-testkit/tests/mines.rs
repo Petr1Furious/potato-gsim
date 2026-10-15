@@ -1,7 +1,7 @@
 //! Crystal mines in the bases mode: where they open, the crystals they give, and their
-//! comeback; and crystals turning up at the centre.
+//! comeback; and crystals turning up at the center.
 
-use gsim_client_core::{Controls, Session};
+use gsim_client_core::Controls;
 use gsim_core::objective::orbit_status;
 use gsim_core::{Body, Particle, ShipState};
 use gsim_proto::{Roll, Twist, GameMode, PieceKind, PlayerId, MINE_SECONDS, MINE_STOCK};
@@ -14,7 +14,7 @@ fn idle(_: usize, _: f64) -> Controls {
     Controls::default()
 }
 
-/// Six planets near the centre, far too light to move much during a test.
+/// Six planets near the center, far too light to move much during a test.
 fn planets() -> Scenario {
     let bodies = (0..6)
         .map(|k| {
@@ -54,10 +54,6 @@ fn circle_mine(sim: &mut Sim, who: PlayerId) -> u32 {
     let p = Particle { x: m.x[j] + r, y: m.y[j], vx: m.vx[j], vy: m.vy[j] + v };
     place(sim, who, p);
     slot
-}
-
-fn chat(s: &Session) -> Vec<String> {
-    s.chat.iter().map(|c| c.text.clone()).collect()
 }
 
 fn in_sync(sim: &Sim) {
@@ -134,7 +130,7 @@ fn more_players_more_mines() {
 }
 
 #[test]
-fn crystals_turn_up_at_the_centre_every_so_often() {
+fn crystals_turn_up_at_the_center_every_so_often() {
     let (mut sim, a, _, _, _) = duel(6);
     let hz = sim.server.rules.tick_hz as f64;
     let due = sim.server.crystals_due().expect("crystals are on their way");
@@ -145,13 +141,13 @@ fn crystals_turn_up_at_the_centre_every_so_often() {
     let crystals: Vec<Particle> = sim.server.pieces().into_iter().filter(|p| p.0 == PieceKind::Crystal).map(|p| p.1).collect();
     assert!(!crystals.is_empty());
     for c in &crystals {
-        assert!(c.x.hypot(c.y) < 0.2 * 3.0e10, "{c:?} is not near the centre");
+        assert!(c.x.hypot(c.y) < 0.2 * 3.0e10, "{c:?} is not near the center");
     }
     let next = sim.server.crystals_due().unwrap();
     assert!(((next - sim.server.tick()) as f64 / hz - 89.5).abs() < 1.0);
     let w = sim.clients[a].session.world.as_ref().unwrap();
     assert_eq!(w.crystals_due, Some(next));
-    assert!(chat(&sim.clients[a].session).contains(&"Crystals turned up near the centre".to_string()));
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == "Crystals at the center"));
     in_sync(&sim);
 }
 

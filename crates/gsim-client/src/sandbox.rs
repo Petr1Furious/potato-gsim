@@ -24,7 +24,7 @@ const ROCK: f64 = 5514.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
-    /// The selected body, or the centre of mass of the selected bodies (told apart by a
+    /// The selected body, or the center of mass of the selected bodies (told apart by a
     /// number made of their ids).
     Bodies(u32),
     Free,
@@ -126,7 +126,7 @@ pub struct Sandbox {
     offset: (f64, f64),
     last_target: Target,
     last_target_pos: (f64, f64),
-    /// The selected bodies. Several are followed, and measured from, by their centre of mass.
+    /// The selected bodies. Several are followed, and measured from, by their center of mass.
     selected: Vec<u32>,
     /// When the simulation was last told what to watch.
     watch_told: Instant,
@@ -192,17 +192,17 @@ fn list_saves() -> Vec<String> {
     names
 }
 
-/// A state on a circular orbit through `(x, y)` around `centre`: counter-clockwise, or
+/// A state on a circular orbit through `(x, y)` around `center`: counter-clockwise, or
 /// whichever way round `towards` (a direction from that point) leans.
-fn circling(centre: &Picked, x: f64, y: f64, towards: (f64, f64)) -> (f64, f64) {
-    let (rx, ry) = (x - centre.x, y - centre.y);
+fn circling(center: &Picked, x: f64, y: f64, towards: (f64, f64)) -> (f64, f64) {
+    let (rx, ry) = (x - center.x, y - center.y);
     let d = (rx * rx + ry * ry).sqrt().max(1.0);
-    let v = (G * centre.mass / d).sqrt() * if rx * towards.1 - ry * towards.0 < 0.0 { -1.0 } else { 1.0 };
-    (centre.vx - v * ry / d, centre.vy + v * rx / d)
+    let v = (G * center.mass / d).sqrt() * if rx * towards.1 - ry * towards.0 < 0.0 { -1.0 } else { 1.0 };
+    (center.vx - v * ry / d, center.vy + v * rx / d)
 }
 
-/// Several bodies taken as one: all their mass at their centre of mass, moving as that does.
-fn centre(bodies: &[Picked]) -> Picked {
+/// Several bodies taken as one: all their mass at their center of mass, moving as that does.
+fn center(bodies: &[Picked]) -> Picked {
     let mass: f64 = bodies.iter().map(|p| p.mass).sum();
     let mean = |of: fn(&Picked) -> f64| bodies.iter().map(|p| of(p) * p.mass).sum::<f64>() / mass;
     Picked { id: u32::MAX, x: mean(|p| p.x), y: mean(|p| p.y), vx: mean(|p| p.vx), vy: mean(|p| p.vy), mass, radius: 0.0 }
@@ -211,7 +211,7 @@ fn centre(bodies: &[Picked]) -> Picked {
 /// What can be said of several bodies together, for the panel that shows them: what each
 /// figure is, and the figure.
 fn together(bodies: &[Picked]) -> Vec<(&'static str, String)> {
-    let c = centre(bodies);
+    let c = center(bodies);
     let spread = bodies.iter().map(|p| ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt()).fold(0.0, f64::max);
     let mut rows = vec![("mass", fmt::mass(c.mass)), ("speed", fmt::speed((c.vx * c.vx + c.vy * c.vy).sqrt())), ("radius", fmt::distance(spread))];
     let yes = |bound: bool| if bound { "yes" } else { "no" }.to_string();
@@ -233,7 +233,7 @@ fn together(bodies: &[Picked]) -> Vec<(&'static str, String)> {
             ]);
         }
     } else {
-        // Energy as seen from the centre of mass: less than none, and they cannot all part.
+        // Energy as seen from the center of mass: less than none, and they cannot all part.
         let moving: f64 = bodies.iter().map(|p| 0.5 * p.mass * ((p.vx - c.vx).powi(2) + (p.vy - c.vy).powi(2))).sum();
         let mut held = 0.0;
         for (k, p) in bodies.iter().enumerate() {
@@ -459,7 +459,7 @@ impl Sandbox {
             if is_key_pressed(KeyCode::C) {
                 let at = ColorMode::ALL.iter().position(|m| *m == settings.color).unwrap_or(0);
                 settings.color = ColorMode::ALL[(at + 1) % ColorMode::ALL.len()];
-                self.say(&format!("Colour shows {}", settings.color.name()));
+                self.say(&format!("Color shows {}", settings.color.name()));
             }
             if is_key_pressed(KeyCode::X) {
                 settings.long_exposure = !settings.long_exposure;
@@ -530,11 +530,11 @@ impl Sandbox {
                 self.watch_told = Instant::now();
                 self.runner.send(Command::Watch(self.selected.clone()));
             }
-            // Several are followed and measured from as one body at their centre of mass.
+            // Several are followed and measured from as one body at their center of mass.
             picked = match group.len() {
                 0 => None,
                 1 => Some(group[0]),
-                _ => Some(centre(&group)),
+                _ => Some(center(&group)),
             };
             let mut found: Vec<u32> = group.iter().map(|p| p.id).collect();
             found.sort_unstable();
@@ -687,8 +687,8 @@ impl Sandbox {
         };
         match (self.tool, pointer) {
             (Tool::Spray | Tool::Erase, true) => {
-                let colour = if self.tool == Tool::Erase { style::EMBER } else { style::ACCENT };
-                style::ring(mouse.0, mouse.1, brush_px, 1.5 * ui, style::alpha(colour, 0.8));
+                let color = if self.tool == Tool::Erase { style::EMBER } else { style::ACCENT };
+                style::ring(mouse.0, mouse.1, brush_px, 1.5 * ui, style::alpha(color, 0.8));
             }
             (Tool::Drop, true) if self.press.is_none() => style::ring(mouse.0, mouse.1, brush_px, 1.5 * ui, style::alpha(style::GOLD, 0.6)),
             _ => {}
@@ -698,7 +698,7 @@ impl Sandbox {
         // going round the way the drag points.
         let throw = |from: (f64, f64)| -> (f64, f64) {
             match anchor(&seen.heaviest, picked, from.0, from.1).filter(|_| shift) {
-                Some(centre) => circling(&centre, from.0, from.1, (mx - from.0, my - from.1)),
+                Some(center) => circling(&center, from.0, from.1, (mx - from.0, my - from.1)),
                 None => (frame_v.0 + (mx - from.0) / pace, frame_v.1 + (my - from.1) / pace),
             }
         };
@@ -740,15 +740,15 @@ impl Sandbox {
                         new.push(from.0, from.1, v.0, v.1, self.kit.mass, radius_from_mass(self.kit.mass, self.kit.density), 3);
                         commands.push(Command::Add(Box::new(new)));
                     }
-                    (Tool::Drop, true, None) => self.say("Select a centre for the ring first"),
+                    (Tool::Drop, true, None) => self.say("Select a center for the ring first"),
                     (Tool::Drop, ring, body) => {
                         // A ring goes around the selected body, wherever the press was.
-                        let (centre, at, velocity) = match body.filter(|_| ring) {
+                        let (center, at, velocity) = match body.filter(|_| ring) {
                             Some(p) => (p.mass, (p.x, p.y), (p.vx, p.vy)),
                             None => (0.0, from, v),
                         };
                         let seed = self.next_seed();
-                        let mut new = scenario::structure(self.kit.structure, seed, self.kit.count as usize, brush_px as f64 * view.mpp, self.kit.bulk, centre, 3);
+                        let mut new = scenario::structure(self.kit.structure, seed, self.kit.count as usize, brush_px as f64 * view.mpp, self.kit.bulk, center, 3);
                         for i in 0..new.len() {
                             new.r[i] = radius_from_mass(new.m[i] as f64, self.kit.density) as f32;
                         }
@@ -810,8 +810,8 @@ impl Sandbox {
             let lines = vec![format!("B{}", p.id), format!("m = {}", fmt::mass(p.mass)), format!("r = {}", fmt::distance(p.radius)), format!("v = {}", fmt::speed((p.vx * p.vx + p.vy * p.vy).sqrt()))];
             labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
         } else if let Some(c) = &picked {
-            // Several: each marked and tied by a thin line to their centre of mass, which is
-            // marked the way a centre of mass is, with where it will be a second from now.
+            // Several: each marked and tied by a thin line to their center of mass, which is
+            // marked the way a center of mass is, with where it will be a second from now.
             let s = view.to_screen(c.x, c.y);
             for p in &group {
                 let (at, r_px) = outline(p, style::alpha(WHITE, 0.8));
@@ -833,7 +833,7 @@ impl Sandbox {
             arrow(s, view.to_screen(h.x + (h.vx - frame_v.0) * pace, h.y + (h.vy - frame_v.1) * pace), style::alpha(style::ACCENT, 0.8));
             let mut lines = vec![format!("B{}", h.id), format!("m = {}", fmt::mass(h.mass))];
             match &picked {
-                // Measured from the selected body, or the centre of the selected ones.
+                // Measured from the selected body, or the center of the selected ones.
                 Some(p) => {
                     lines.push(format!("d = {}", fmt::distance(((h.x - p.x).powi(2) + (h.y - p.y).powi(2)).sqrt())));
                     lines.push(format!("rel v = {}", fmt::speed(((h.vx - p.vx).powi(2) + (h.vy - p.vy).powi(2)).sqrt())));
@@ -1006,7 +1006,7 @@ impl Sandbox {
                     style::caption(ui, "HEAVIEST");
                     egui::Grid::new("heaviest").num_columns(3).spacing([12.0, 2.0]).show(ui, |ui| {
                         for h in seen.heaviest.iter().take(8) {
-                            // In the body's own colour; a selected one on a lighter ground, underlined.
+                            // In the body's own color; a selected one on a lighter ground, underlined.
                             let mut name = RichText::new(format!("B{}", h.id)).color(style::c32(style::mass_color(h.mass as f64)));
                             if selected.contains(&h.id) {
                                 name = name.underline().background_color(egui::Color32::from_white_alpha(36));
@@ -1145,8 +1145,8 @@ impl Sandbox {
                             }
                         });
                         ui.horizontal(|ui| {
-                            let c = centre(group);
-                            if ui.button("Stop").on_hover_text("Stops the centre of mass. Motion about it stays.").clicked() {
+                            let c = center(group);
+                            if ui.button("Stop").on_hover_text("Stops the center of mass. Motion about it stays.").clicked() {
                                 commands.extend(group.iter().map(|p| Command::Edit { id: p.id, mass: p.mass, radius: p.radius, vx: p.vx - c.vx, vy: p.vy - c.vy }));
                             }
                             if ui.button("Delete").clicked() {

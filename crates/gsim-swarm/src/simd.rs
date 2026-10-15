@@ -45,7 +45,7 @@ unsafe fn refine<V: Simd>(x: V, y: V) -> V {
     y.mul(V::splat(1.5).sub(half_xyy))
 }
 
-/// Portable fallback: four lanes the compiler may or may not vectorise.
+/// Portable fallback: four lanes the compiler may or may not vectorize.
 #[derive(Clone, Copy)]
 pub struct Plain([f32; 4]);
 

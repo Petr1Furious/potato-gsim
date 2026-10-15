@@ -1,4 +1,4 @@
-//! Software rasteriser for worlds with too many bodies to draw one by one: every body adds
+//! Software rasterizer for worlds with too many bodies to draw one by one: every body adds
 //! light to a floating-point image, which is then given a soft glow, tone-mapped and shown
 //! as one texture. Bodies large enough on screen to have a shape are returned instead, to be
 //! drawn properly on top.
@@ -41,7 +41,7 @@ pub struct Big {
     pub fade: f32,
 }
 
-/// Light around a body that shines: where (as in `pix`), its colour in the palette, how
+/// Light around a body that shines: where (as in `pix`), its color in the palette, how
 /// bright in the middle and how many pixels across. It falls off smoothly from the middle.
 type Aura = (u32, u8, f32, f32);
 
@@ -69,7 +69,7 @@ fn lit(size: f32) -> f32 {
 /// every mass there can be, sixteen to each doubling, instead of once for every body.
 #[derive(Clone, Copy)]
 struct ByMass {
-    /// Where on the palette it falls when colour shows mass.
+    /// Where on the palette it falls when color shows mass.
     shade: f32,
     /// How much heavier bodies shine than lighter ones of the same size on screen.
     weight: f32,
@@ -125,12 +125,12 @@ pub struct Density {
     /// Per buffer column: the glow column to its left and how far towards the next it lies.
     across: Vec<(i32, [f32; 4])>,
     /// From the last projection: palette, and the world position of the buffer's corner with
-    /// buffer pixels per metre.
+    /// buffer pixels per meter.
     colors: [[f32; 3]; PALETTE],
     corner: (f64, f64, f64),
     /// Per body: buffer pixel (`y << 16 | x`) or `NOWHERE`, and palette entry with brightness.
     pix: Vec<u32>,
-    /// For each body: its colour in the palette, how bright it is, how many pixels across
+    /// For each body: its color in the palette, how bright it is, how many pixels across
     /// and how much stronger than usual its glow.
     tint: Vec<(u8, f32, f32, f32)>,
     auras: Vec<Aura>,
@@ -147,7 +147,7 @@ pub struct Density {
     pub crowd: f32,
     /// Light lingers and fades slowly, so that moving bodies draw streaks.
     pub long_exposure: bool,
-    /// The lingering light (rasteriser only; the graphics card keeps its own).
+    /// The lingering light (rasterizer only; the graphics card keeps its own).
     trail: Vec<[f32; 4]>,
     trail_stale: bool,
     last_frame: f64,
@@ -157,7 +157,7 @@ pub struct Density {
     vertices: Vec<Vertex>,
     /// Light added up per pixel, for when many bodies share few pixels.
     merged: Vec<[f32; 3]>,
-    /// Milliseconds the last frame took to rasterise.
+    /// Milliseconds the last frame took to rasterize.
     pub last_ms: f32,
     /// Of those, the ones spent going through the bodies.
     pub project_ms: f32,
@@ -168,7 +168,7 @@ fn palette(mode: ColorMode) -> [[f32; 3]; PALETTE] {
     for (i, c) in out.iter_mut().enumerate() {
         let t = i as f32 / (PALETTE - 1) as f32;
         let color = match mode {
-            // 1e19 kg .. 1e31 kg, with the body renderer's own colours.
+            // 1e19 kg .. 1e31 kg, with the body renderer's own colors.
             ColorMode::Mass => style::mass_color(10f64.powf(19.0 + 12.0 * t as f64)),
             ColorMode::Speed => {
                 const STOPS: [(f32, f32, f32); 5] = [(0.25, 0.35, 0.9), (0.2, 0.8, 0.95), (0.6, 0.95, 0.5), (1.0, 0.8, 0.3), (1.0, 0.35, 0.3)];
@@ -254,7 +254,7 @@ impl Density {
         let (sw, sh) = (screen_width().max(16.0), screen_height().max(16.0));
         // On the graphics card every body is a square of a whole number of physical pixels,
         // on a grid of exactly that pitch. Anything else leaves hairline gaps and overlaps
-        // between neighbours, which show as a faint lattice wherever bodies are dense.
+        // between neighbors, which show as a faint lattice wherever bodies are dense.
         let dpi = screen_dpi_scale().max(0.25);
         self.dot = if self.gpu_wanted { dpi.round().max(1.0) as u32 } else { 1 };
         let scale = if self.gpu_wanted { self.dot as f32 / dpi } else { (sw * sh / MAX_PIXELS).sqrt().max(1.0) };
@@ -262,7 +262,7 @@ impl Density {
         self.scale = scale;
         if (w, h) != (self.w, self.h) {
             (self.w, self.h) = (w, h);
-            // The rasteriser's own images are made when it next draws.
+            // The rasterizer's own images are made when it next draws.
             self.acc = Vec::new();
         }
     }
@@ -314,7 +314,7 @@ impl Density {
         self.pix.resize(n, NOWHERE);
         self.tint.resize(n, (0, 0.0, 1.0, 1.0));
         let colors = palette(mode);
-        // Buffer pixels per metre, and the world position of the buffer's corner.
+        // Buffer pixels per meter, and the world position of the buffer's corner.
         let ppm = 1.0 / (view.mpp * scale as f64);
         let (x0, y0) = (view.cx - 0.5 * screen_width() as f64 * view.mpp, view.cy - 0.5 * screen_height() as f64 * view.mpp);
         let big_r = BIG_PX * scale;
@@ -462,7 +462,7 @@ impl Density {
                 for (p, (shade, weight, size, _)) in pix.iter().zip(tint) {
                     let (x, y) = ((p & 0xFFFF) as i32, (p >> 16) as i32);
                     // A dot of one pixel is that pixel; a larger one is a disc with a soft
-                    // edge, reaching this many pixels from its centre.
+                    // edge, reaching this many pixels from its center.
                     let reach = if *size <= 1.0 { 0 } else { (0.5 * size).ceil() as i32 };
                     if *p == NOWHERE || y + reach < first || y - reach >= last {
                         continue;
@@ -786,7 +786,7 @@ impl Density {
         (self.w, self.h, self.gpu.is_some())
     }
 
-    /// Switch between the graphics card and the rasteriser threads. Takes effect on the
+    /// Switch between the graphics card and the rasterizer threads. Takes effect on the
     /// next frame; if the card cannot do it, [`Density::take_notice`] says why.
     pub fn set_gpu(&mut self, on: bool) {
         self.gpu_wanted = on;

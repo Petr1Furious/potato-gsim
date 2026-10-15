@@ -76,7 +76,7 @@ pub enum Upgrade {
     FireRate,
     ShellSpeed,
     /// The base takes less damage.
-    Armour,
+    Armor,
     /// A wider home zone.
     HomeZone,
     /// New ships sooner.
@@ -88,7 +88,7 @@ pub const TIERS: u8 = 3;
 
 impl Upgrade {
     pub const SHIP: [Upgrade; 5] = [Upgrade::Thrust, Upgrade::DeltaV, Upgrade::Shells, Upgrade::FireRate, Upgrade::ShellSpeed];
-    pub const BASE: [Upgrade; 3] = [Upgrade::Armour, Upgrade::HomeZone, Upgrade::Respawn];
+    pub const BASE: [Upgrade; 3] = [Upgrade::Armor, Upgrade::HomeZone, Upgrade::Respawn];
 
     /// For the base (shared by its team), rather than for the ship.
     pub fn for_base(self) -> bool {
@@ -102,7 +102,7 @@ impl Upgrade {
             Upgrade::Shells => "shells",
             Upgrade::FireRate => "fire rate",
             Upgrade::ShellSpeed => "shell speed",
-            Upgrade::Armour => "armour",
+            Upgrade::Armor => "armor",
             Upgrade::HomeZone => "home zone",
             Upgrade::Respawn => "respawn",
         }
@@ -118,7 +118,7 @@ impl Upgrade {
             Upgrade::Shells => magazine(0, rules, &ups, false).max.to_string(),
             Upgrade::FireRate => times(ups.percent(self, FIRE_RATE)),
             Upgrade::ShellSpeed => format!("{} km/s", shell_speed_max(rules, &ups) / 1000.0),
-            Upgrade::Armour => times(ups.percent(self, ARMOUR)),
+            Upgrade::Armor => times(ups.percent(self, ARMOR)),
             Upgrade::HomeZone => format!("{:.0} Mm", zone_radii(&ups) * crate::BASE_RADIUS / 1.0e6),
             Upgrade::Respawn => format!("{} s", respawn_ticks(rules, &ups) as f64 / rules.tick_hz as f64),
         }
@@ -175,10 +175,10 @@ impl Upgrades {
     }
 }
 
-/// Thrust, fire rate and armour, in percent of the bare figure, by tier.
+/// Thrust, fire rate and armor, in percent of the bare figure, by tier.
 const THRUST: [i64; 4] = [100, 150, 200, 300];
 const FIRE_RATE: [i64; 4] = [100, 150, 200, 300];
-const ARMOUR: [i64; 4] = [100, 150, 200, 300];
+const ARMOR: [i64; 4] = [100, 150, 200, 300];
 
 /// The engine and tank of a ship with these upgrades and this much in its hold.
 pub fn kit(rules: &GameRules, ups: &Upgrades, hold: &Purse) -> Kit {
@@ -213,8 +213,8 @@ pub fn zone_radii(ups: &Upgrades) -> f64 {
 }
 
 /// What is left of `amount` of damage to a base with these upgrades.
-pub fn armoured(amount: u32, ups: &Upgrades) -> u32 {
-    (amount as i64 * 100 / ups.percent(Upgrade::Armour, ARMOUR)) as u32
+pub fn armored(amount: u32, ups: &Upgrades) -> u32 {
+    (amount as i64 * 100 / ups.percent(Upgrade::Armor, ARMOR)) as u32
 }
 
 /// Ticks before a lost ship is replaced.

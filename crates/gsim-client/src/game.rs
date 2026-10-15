@@ -73,7 +73,7 @@ impl Drop for Solo {
     }
 }
 
-/// Camera: world metres (f64) to screen pixels, relative to a double-precision centre so
+/// Camera: world meters (f64) to screen pixels, relative to a double-precision center so
 /// nothing loses precision at astronomical distances.
 #[derive(Clone, Copy)]
 pub(crate) struct View {
@@ -136,7 +136,7 @@ pub struct Game {
     _solo: Option<Solo>,
     view: View,
     settings_dirty: bool,
-    /// The ship colour the server knows about.
+    /// The ship color the server knows about.
     color_sent: [u8; 3],
     /// Since when the self-destruct key has been held (`None` again once it has fired,
     /// until the key is let go).
@@ -188,7 +188,7 @@ pub(crate) const PICK_RADIUS_PX: f32 = 26.0;
 pub(crate) const TURN_RATE: f64 = 2.85;
 /// Font size of labels drawn in the world, before marker scaling.
 pub(crate) const LABEL: f32 = 12.0;
-/// The closest the view zooms in, in metres per pixel.
+/// The closest the view zooms in, in meters per pixel.
 pub(crate) const MIN_MPP: f64 = 1.0e-6;
 /// What the wheel's movement is multiplied by before the zoom speed setting. A browser
 /// reports it in pixels, a hundred or so to a notch (as macOS does, whose default zoom
@@ -325,7 +325,7 @@ impl Game {
             }
             if is_key_pressed(KeyCode::C) {
                 settings.color = if settings.color == ColorMode::Speed { ColorMode::Mass } else { ColorMode::Speed };
-                self.say(&format!("Colour shows {}", settings.color.name()));
+                self.say(&format!("Color shows {}", settings.color.name()));
             }
             if is_key_pressed(KeyCode::T) || is_key_pressed(KeyCode::Enter) {
                 self.chat.open_with("");
@@ -525,10 +525,10 @@ impl Game {
             }
         }
         let my_team = world.team_of(world.my_id);
-        // A team's colour: with teams, the team's own; otherwise its player's.
-        let team_colour = |team: TeamId| {
+        // A team's color: with teams, the team's own; otherwise its player's.
+        let team_color = |team: TeamId| {
             if world.in_teams() {
-                style::team_colour(team)
+                style::team_color(team)
             } else {
                 world.members(team).first().and_then(|id| world.players.get(id)).map_or(style::DIM, |p| style::rgb(p.color))
             }
@@ -601,7 +601,7 @@ impl Game {
             Target::Free => self.last_target_pos,
         };
         if !self.view_ready {
-            // Start wide enough to see the neighbourhood.
+            // Start wide enough to see the neighborhood.
             let extent = row.x.iter().zip(&row.y).fold(1.0e9f64, |m, (x, y)| m.max(x.abs()).max(y.abs()));
             self.view.mpp = (extent * 0.5 / screen_height().min(screen_width()) as f64).max(1.0);
             self.view_ready = true;
@@ -686,8 +686,8 @@ impl Game {
                 // Everything to keep in sight, measured from what the camera stays with.
                 let mut seen = Bounds::default();
                 seen.add(ship.x - target_pos.0, ship.y - target_pos.1, 0.0);
-                let centre = self.selected.map(|s| (body(s), row.props.radius[s as usize]));
-                if let Some((b, radius)) = centre {
+                let center = self.selected.map(|s| (body(s), row.props.radius[s as usize]));
+                if let Some((b, radius)) = center {
                     seen.add(b.x - target_pos.0, b.y - target_pos.1, radius);
                 }
                 let paths = &self.predictor.latest;
@@ -698,7 +698,7 @@ impl Game {
                 let now = get_time();
                 let thrusting = controls.thrust > 0;
                 // Paths are kept as seen from the selected body (or in the world, without one).
-                let from = centre.map_or((0.0, 0.0), |(b, _)| (b.x, b.y));
+                let from = center.map_or((0.0, 0.0), |(b, _)| (b.x, b.y));
                 let shift = (from.0 - target_pos.0, from.1 - target_pos.1);
                 if paths.ref_slot != self.selected {
                     self.auto.path = None;
@@ -762,7 +762,7 @@ impl Game {
         // --- bodies as light ---------------------------------------------------------------------
         // Bodies too small on screen to have a shape are drawn as glowing points, the way the
         // large-scale worlds draw theirs; the rest (and negative masses, which have their own
-        // colours) get their discs below.
+        // colors) get their discs below.
         self.density.set_gpu(settings.gpu);
         let mut scene = gsim_swarm::Bodies::default();
         for j in (0..row.x.len() as u32).filter(|j| alive(*j) && row.props.mass[*j as usize] > 0.0) {
@@ -876,7 +876,7 @@ impl Game {
             let radius = row.props.radius[j];
             let r_px = (radius / view.mpp) as f32;
             let members = world.members(b.team);
-            let colour = team_colour(b.team);
+            let color = team_color(b.team);
             let label = world.team_label(b.team);
             let name = label.as_str();
             let mine = b.team == my_team && my_team != 0;
@@ -890,7 +890,7 @@ impl Game {
             if mine && home > 14.0 * ui {
                 let lit = world.in_zone(world.my_id);
                 if home < 1.0e6 {
-                    style::zone(s, home, colour, lit, ui);
+                    style::zone(s, home, color, lit, ui);
                 } else {
                     // Zoomed far in: worked out in the world, where the numbers are exact.
                     let zone = zone_radii * radius;
@@ -898,10 +898,10 @@ impl Game {
                     let d = (dx * dx + dy * dy).sqrt().max(1.0);
                     let half = 0.5 * ((screen_width() as f64).powi(2) + (screen_height() as f64).powi(2)).sqrt() * view.mpp;
                     if d + half <= zone {
-                        draw_rectangle(0.0, 0.0, screen_width(), screen_height(), style::alpha(colour, if lit { 0.07 } else { 0.035 }));
+                        draw_rectangle(0.0, 0.0, screen_width(), screen_height(), style::alpha(color, if lit { 0.07 } else { 0.035 }));
                     } else if d - half < zone {
                         let edge = view.to_screen(at.x + dx / d * zone, at.y + dy / d * zone);
-                        style::zone_edge(edge, (-(dx / d) as f32, -(dy / d) as f32), colour, lit, ui);
+                        style::zone_edge(edge, (-(dx / d) as f32, -(dy / d) as f32), color, lit, ui);
                     }
                 }
             }
@@ -910,40 +910,40 @@ impl Game {
                 let dashes = 72;
                 for k in 0..dashes {
                     let a = k as f32 / dashes as f32 * std::f32::consts::TAU;
-                    style::arc(s.0, s.1, outer, a, a + 0.045, ui, style::alpha(colour, 0.3));
+                    style::arc(s.0, s.1, outer, a, a + 0.045, ui, style::alpha(color, 0.3));
                 }
-                style::ring(s.0, s.1, inner, ui, style::alpha(colour, 0.2));
+                style::ring(s.0, s.1, inner, ui, style::alpha(color, 0.2));
             }
             if !view.on_screen(s, r_px.max(30.0 * ui)) {
                 // Off screen: an arrow to every standing base, one's own included.
                 if b.hp > 0 {
                     // A ring on the arrow tells it from a ship's, and the label sits further in so
                     // that it does not cover the owner's ship label when both point the same way.
-                    let label = edge_arrow(s, colour, ui);
+                    let label = edge_arrow(s, color, ui);
                     let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
                     let (dx, dy) = (cx - label.0, cy - label.1);
                     let k = 30.0 * ui / (dx * dx + dy * dy).sqrt().max(1.0);
                     let (ex, ey) = (label.0 - dx * 34.0 / 30.0 * k, label.1 - dy * 34.0 / 30.0 * k);
-                    style::ring(ex, ey, 13.0 * ui, 1.5 * ui, style::alpha(colour, 0.8));
+                    style::ring(ex, ey, 13.0 * ui, 1.5 * ui, style::alpha(color, 0.8));
                     let at_edge = (label.0 + dx * k, label.1 + dy * k);
                     let mut lines = vec![if mine { "HOME".to_string() } else { format!("{} BASE", name.to_uppercase()) }];
                     if let Some(ship) = own {
                         lines.push(fmt::distance(((at.x - ship.x).powi(2) + (at.y - ship.y).powi(2)).sqrt()));
                     }
-                    labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, colour, Rank::Target);
+                    labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, color, Rank::Target);
                 }
                 continue;
             }
             let besieged = world.sieges.iter().any(|x| x.1 == b.team);
-            style::base(s, r_px, colour, health, besieged, b.slot, ui);
+            style::base(s, r_px, color, health, besieged, b.slot, ui);
             let top = r_px.max(6.0 * ui).min(4000.0) + 16.0 * ui;
             if b.hp > 0 {
-                labels.push(if mine { "HOME".to_string() } else { name.to_uppercase() }, s.0, s.1 - top - 4.0 * ui, LABEL * ui, colour, Rank::Target);
+                labels.push(if mine { "HOME".to_string() } else { name.to_uppercase() }, s.0, s.1 - top - 4.0 * ui, LABEL * ui, color, Rank::Target);
                 // Health under the base.
                 let (w, h) = (44.0 * ui, 4.0 * ui);
                 let y = s.1 + top;
                 draw_rectangle(s.0 - w * 0.5, y, w, h, Color::from_rgba(24, 32, 46, 220));
-                draw_rectangle(s.0 - w * 0.5, y, w * health, h, if besieged { style::EMBER } else { colour });
+                draw_rectangle(s.0 - w * 0.5, y, w * health, h, if besieged { style::EMBER } else { color });
             } else {
                 labels.push(format!("{} · DOWN", name.to_uppercase()), s.0, s.1 - top, LABEL * ui, style::DIM, Rank::Target);
             }
@@ -956,28 +956,28 @@ impl Game {
             let at = body(sp.slot);
             let s = view.to_screen(at.x, at.y);
             let radius = row.props.radius[j];
-            let colour = style::piece_colour(PieceKind::Crystal);
+            let color = style::piece_color(PieceKind::Crystal);
             let name = "MINE".to_string();
             if !view.on_screen(s, 0.0) {
-                let at_edge = edge_arrow(s, colour, ui);
+                let at_edge = edge_arrow(s, color, ui);
                 let mut lines = vec![name];
                 if let Some(ship) = own {
                     lines.push(fmt::distance(((at.x - ship.x).powi(2) + (at.y - ship.y).powi(2)).sqrt()));
                 }
-                labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, colour, Rank::Target);
+                labels.block(lines, at_edge.0, at_edge.1 - 8.0 * ui, LABEL * ui, color, Rank::Target);
                 continue;
             }
             // The band a qualifying orbit must stay inside.
             let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
             if outer > 14.0 * ui {
                 let inner = (world.rules.orbit_min_peri_radii * radius / view.mpp) as f32;
-                style::ring(s.0, s.1, outer.min(1.0e5), ui, style::alpha(colour, 0.3));
-                style::ring(s.0, s.1, inner.min(1.0e5), ui, style::alpha(colour, 0.3));
+                style::ring(s.0, s.1, outer.min(1.0e5), ui, style::alpha(color, 0.3));
+                style::ring(s.0, s.1, inner.min(1.0e5), ui, style::alpha(color, 0.3));
             }
             let held = world.holds.get(&world.my_id).filter(|h| h.0 == sp.slot).map_or(0.0, |h| (h.1 % mine_every.max(1)) as f32 / mine_every.max(1) as f32);
             let r_px = (radius / view.mpp) as f32;
             style::mine(s, r_px, sp.left, held, ui);
-            labels.push(name, s.0, s.1 - r_px.min(4000.0) - 26.0 * ui, LABEL * ui, colour, Rank::Target);
+            labels.push(name, s.0, s.1 - r_px.min(4000.0) - 26.0 * ui, LABEL * ui, color, Rank::Target);
         }
 
         // --- shells and effects ----------------------------------------------------------------
@@ -1007,7 +1007,7 @@ impl Game {
                 continue;
             }
             if reach_px > 14.0 * ui && reach_px < 1.0e5 {
-                style::ring(s.0, s.1, reach_px, ui, style::alpha(style::piece_colour(piece.kind), 0.12));
+                style::ring(s.0, s.1, reach_px, ui, style::alpha(style::piece_color(piece.kind), 0.12));
             }
             style::piece(s, piece.kind, spin * (0.7 + (id % 5) as f32 * 0.3) + *id as f32, ui);
         }
@@ -1051,8 +1051,8 @@ impl Game {
                 }
                 EffectKind::Warped => style::warp(s, style::ACCENT, (age as f32 / 0.6).min(1.0), ui),
                 EffectKind::Mined => {
-                    // Rings bursting outwards in the crystals' colour.
-                    let c = style::piece_colour(PieceKind::Crystal);
+                    // Rings bursting outwards in the crystals' color.
+                    let c = style::piece_color(PieceKind::Crystal);
                     for delay in [0.0f32, 0.15, 0.3] {
                         let t = (age as f32 - delay) / 1.1;
                         if (0.0..1.0).contains(&t) {
@@ -1215,8 +1215,8 @@ impl Game {
             let color = style::rgb(p.color);
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
             if world.in_teams() && p.team != 0 {
-                // Which side it is on: a ring in the team's colour.
-                style::ring(s.0, s.1, 12.0 * ui, 1.2 * ui, style::alpha(style::team_colour(p.team), 0.75));
+                // Which side it is on: a ring in the team's color.
+                style::ring(s.0, s.1, 12.0 * ui, 1.2 * ui, style::alpha(style::team_color(p.team), 0.75));
             }
             if p.shield {
                 style::ship_shield(s, *id, ui);
@@ -1315,7 +1315,7 @@ impl Game {
         let shells_max = me.map_or(world.rules.shell_max, |m| m.magazine.max);
         let (shells, next_shell) = me.map_or((0, 0.0), |m| (m.magazine.at(tick_f as Tick, &world.rules), m.magazine.next(tick_f as Tick, &world.rules)));
         // In a round of bases the first column is the base's health, and the board is in that order.
-        // With teams, a team's players together, the base's health in the team's colour.
+        // With teams, a team's players together, the base's health in the team's color.
         let base_hp = |id: &PlayerId| world.base_of(*id).map_or(-1, |b| b.hp as i64);
         let mut scores: Vec<ScoreRow> = world
             .players
@@ -1326,7 +1326,7 @@ impl Game {
                 score: if bases { base_hp(id) } else { p.score(&world.rules) },
                 counts: [p.captures, p.kills, p.deaths],
                 mine: *id == world.my_id,
-                colour: style::rgb(p.color),
+                color: style::rgb(p.color),
                 team: p.team,
             })
             .collect();
@@ -1370,11 +1370,11 @@ impl Game {
             .collect();
         let siege = siege_of.and_then(|slot| world.base_on(slot)).map(|b| {
             let name = world.team_label(b.team).to_uppercase();
-            let colour = team_colour(b.team);
+            let color = team_color(b.team);
             let j = b.slot as usize;
             let state = own.map(|ship| orbit_status(&ship, &body(b.slot), row.props.pull[j], row.props.radius[j], &world.rules));
             let on = world.sieges.iter().any(|x| x.0 == world.my_id && x.1 == b.team);
-            (name, colour, health(b), state.map(|o| (o, row.props.radius[j])), on)
+            (name, color, health(b), state.map(|o| (o, row.props.radius[j])), on)
         });
         let out = spectating && bases && world.base_of(world.my_id).is_some_and(|b| b.hp == 0);
         // The mine one is holding an orbit around, and how far along to the next crystal.
@@ -1382,21 +1382,21 @@ impl Game {
         // Crystals turning up soon.
         let crystals_in = world.crystals_due.map(|t| (t as f64 - tick_f) / world.rules.tick_hz as f64).filter(|s| (0.0..10.0).contains(s) && bases && world.next_round_tick.is_none());
         let winner = world.winner.map(|w| world.team_label(w));
-        // Under the clock: what is going on around us right now, as gauges (what, how far, colour),
+        // Under the clock: what is going on around us right now, as gauges (what, how far, color),
         // then what just happened to us (fading out after a few seconds).
         let mut happening: Vec<(String, Option<String>, f32, Color)> = Vec::new();
         if let (false, Some(h)) = (besiegers.is_empty(), home) {
             let who: Vec<String> = besiegers.iter().map(|b| b.0.to_uppercase()).collect();
             happening.push((format!("UNDER SIEGE · {}", who.join(", ")), None, h, style::EMBER));
         }
-        if let Some((name, colour, h, _, true)) = &siege {
-            happening.push((format!("SIEGE · {name}"), None, *h, *colour));
+        if let Some((name, color, h, _, true)) = &siege {
+            happening.push((format!("SIEGE · {name}"), None, *h, *color));
         }
         if let Some(frac) = mining {
-            happening.push(("MINING".to_string(), None, frac, style::piece_colour(PieceKind::Crystal)));
+            happening.push(("MINING".to_string(), None, frac, style::piece_color(PieceKind::Crystal)));
         }
         if let Some(left) = crystals_in {
-            happening.push(("CRYSTALS AT THE CENTRE".to_string(), Some(format!("in {left:.0} s")), 1.0 - left as f32 / 10.0, style::piece_colour(PieceKind::Crystal)));
+            happening.push(("CRYSTALS AT THE CENTER".to_string(), Some(format!("in {left:.0} s")), 1.0 - left as f32 / 10.0, style::piece_color(PieceKind::Crystal)));
         }
         if let (Some(name), true) = (&target_name, my_hold > 0.0) {
             happening.push((format!("CAPTURING {}", name.to_uppercase()), None, my_hold, style::GOLD));
@@ -1422,7 +1422,7 @@ impl Game {
         }
         let body_names: Vec<String> = mentions.iter().filter(|m| matches!(m.1, Mention::Body(_))).map(|m| m.0.clone()).collect();
         let presets: Vec<(&str, Vec<&str>)> = PRESETS.iter().map(|p| (p.name, p.params.iter().map(|s| s.key).collect())).collect();
-        let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op };
+        let complete_ctx = Context { players: &player_names, ops: &self.net.session.ops, bodies: &body_names, presets: &presets, op: self.net.session.op };
         let my_id = world.my_id;
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
         let title = if bases && world.roll.twist != Twist::Plain {
@@ -1459,7 +1459,7 @@ impl Game {
         let mut bought: Option<Ware> = None;
         let (items, shielded) = me.map_or((Items::default(), false), |m| (m.items, m.shield));
         let thrust_pct = self.thrust_pct;
-        // The ruler replaces a "metres per pixel" readout.
+        // The ruler replaces a "meters per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
 
         let mut outcome = Outcome::Continue;
@@ -1474,7 +1474,7 @@ impl Game {
             ctx.set_zoom_factor(hud);
             let (gold, dim, good, bad) = (style::c32(style::GOLD), style::c32(style::DIM), style::c32(style::GOOD), style::c32(style::EMBER));
 
-            // Top centre: where we are and how long is left.
+            // Top center: where we are and how long is left.
             Area::new(Id::new("round")).anchor(Align2::CENTER_TOP, [0.0, 10.0]).interactable(false).show(ctx, |ui| {
                 // One line each, however long: wrapped, the title looks broken.
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -1484,8 +1484,8 @@ impl Game {
                         (None, _) if sudden_left.is_some() => {
                             let left = sudden_left.unwrap();
                             if left > 0.0 {
-                                let colour = if left < 60.0 { bad } else { style::c32(style::TEXT) };
-                                ui.label(RichText::new(clock(left)).heading().color(colour));
+                                let color = if left < 60.0 { bad } else { style::c32(style::TEXT) };
+                                ui.label(RichText::new(clock(left)).heading().color(color));
                                 ui.label(RichText::new("until sudden death").small().color(dim));
                             } else {
                                 let pulse = 0.65 + 0.35 * (now as f32 * 4.0).sin().abs();
@@ -1503,24 +1503,24 @@ impl Game {
                             ui.label(RichText::new(format!("new world in {left:.0} s")).color(dim));
                         }
                         (None, Some(left)) => {
-                            let colour = if left < 30.0 { bad } else { style::c32(style::TEXT) };
-                            ui.label(RichText::new(clock(left)).heading().color(colour));
+                            let color = if left < 30.0 { bad } else { style::c32(style::TEXT) };
+                            ui.label(RichText::new(clock(left)).heading().color(color));
                         }
                         _ => {}
                     }
                     if let Some(s) = &status {
                         ui.label(RichText::new(s).color(gold));
                     }
-                    for (what, value, frac, colour) in &happening {
+                    for (what, value, frac, color) in &happening {
                         ui.add_space(4.0);
                         ui.allocate_ui(egui::vec2(280.0, 0.0), |ui| {
                             ui.set_width(280.0);
                             let value = value.clone().unwrap_or_else(|| format!("{:.0} %", frac.min(1.0) * 100.0));
-                            style::gauge(ui, what, &value, *frac, *colour);
+                            style::gauge(ui, what, &value, *frac, *color);
                         });
                     }
-                    for (text, colour, fade) in &alerts {
-                        ui.label(RichText::new(text).size(17.0).strong().color(style::c32(style::alpha(*colour, *fade))));
+                    for (text, color, fade) in &alerts {
+                        ui.label(RichText::new(text).size(17.0).strong().color(style::c32(style::alpha(*color, *fade))));
                     }
                 });
             });
@@ -1550,12 +1550,12 @@ impl Game {
                         });
                         ui.horizontal(|ui| {
                             let mark = |ui: &mut egui::Ui, what: &str, ok: Option<bool>| {
-                                let colour = match ok {
+                                let color = match ok {
                                     Some(true) => good,
                                     Some(false) => bad,
                                     None => dim,
                                 };
-                                ui.label(RichText::new(what).small().color(colour).extra_letter_spacing(1.0));
+                                ui.label(RichText::new(what).small().color(color).extra_letter_spacing(1.0));
                             };
                             let state = orbit.filter(|(o, _)| o.bound);
                             mark(ui, "ECC", state.map(|(o, _)| o.ecc <= limits.0));
@@ -1569,8 +1569,8 @@ impl Game {
                         if let Some(t) = &target_time {
                             time(ui, if t.2 { "TIME · HELD" } else { "TIME" }, t);
                         }
-                        for (rival, frac, colour) in &rivals {
-                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, *colour);
+                        for (rival, frac, color) in &rivals {
+                            style::gauge(ui, &rival.to_uppercase(), &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, *color);
                         }
                         if !others.is_empty() {
                             style::section(ui, "OTHER TARGETS");
@@ -1594,8 +1594,8 @@ impl Game {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         match home {
                             Some(h) if h > 0.0 => {
-                                let colour = if besiegers.is_empty() { style::GOOD } else { style::EMBER };
-                                style::gauge(ui, "HOME", &format!("{:.0} %", h * 100.0), h, colour);
+                                let color = if besiegers.is_empty() { style::GOOD } else { style::EMBER };
+                                style::gauge(ui, "HOME", &format!("{:.0} %", h * 100.0), h, color);
                             }
                             Some(_) => {
                                 style::caption(ui, "HOME");
@@ -1603,9 +1603,9 @@ impl Game {
                             }
                             None => {}
                         }
-                        if let Some((name, colour, h, state, on)) = &siege {
+                        if let Some((name, color, h, state, on)) = &siege {
                             style::section(ui, if *on { "SIEGE · ON" } else { "SIEGE" });
-                            style::gauge(ui, name, &format!("{:.0} %", h * 100.0), *h, *colour);
+                            style::gauge(ui, name, &format!("{:.0} %", h * 100.0), *h, *color);
                             if let Some((o, r)) = state.filter(|(o, _)| o.bound) {
                                 ui.horizontal(|ui| {
                                     let mark = |ui: &mut egui::Ui, what: &str, ok: bool| {
@@ -1631,7 +1631,7 @@ impl Game {
                         }
                         ui.end_row();
                         for row in &scores {
-                            let name = RichText::new(&row.name).color(style::c32(row.colour));
+                            let name = RichText::new(&row.name).color(style::c32(row.color));
                             ui.label(if row.mine { name.underline() } else { name });
                             let first = match (bases, row.score) {
                                 (false, s) => s.to_string(),
@@ -1639,8 +1639,8 @@ impl Game {
                                 (true, 0) => "down".to_string(),
                                 (true, _) => "-".to_string(),
                             };
-                            let base_colour = if teams_on { style::team_colour(row.team) } else { style::TEXT };
-                            ui.label(RichText::new(first).color(style::c32(base_colour)).strong());
+                            let base_color = if teams_on { style::team_color(row.team) } else { style::TEXT };
+                            ui.label(RichText::new(first).color(style::c32(base_color)).strong());
                             for n in row.counts {
                                 ui.label(RichText::new(n.to_string()).color(dim));
                             }
@@ -1650,8 +1650,8 @@ impl Game {
                     if !watchers.is_empty() {
                         style::caption(ui, "WATCHING");
                         ui.horizontal_wrapped(|ui| {
-                            for (name, colour) in &watchers {
-                                ui.label(RichText::new(name).color(style::c32(style::alpha(*colour, 0.7))));
+                            for (name, color) in &watchers {
+                                ui.label(RichText::new(name).color(style::c32(style::alpha(*color, 0.7))));
                             }
                         });
                     }
@@ -1665,8 +1665,8 @@ impl Game {
                     match fuel {
                         Some(f) => {
                             let frac = f as f32 / fuel_max as f32;
-                            let fuel_colour = if frac < 0.2 { style::EMBER } else { style::ACCENT };
-                            style::gauge(ui, "DELTA-V", &fmt::speed(f as f64 / 1000.0), frac, fuel_colour);
+                            let fuel_color = if frac < 0.2 { style::EMBER } else { style::ACCENT };
+                            style::gauge(ui, "DELTA-V", &fmt::speed(f as f64 / 1000.0), frac, fuel_color);
                             style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
                             if free_shells {
                                 // At home shells cost nothing.
@@ -1679,7 +1679,7 @@ impl Game {
                             if !cargo.is_empty() {
                                 // What it carries, by how much less the engine pushes it.
                                 let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
-                                style::gauge(ui, "HOLD", &what, thrust_share, style::piece_colour(PieceKind::Scrap));
+                                style::gauge(ui, "HOLD", &what, thrust_share, style::piece_color(PieceKind::Scrap));
                             }
                             // Supplies carried, and the keys that use them.
                             for (n, key, what) in [(items.warps, "Q", "WARP HOME"), (items.wells, "E", "GRAVITY WELL")] {
@@ -1701,13 +1701,13 @@ impl Game {
                     }
                     if bases && playing {
                         // What is banked, and the key for the shop where it is open.
-                        let value = RichText::new(format!("{} scrap · {} crystals", bank.scrap, bank.crystals)).color(style::c32(style::piece_colour(PieceKind::Scrap)));
+                        let value = RichText::new(format!("{} scrap · {} crystals", bank.scrap, bank.crystals)).color(style::c32(style::piece_color(PieceKind::Scrap)));
                         style::row(ui, "BANK", value, can_shop.then_some("B"));
                     }
                 });
             });
 
-            // Centre: a ring that fills while the self-destruct key is held, or until the
+            // Center: a ring that fills while the self-destruct key is held, or until the
             // new ship arrives. (what it says, how full it is, seconds left)
             let countdown = match (destruct, respawn_in) {
                 (Some(frac), _) => Some(("SELF-DESTRUCT", frac, (1.0 - frac as f64) * DESTRUCT_HOLD)),
@@ -1800,7 +1800,7 @@ impl Game {
         let (dx, dy) = (mouse_world.0 - ship.x, mouse_world.1 - ship.y);
         let dist = (dx * dx + dy * dy).sqrt();
         let scale = self.net.session.world.as_ref().map_or(1.0, |w| w.rules.time_scale());
-        // Cursor distance reads as "metres per real second".
+        // Cursor distance reads as "meters per real second".
         (math::dir_to_angle(dx, dy), dist / scale)
     }
 }
@@ -1877,7 +1877,7 @@ impl Auto {
         let middle = (0.5 * (seen.min.0 + seen.max.0), 0.5 * (seen.min.1 + seen.max.1));
         let goal = ((w / sw).max(h / sh) / AUTO_FILL).clamp(MIN_MPP, 1.0e12);
         let k = 1.0 - (-AUTO_RATE * dt).exp();
-        // The scale eases over, and the centre goes as far of its way as the scale has gone of
+        // The scale eases over, and the center goes as far of its way as the scale has gone of
         // its own: that is a zoom about one fixed point, in which every edge of the view moves
         // straight from where it is to where it will be. Nothing that is in view before and
         // after is out of it in between.
@@ -1917,7 +1917,7 @@ impl Bounds {
 }
 
 /// A new ship has appeared while the camera follows a body: unless both are already on
-/// screen, centre the view between them and zoom so that both are.
+/// screen, center the view between them and zoom so that both are.
 pub(crate) fn frame_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f64), ship: (f64, f64)) {
     (view.cx, view.cy) = (body.0 + offset.0, body.1 + offset.1);
     if view.on_screen(view.to_screen(body.0, body.1), 0.0) && view.on_screen(view.to_screen(ship.0, ship.1), 0.0) {
@@ -2071,7 +2071,7 @@ fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrade
     use egui::RichText;
     let mut bought = None;
     let (dim, gold, text) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::TEXT));
-    let (scrap, crystal) = (style::c32(style::piece_colour(PieceKind::Scrap)), style::c32(style::piece_colour(PieceKind::Crystal)));
+    let (scrap, crystal) = (style::c32(style::piece_color(PieceKind::Scrap)), style::c32(style::piece_color(PieceKind::Crystal)));
     let price_button = |ui: &mut egui::Ui, price: Purse, can: bool| {
         let label = RichText::new(price.describe()).color(if price.crystals > 0 { crystal } else { scrap });
         ui.add_enabled(can && bank.covers(price), egui::Button::new(label)).clicked()
@@ -2150,6 +2150,6 @@ struct ScoreRow {
     /// Captures (with bases: bases destroyed), kills, deaths.
     counts: [u32; 3],
     mine: bool,
-    colour: Color,
+    color: Color,
     team: TeamId,
 }

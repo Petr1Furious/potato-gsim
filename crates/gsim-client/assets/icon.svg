@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- Potato Gravity Simulator. Rocket: Lucide "rocket" (ISC licence), https://lucide.dev -->
+  <!-- Potato Gravity Simulator. Rocket: Lucide "rocket" (ISC license), https://lucide.dev -->
   <rect x="32" y="32" width="960" height="960" rx="216" fill="#070b14"/>
   <!-- orbit, behind the potato -->
   <ellipse cx="480" cy="610" rx="390" ry="150" transform="rotate(-28 480 610)" fill="none" stroke="#5fd4ff" stroke-opacity="0.55" stroke-width="16"/>

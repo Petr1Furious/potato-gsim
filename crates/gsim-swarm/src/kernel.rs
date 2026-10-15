@@ -1,5 +1,5 @@
 //! Force kernels: the pull of a list of sources on a group of targets, many pairs per
-//! instruction. Everything here is in single precision, relative to the centre of the group
+//! instruction. Everything here is in single precision, relative to the center of the group
 //! of targets and in units of that group's own size.
 
 use crate::simd::{Plain, Simd};

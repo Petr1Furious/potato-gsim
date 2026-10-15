@@ -7,7 +7,7 @@ pub struct OrbitStatus {
     /// Negative orbital energy relative to the body.
     pub bound: bool,
     pub ecc: f64,
-    /// Closest and farthest distance from the body's centre along the orbit (m).
+    /// Closest and farthest distance from the body's center along the orbit (m).
     pub peri: f64,
     pub apo: f64,
     pub ok: bool,
