@@ -16,7 +16,7 @@ use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
 use gsim_proto::shop::{self, Upgrade, PICKUP_RADIUS, TIERS};
-use gsim_proto::{GameMode, Items, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, MINE_SECONDS};
+use gsim_proto::{GameMode, Items, Twist, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, MINE_SECONDS};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -1300,6 +1300,8 @@ impl Game {
         scores.sort_by(|a, b| b.1.cmp(&a.1).then(a.3.cmp(&b.3)));
         let secs = |t: Tick| (t as f64 - tick_f).max(0.0) / world.rules.tick_hz as f64;
         let round_left = world.round_end_tick.map(secs);
+        // Bases: how long until sudden death (0 once it is on).
+        let sudden_left = world.sudden_death.filter(|_| bases).map(secs);
         let intermission = world.next_round_tick.map(secs);
         let hold_goal = world.rules.hold_ticks as f32;
         let on_target = |h: &(u32, u32)| objective.is_some_and(|t| t.slot == h.0);
@@ -1389,7 +1391,11 @@ impl Game {
         let complete_ctx = Context { players: &player_names, bodies: &body_names, presets: &presets, op: self.net.session.op };
         let my_id = world.my_id;
         let alive_bodies = row.props.alive.iter().filter(|a| **a).count();
-        let title =format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round);
+        let title = if bases && world.roll.twist != Twist::Plain {
+            format!("{}   ·   ROUND {}   ·   {}", world.preset.to_uppercase(), world.round, world.roll.twist.name().to_uppercase())
+        } else {
+            format!("{}   ·   ROUND {}", world.preset.to_uppercase(), world.round)
+        };
         let horizon = (paths.coast.len().max(1) - 1) as f64 / world.rules.tick_hz as f64;
         let predict_ms = paths.compute_ms;
         let (rate, since, made) = self.predicting;
@@ -1440,6 +1446,17 @@ impl Game {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(&title).small().color(dim).extra_letter_spacing(2.0));
                     match (intermission, round_left) {
+                        (None, _) if sudden_left.is_some() => {
+                            let left = sudden_left.unwrap();
+                            if left > 0.0 {
+                                let colour = if left < 60.0 { bad } else { style::c32(style::TEXT) };
+                                ui.label(RichText::new(clock(left)).heading().color(colour));
+                                ui.label(RichText::new("until sudden death").small().color(dim));
+                            } else {
+                                let pulse = 0.65 + 0.35 * (now as f32 * 4.0).sin().abs();
+                                ui.label(RichText::new("SUDDEN DEATH").heading().color(bad.gamma_multiply(pulse)));
+                            }
+                        }
                         (Some(left), _) => {
                             let verdict = match (bases, &winner, scores.first()) {
                                 (true, Some(w), _) => format!("{w} wins"),

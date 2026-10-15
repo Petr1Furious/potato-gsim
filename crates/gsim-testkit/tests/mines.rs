@@ -4,7 +4,7 @@
 use gsim_client_core::{Controls, Session};
 use gsim_core::objective::orbit_status;
 use gsim_core::{Body, Particle, ShipState};
-use gsim_proto::{GameMode, PieceKind, PlayerId, MINE_SECONDS, MINE_STOCK};
+use gsim_proto::{Roll, Twist, GameMode, PieceKind, PlayerId, MINE_SECONDS, MINE_STOCK};
 use gsim_server::scenario::{radius_from_mass, Scenario};
 use gsim_testkit::*;
 
@@ -30,6 +30,7 @@ fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(planets(), seed);
     sim.server.set_rounds(0, 600, None);
     sim.server.state.op("ann");
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);
@@ -114,6 +115,7 @@ fn a_mine_gives_crystals_while_held_until_it_runs_out() {
 fn more_players_more_mines() {
     let mut sim = Sim::new(planets(), 5);
     sim.server.set_rounds(0, 600, None);
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
     sim.server.set_mode(GameMode::Bases);
     for name in ["ann", "bob", "cat", "dan"] {
         sim.add_client(name, LINK);
@@ -124,6 +126,7 @@ fn more_players_more_mines() {
     assert_eq!(sim.server.bases().len(), 2);
     assert_eq!(sim.server.mines().len(), 2);
     // In the next round all four play.
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
     sim.server.set_mode(GameMode::Bases);
     sim.run_with(1.0, idle);
     assert_eq!(sim.server.bases().len(), 4);
@@ -160,6 +163,7 @@ fn orbits_around_mines_keep_their_shape() {
         let sc = gsim_server::scenario::build("random", seed, &Default::default()).unwrap();
         let mut sim = Sim::new(sc, seed);
         sim.server.set_rounds(0, 600, None);
+        sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
         sim.server.set_mode(GameMode::Bases);
         let a = sim.add_client("ann", LINK);
         sim.add_client("bob", LINK);

@@ -220,6 +220,20 @@ impl Session {
         let same_world = self.world.as_ref().is_some_and(|old| old.round == w.round);
         let resync = self.world.is_some();
         let mut world = World::from_welcome(w, self.cfg.eph);
+        if !same_world && w.mode == GameMode::Bases {
+            // What this round rolled.
+            let scrap = match w.roll.scrap {
+                0..=79 => "little scrap",
+                80..=129 => "some scrap",
+                _ => "plenty of scrap",
+            };
+            let mines = if w.roll.mines > 0 { ", a mine more" } else { "" };
+            let twist = w.roll.twist;
+            self.log(now, ChatKind::System, None, format!("This round: {scrap}{mines}, {} ({})", twist.name(), twist.about()));
+            if twist != Twist::Plain {
+                world.alert(w.massive.tick, format!("{} · {}", twist.name().to_uppercase(), twist.about()), true);
+            }
+        }
         if resync {
             self.stats.resyncs += same_world as u64;
             self.awaiting_resync = false;

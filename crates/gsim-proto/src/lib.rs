@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -113,6 +113,81 @@ impl GameMode {
     }
 }
 
+/// What makes a round of bases unlike the others, rolled when it starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Roll {
+    /// Scrap floating about, in percent of the usual.
+    pub scrap: u32,
+    /// Mines beyond the usual.
+    pub mines: u32,
+    pub twist: Twist,
+}
+
+/// One rule bent for a round.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Twist {
+    #[default]
+    Plain,
+    /// Twice the delta-v, coming back twice as fast.
+    DeepTanks,
+    /// Shells fired and coming back twice as fast.
+    QuickGuns,
+    /// Shells half as fast again, and lasting twice as long.
+    LongShots,
+    /// Two and a half times the scrap.
+    ScrapRush,
+    /// Crystals at the centre every 30 s, and more of them.
+    CrystalFever,
+    /// Ramming a base does two and a half times the damage.
+    HeavyRams,
+}
+
+impl Twist {
+    pub const ALL: [Twist; 7] = [Twist::Plain, Twist::DeepTanks, Twist::QuickGuns, Twist::LongShots, Twist::ScrapRush, Twist::CrystalFever, Twist::HeavyRams];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Twist::Plain => "no twist",
+            Twist::DeepTanks => "deep tanks",
+            Twist::QuickGuns => "quick guns",
+            Twist::LongShots => "long shots",
+            Twist::ScrapRush => "scrap rush",
+            Twist::CrystalFever => "crystal fever",
+            Twist::HeavyRams => "heavy rams",
+        }
+    }
+
+    /// How commands name it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Twist::Plain => "plain",
+            Twist::DeepTanks => "deep-tanks",
+            Twist::QuickGuns => "quick-guns",
+            Twist::LongShots => "long-shots",
+            Twist::ScrapRush => "scrap-rush",
+            Twist::CrystalFever => "crystal-fever",
+            Twist::HeavyRams => "heavy-rams",
+        }
+    }
+
+    pub fn about(self) -> &'static str {
+        match self {
+            Twist::Plain => "the usual rules",
+            Twist::DeepTanks => "twice the delta-v",
+            Twist::QuickGuns => "shells fire and come back twice as fast",
+            Twist::LongShots => "faster shells that fly twice as long",
+            Twist::ScrapRush => "scrap everywhere",
+            Twist::CrystalFever => "crystals at the centre every 30 s",
+            Twist::HeavyRams => "ramming a base does 2.5x the damage",
+        }
+    }
+}
+
+/// Seconds into a round of bases when sudden death starts, and what every base then loses a
+/// second.
+pub const SUDDEN_DEATH_SECONDS: f64 = 720.0;
+pub const SUDDEN_DEATH_PER_SECOND: u32 = BASE_HP / 100;
+
 /// A base's health when it is new.
 pub const BASE_HP: u32 = 6000;
 
@@ -193,6 +268,10 @@ pub struct Welcome {
     pub round_end_tick: Option<Tick>,
     /// Set between rounds: the tick at which the next world starts.
     pub next_round_tick: Option<Tick>,
+    /// From this tick on every base wears down (bases mode).
+    pub sudden_death: Option<Tick>,
+    /// How this round differs from the others.
+    pub roll: Roll,
     /// The bodies to orbit for points.
     pub objectives: Vec<Objective>,
     pub bases: Vec<Base>,
@@ -225,8 +304,8 @@ pub enum Event {
     ShipDied { tick: Tick, player: PlayerId, killer: Option<PlayerId>, body: Option<u32>, respawn_tick: Tick },
     /// A player's totals were set by hand.
     Score { player: PlayerId, kills: u32, deaths: u32, captures: u32 },
-    /// The round now ends at this tick (`None`: never).
-    RoundClock { round_end_tick: Option<Tick> },
+    /// The round now ends at this tick (`None`: never), and sudden death starts at this one.
+    RoundClock { round_end_tick: Option<Tick>, sudden_death: Option<Tick> },
     /// The bodies to orbit for points are now these.
     Objectives { tick: Tick, objectives: Vec<Objective> },
     /// `player` held an orbit around `target` long enough.

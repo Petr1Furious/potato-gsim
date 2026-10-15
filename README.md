@@ -124,7 +124,14 @@ coming back twice as fast, until the ship is lost), repair (+20 % base health), 
 carry along: warp home (`Q`: a jump back home, leaving the cargo behind) and a gravity well
 (`E`: pulls every ship near where it was dropped in for 6 s).
 
-A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
+Every round of bases rolls how much scrap floats about, whether there is a mine more, and a
+twist: deep tanks (twice the delta-v), quick guns (shells fire and come back twice as fast),
+long shots (faster shells that fly twice as long), scrap rush, crystal fever (crystals at the
+centre every 30 s) or heavy rams (2.5 times the damage to a base), or none; the chat says
+which, and the twist shows by the round number. A round of bases has no time limit: 12 minutes
+in comes **sudden death**, when every base loses 1 % a second and cannot be repaired.
+
+A round of targets lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
 Ships are drawn in their players' colours: random at first, chosen in the settings.
 Bodies flung out of the system for good fade out and are removed, and are never targets.
@@ -174,7 +181,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 
 | Command | Effect |
 |---|---|
-| `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left; set the round length |
+| `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left (with bases: until sudden death); set the round length |
 | `/tp [PLAYER] PLAYER\|~DX ~DY\|X Y` | Teleport onto a player or to coordinates in metres (`~` is relative, units like `5Gm` work) |
 | `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body, 20 radii up |
 | `/preset NAME [KEY=VALUE ...]`, `/timescale X` | New round in another world (e.g. `/preset random count=300 seed=7`; what is not set returns to its default) or at another time scale |
@@ -182,6 +189,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | `/gamemode spectator\|play [PLAYER]` | Watch without a ship (`Space` follows the next player), or play again; with bases, at one's own base even if it has fallen |
 | `/target BODY` | Make a body a target |
 | `/targets count N`, `/targets per N` | A fixed number of targets, or one for every N players |
+| `/twist NAME\|random` | The twist of the next rounds of bases (`deep-tanks`, `quick-guns`, ...) |
 | `/give scrap\|crystals N [PLAYER]` | Put scrap or crystals in a bank |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |

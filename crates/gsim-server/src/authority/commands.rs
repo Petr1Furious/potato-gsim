@@ -305,18 +305,25 @@ impl Authority {
                         self.announce(format!("{} started a new round", self.name_of(me)));
                         Ok(None)
                     }
+                    Some("time") if self.mode == GameMode::Bases => {
+                        // Rounds of bases have no end, only sudden death.
+                        let s = seconds()?;
+                        self.sudden_death = Some(self.tick() + (s * hz) as Tick);
+                        self.event(Event::RoundClock { round_end_tick: self.round_end_tick, sudden_death: self.sudden_death });
+                        done(format!("Sudden death in {s} seconds"))
+                    }
                     Some("time") => {
                         let s = seconds()?;
                         self.round_end_tick = Some(self.tick() + (s * hz) as Tick);
                         self.next_round_tick = None;
-                        self.event(Event::RoundClock { round_end_tick: self.round_end_tick });
+                        self.event(Event::RoundClock { round_end_tick: self.round_end_tick, sudden_death: self.sudden_death });
                         done(format!("The round ends in {s} seconds"))
                     }
                     Some("length") => {
                         let s = seconds()?;
                         self.round_ticks = (s * hz) as Tick;
-                        self.round_end_tick = (self.round_ticks > 0).then(|| self.tick() + self.round_ticks);
-                        self.event(Event::RoundClock { round_end_tick: self.round_end_tick });
+                        self.round_end_tick = (self.round_ticks > 0 && self.mode != GameMode::Bases).then(|| self.tick() + self.round_ticks);
+                        self.event(Event::RoundClock { round_end_tick: self.round_end_tick, sudden_death: self.sudden_death });
                         done(if s > 0.0 { format!("Rounds now last {s} seconds") } else { "Rounds no longer end".to_string() })
                     }
                     _ => Err(String::new()),
@@ -405,7 +412,7 @@ impl Authority {
             }
             "timescale" => {
                 let scale = args.first().and_then(|s| s.parse::<f64>().ok()).filter(|x| (1.0..=1.0e7).contains(x)).ok_or("")?;
-                self.rules = GameRules { escape_radius: self.rules.escape_radius, target_ticks: self.rules.target_ticks, ..GameRules::new(scale, self.rules.tick_hz) };
+                self.plain_rules = GameRules { escape_radius: self.plain_rules.escape_radius, target_ticks: self.plain_rules.target_ticks, ..GameRules::new(scale, self.plain_rules.tick_hz) };
                 self.start_round();
                 self.announce(format!("{} set the time scale to x{scale}", self.name_of(me)));
                 Ok(None)
@@ -443,6 +450,17 @@ impl Authority {
                     return Err("nobody there has a ship right now".into());
                 }
                 done(format!("Refuelled {}", self.names_of(&filled)))
+            }
+            "twist" => {
+                let word = args.first().ok_or("")?;
+                self.forced_twist = match word.as_str() {
+                    "random" => None,
+                    w => Some(Twist::ALL.into_iter().find(|t| t.key() == w).ok_or(format!("no twist called {w:?}"))?),
+                };
+                done(match self.forced_twist {
+                    Some(t) => format!("The next rounds of bases have {}", t.name()),
+                    None => "The next rounds of bases roll their twist".to_string(),
+                })
             }
             "give" => {
                 let amount = args.get(1).and_then(|s| s.parse::<u32>().ok()).filter(|n| *n <= 100_000).ok_or("")?;

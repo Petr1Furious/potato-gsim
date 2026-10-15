@@ -3,7 +3,7 @@
 use gsim_client_core::{Controls, Session};
 use gsim_core::{math, Body, Particle, ShipState};
 use gsim_proto::shop::Upgrade;
-use gsim_proto::{GameMode, PieceKind, PlayerId, Purse, Supply, Ware, BASE_HP, HOME_RADII, REPAIR_HP};
+use gsim_proto::{Roll, Twist, GameMode, PieceKind, PlayerId, Purse, Supply, Ware, BASE_HP, HOME_RADII, REPAIR_HP};
 use gsim_server::authority::DAMAGE;
 use gsim_server::scenario::Scenario;
 use gsim_testkit::*;
@@ -28,6 +28,7 @@ fn open_space() -> Scenario {
 fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(open_space(), seed);
     sim.server.set_rounds(0, 600, None);
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);

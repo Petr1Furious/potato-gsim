@@ -2,7 +2,7 @@
 
 use gsim_client_core::{Controls, Session};
 use gsim_core::{math, Body, Particle, ShipState};
-use gsim_proto::{GameMode, PlayerId, BASE_HP};
+use gsim_proto::{GameMode, PlayerId, Roll, Twist, BASE_HP};
 use gsim_server::authority::DAMAGE;
 use gsim_server::scenario::Scenario;
 use gsim_testkit::*;
@@ -28,6 +28,7 @@ fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(open_space(), seed);
     sim.server.set_rounds(0, 600, None);
     sim.server.state.op("ann");
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);
@@ -328,4 +329,70 @@ fn from_anywhere_on_the_spawn_orbit_a_straight_burn_leaves_home() {
             assert!(far > 1.5 * reach, "from {at} burning {toward}: only {far:.3e} m out");
         }
     }
+}
+
+#[test]
+fn a_round_of_bases_ends_in_sudden_death_not_on_a_clock() {
+    let (mut sim, a, _, ann, bob) = duel(11);
+    let hz = sim.server.rules.tick_hz as f64;
+    let w = sim.clients[a].session.world.as_ref().unwrap();
+    assert_eq!(w.round_end_tick, None);
+    let due = w.sudden_death.expect("sudden death is coming");
+    assert!(((due - sim.server.tick()) as f64 / hz - 718.5).abs() < 1.0);
+    // An operator brings it forward.
+    sim.clients[a].session.send_chat("/round time 2");
+    sim.run_with(2.5, idle);
+    assert_eq!(hp(&sim, ann), hp(&sim, bob));
+    sim.run_with(5.0, idle);
+    let lost = BASE_HP - hp(&sim, bob);
+    assert!((5 * 60..=7 * 60).contains(&lost), "lost {lost} in about 6 s");
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == "Every base is wearing down"));
+    // No repairs now.
+    sim.server.grant(ann, gsim_proto::Purse { scrap: 100, crystals: 0 });
+    sim.clients[a].session.buy(gsim_proto::Ware::Supply(gsim_proto::Supply::Repair));
+    sim.run_with(0.5, idle);
+    assert!(chat(&sim.clients[a].session).contains(&"No more repair for now".to_string()));
+    in_sync(&sim);
+}
+
+#[test]
+fn each_round_rolls_its_scrap_mines_and_twist() {
+    let mut sim = Sim::new(open_space(), 12);
+    sim.server.set_rounds(0, 600, None);
+    sim.server.state.op("ann");
+    sim.server.set_mode(GameMode::Bases);
+    let a = sim.add_client("ann", LINK);
+    sim.add_client("bob", LINK);
+    sim.run_with(1.5, idle);
+    let plain = sim.server.rules.clone();
+    // Over a few rounds the rolls differ.
+    let mut seen = Vec::new();
+    for _ in 0..12 {
+        sim.clients[a].session.send_chat("/round new");
+        sim.run_with(0.5, idle);
+        let roll = sim.server.roll();
+        assert_eq!(sim.clients[a].session.world.as_ref().unwrap().roll, roll);
+        if !seen.contains(&roll.twist) {
+            seen.push(roll.twist);
+        }
+    }
+    assert!(seen.len() >= 3, "{seen:?}");
+    // An operator picks the twist; it bends the rules everybody plays by.
+    sim.clients[a].session.send_chat("/twist deep-tanks");
+    sim.clients[a].session.send_chat("/round new");
+    sim.run_with(1.0, idle);
+    assert_eq!(sim.server.roll().twist, Twist::DeepTanks);
+    assert_eq!(sim.server.rules.fuel_max_mmps, 2 * plain.fuel_max_mmps);
+    let w = sim.clients[a].session.world.as_ref().unwrap();
+    assert_eq!(w.rules, sim.server.rules);
+    let ann = sim.player_id(a).unwrap();
+    assert_eq!(sim.server.ship(ann).unwrap().kit.tank, 2 * plain.fuel_max_mmps);
+    assert!(chat(&sim.clients[a].session).iter().any(|l| l.starts_with("This round:") && l.contains("deep tanks")));
+    sim.clients[a].session.send_chat("/twist quick-guns");
+    sim.clients[a].session.send_chat("/round new");
+    sim.run_with(1.0, idle);
+    assert_eq!(sim.server.rules.fuel_max_mmps, plain.fuel_max_mmps, "the last twist is gone");
+    assert_eq!(sim.server.magazine(ann).unwrap().cooldown(), plain.shell_cooldown_ticks as u64 / 2);
+    in_sync(&sim);
+    assert!(sim.ships_agree().is_ok());
 }

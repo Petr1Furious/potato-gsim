@@ -106,6 +106,12 @@ pub const COMMANDS: &[Command] = &[
     },
     Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
     Command {
+        name: "twist",
+        help: "the twist of the next rounds of bases, or random",
+        op: true,
+        params: &[req("twist", Arg::Word(&["random", "plain", "deep-tanks", "quick-guns", "long-shots", "scrap-rush", "crystal-fever", "heavy-rams"]))],
+    },
+    Command {
         name: "give",
         help: "put scrap or crystals in a player's bank",
         op: true,

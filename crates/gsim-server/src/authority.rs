@@ -122,6 +122,8 @@ pub enum TargetPlan {
 
 pub struct Authority {
     pub rules: GameRules,
+    /// The rules before a round's twist bends them.
+    plain_rules: GameRules,
     pub massive: MassiveState,
     pub stats: Stats,
     preset: String,
@@ -176,6 +178,13 @@ pub struct Authority {
     crystals_due: Option<Tick>,
     /// Gravity wells: (tick dropped, x, y).
     wells: Vec<(Tick, f64, f64)>,
+    /// From this tick on every base wears down.
+    sudden_death: Option<Tick>,
+    /// How this round of bases differs from the others.
+    roll: Roll,
+    /// The twist an operator chose for the rounds to come, or the whole roll (for tests).
+    forced_twist: Option<Twist>,
+    fixed_roll: Option<Roll>,
     /// Scrap and crystals floating free, and when the next cloud of scrap may turn up.
     pieces: Vec<scrap::Piece>,
     /// Where scrap turns up (apart from `rng`, so that it does not change the rest).
@@ -213,6 +222,11 @@ impl Authority {
             pieces: Vec::new(),
             next_piece_id: 1,
             cloud_due: 0,
+            sudden_death: None,
+            forced_twist: None,
+            fixed_roll: None,
+            roll: Roll::default(),
+            plain_rules: rules.clone(),
             massive: MassiveState::from_bodies(&scenario.bodies),
             rules,
             stats: Stats::default(),
@@ -461,6 +475,8 @@ impl Authority {
             round: self.round,
             round_end_tick: self.round_end_tick,
             next_round_tick: self.next_round_tick,
+            sudden_death: self.sudden_death,
+            roll: self.roll,
             objectives: self.objectives.clone(),
             rules: self.rules.clone(),
             massive: self.massive.snapshot(),
@@ -757,7 +773,8 @@ impl Authority {
             }
             for &(victim, _, body) in &deaths {
                 if let Some(body) = body {
-                    self.damage_base(next, body, victim, bases::DAMAGE.1);
+                    let ram = if self.roll.twist == Twist::HeavyRams { bases::DAMAGE.1 * 5 / 2 } else { bases::DAMAGE.1 };
+                    self.damage_base(next, body, victim, ram);
                 }
             }
         }
@@ -1099,6 +1116,7 @@ impl Authority {
         for p in self.players.values_mut().filter(|p| p.benched) {
             (p.spectating, p.benched) = (false, false);
         }
+        self.roll_round();
         self.lay_bases(&mut sc);
         self.base_hits.clear();
         self.mines.clear();
@@ -1120,7 +1138,10 @@ impl Authority {
         self.shells.clear();
         self.round += 1;
         self.next_round_tick = None;
-        self.round_end_tick = (self.round_ticks > 0).then(|| tick + self.round_ticks);
+        // A round of bases has no time limit: sudden death ends it.
+        let bases = self.mode == GameMode::Bases;
+        self.round_end_tick = (self.round_ticks > 0 && !bases).then(|| tick + self.round_ticks);
+        self.sudden_death = bases.then(|| tick + (SUDDEN_DEATH_SECONDS * self.rules.tick_hz as f64) as Tick);
         self.objectives.clear();
         for p in self.players.values_mut() {
             p.ship = None;

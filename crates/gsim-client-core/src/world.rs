@@ -216,6 +216,10 @@ pub struct World {
     pub round_end_tick: Option<Tick>,
     /// Set between rounds.
     pub next_round_tick: Option<Tick>,
+    /// From this tick on every base wears down.
+    pub sudden_death: Option<Tick>,
+    /// How this round differs from the others.
+    pub roll: Roll,
     /// The bodies to orbit for points, with the time each has left as last heard.
     pub objectives: Vec<Objective>,
     /// The objective each player is on a qualifying orbit around, and for how many ticks (from
@@ -291,6 +295,8 @@ impl World {
             round: w.round,
             round_end_tick: w.round_end_tick,
             next_round_tick: w.next_round_tick,
+            sudden_death: w.sudden_death,
+            roll: w.roll,
             objectives: w.objectives.clone(),
             holds: BTreeMap::new(),
             bases: w.bases.clone(),
@@ -496,8 +502,9 @@ impl World {
                     (p.kills, p.deaths, p.captures) = (kills, deaths, captures);
                 }
             }
-            Event::RoundClock { round_end_tick } => {
+            Event::RoundClock { round_end_tick, sudden_death } => {
                 self.round_end_tick = round_end_tick;
+                self.sudden_death = sudden_death;
                 self.next_round_tick = None;
             }
             Event::Objectives { tick, objectives } => {
@@ -684,6 +691,10 @@ impl World {
         self.pieces.retain(|_, p| p.track.dies_at.is_none_or(|d| d > target));
         let gone = self.rules.well_ticks as Tick + HISTORY_TICKS as Tick;
         self.wells.retain(|w| w.0 + gone > target);
+        if let Some(t) = self.sudden_death.filter(|t| self.head < *t && *t <= target && self.next_round_tick.is_none()) {
+            self.say(t, "Sudden death: every base is wearing down".to_string());
+            self.alert(t, "Every base is wearing down".to_string(), false);
+        }
         if target > self.head {
             self.head = target;
         }

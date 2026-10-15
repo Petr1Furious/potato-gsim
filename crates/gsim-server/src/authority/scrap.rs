@@ -21,6 +21,8 @@ const CLOUD_DRIFT: f64 = 15.0;
 const CRYSTAL_FIELD: (f64, f64) = (0.0, 0.15);
 const CRYSTALS_FIRST_SECONDS: f64 = 60.0;
 const CRYSTALS_EVERY_SECONDS: f64 = 90.0;
+/// With crystal fever: first after this long, and then as often again.
+const FEVER_EVERY_SECONDS: f64 = 30.0;
 /// How fast what a lost ship carried flies apart (m/s).
 const SPILL_DRIFT: f64 = 40.0;
 /// The most pieces a lost ship spills.
@@ -163,11 +165,13 @@ impl Authority {
             }
         }
         if playing && self.crystals_due.is_some_and(|due| tick >= due) {
-            let n = 2 + self.players.values().filter(|p| !p.spectating).count() / 3;
+            let fever = self.roll.twist == Twist::CrystalFever;
+            let n = 2 + self.players.values().filter(|p| !p.spectating).count() / 3 + fever as usize;
             if let Some(cloud) = self.cloud(PieceKind::Crystal, n, CRYSTAL_FIELD) {
                 self.add_pieces(tick, cloud);
             }
-            self.crystals_due = Some(tick + (CRYSTALS_EVERY_SECONDS * hz) as Tick);
+            let every = if fever { FEVER_EVERY_SECONDS } else { CRYSTALS_EVERY_SECONDS };
+            self.crystals_due = Some(tick + (every * hz) as Tick);
             self.event(Event::CrystalsDue { due: self.crystals_due });
         }
         let home: Vec<PlayerId> = self.players.values().filter(|p| !p.cargo.is_empty()).map(|p| p.id).filter(|id| self.at_home(*id)).collect();
@@ -183,8 +187,10 @@ impl Authority {
         self.pieces.iter().filter(|p| p.kind == PieceKind::Scrap).count()
     }
 
+    /// As much as the round rolled.
     fn scrap_wanted(&self) -> usize {
-        SCRAP_PER_PLAYER * self.players.values().filter(|p| !p.spectating).count().max(2)
+        let rush = if self.roll.twist == Twist::ScrapRush { 250 } else { 100 };
+        SCRAP_PER_PLAYER * self.players.values().filter(|p| !p.spectating).count().max(2) * self.roll.scrap.max(1) as usize * rush / 10_000
     }
 
     /// A new round of bases starts with all its scrap, and crystals a while later.
@@ -204,7 +210,8 @@ impl Authority {
             }
         }
         self.cloud_due = tick;
-        self.crystals_due = Some(tick + (CRYSTALS_FIRST_SECONDS * self.rules.tick_hz as f64) as Tick);
+        let first = if self.roll.twist == Twist::CrystalFever { FEVER_EVERY_SECONDS } else { CRYSTALS_FIRST_SECONDS };
+        self.crystals_due = Some(tick + (first * self.rules.tick_hz as f64) as Tick);
     }
 
     /// The ship's engine and tank follow what it carries and what has been bought; everyone
@@ -225,6 +232,7 @@ impl Authority {
         let (tick, rules) = (self.tick(), self.rules.clone());
         let home = self.at_home(id) || self.players.get(&id).is_some_and(|p| p.ship.is_none() && p.respawn_tick.is_some() && self.base_alive(id));
         let hp = self.base_of(id).map_or(0, |b| b.hp);
+        let sudden_death = self.sudden_death.is_some_and(|t| tick >= t);
         let Some(p) = self.players.get_mut(&id) else { return };
         let (name, price, full) = match ware {
             Ware::Upgrade(u) => {
@@ -234,7 +242,7 @@ impl Authority {
             Ware::Supply(s) => {
                 let full = match s {
                     Supply::Shield => p.shield,
-                    Supply::Repair => hp >= BASE_HP,
+                    Supply::Repair => hp >= BASE_HP || sudden_death,
                     _ => p.items.count(s) >= shop::CARRY,
                 };
                 (s.name(), s.price(), full)

@@ -8,9 +8,10 @@ use super::*;
 const COMEBACK_SECONDS: f64 = 20.0;
 
 impl Authority {
-    /// How many mines there should be: one, and another for every two players.
+    /// How many mines there should be: one, another for every two players, and maybe one more
+    /// (as the round rolled).
     fn mines_wanted(&self) -> usize {
-        1 + self.players.values().filter(|p| !p.spectating).count() / 2
+        1 + self.players.values().filter(|p| !p.spectating).count() / 2 + self.roll.mines as usize
     }
 
     /// A body for a new mine: a planet among the few closest to the centre that is fit for it

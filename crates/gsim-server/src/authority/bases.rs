@@ -117,25 +117,25 @@ impl Authority {
     pub(super) fn damage_base(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
         let owner = self.bases.iter().find(|b| b.slot == slot).map(|b| b.owner);
         let amount = owner.and_then(|o| self.players.get(&o)).map_or(amount, |p| shop::armoured(amount, &p.upgrades));
-        self.hurt(tick, slot, by, amount);
+        self.hurt(tick, slot, Some(by), amount);
     }
 
-    /// `amount` off the base on `slot`, if it still stands.
-    fn hurt(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
+    /// `amount` off the base on `slot`, if it still stands (`by` nobody: sudden death).
+    fn hurt(&mut self, tick: Tick, slot: u32, by: Option<PlayerId>, amount: u32) {
         let Some(b) = self.bases.iter_mut().find(|b| b.slot == slot && b.hp > 0) else { return };
         b.hp = b.hp.saturating_sub(amount);
         let (owner, left) = (b.owner, b.hp);
         self.bases_changed = true;
-        if !self.base_hits.contains(&(owner, by)) {
+        if let Some(by) = by.filter(|by| !self.base_hits.contains(&(owner, *by))) {
             self.base_hits.push((owner, by));
         }
         if left > 0 {
             return;
         }
-        if let Some(p) = self.players.get_mut(&by).filter(|_| by != owner) {
+        if let Some(p) = by.filter(|by| *by != owner).and_then(|by| self.players.get_mut(&by)) {
             p.captures += 1;
         }
-        self.event(Event::BaseDestroyed { tick, owner, by: Some(by) });
+        self.event(Event::BaseDestroyed { tick, owner, by });
         // Somebody waiting for a ship gets none.
         if self.players.get(&owner).is_some_and(|p| p.ship.is_none()) {
             self.eliminate(owner);
@@ -168,7 +168,16 @@ impl Authority {
             let rate = self.players.get(&owner).map_or(SIEGE_PER_SECOND, |p| shop::armoured(SIEGE_PER_SECOND, &p.upgrades)) as Tick;
             let per_tick = (rate * (tick % hz + 1) / hz - rate * (tick % hz) / hz) as u32;
             if let Some(slot) = self.base_of(owner).map(|b| b.slot) {
-                self.hurt(tick, slot, by, per_tick);
+                self.hurt(tick, slot, Some(by), per_tick);
+            }
+        }
+        // Sudden death: every standing base wears down.
+        if playing && self.sudden_death.is_some_and(|t| tick >= t) {
+            let rate = SUDDEN_DEATH_PER_SECOND as Tick;
+            let per_tick = (rate * (tick % hz + 1) / hz - rate * (tick % hz) / hz) as u32;
+            let standing: Vec<u32> = self.bases.iter().filter(|b| b.hp > 0).map(|b| b.slot).collect();
+            for slot in standing {
+                self.hurt(tick, slot, None, per_tick);
             }
         }
         if sieges != self.sieges {
@@ -231,5 +240,39 @@ impl Authority {
         if let Some(slot) = self.base_of(owner).map(|b| b.slot) {
             self.damage_base(tick, slot, by, amount);
         }
+    }
+}
+
+impl Authority {
+    /// A new round of bases rolls how much scrap there is, whether there is a mine more, and a
+    /// twist; the rules start from the plain ones, bent by it.
+    pub(super) fn roll_round(&mut self) {
+        self.rules = self.plain_rules.clone();
+        self.roll = Roll::default();
+        if self.mode != GameMode::Bases {
+            return;
+        }
+        let rng = &mut self.scrap_rng;
+        let mut pick = |n: usize| (rng.u64() % n as u64) as usize;
+        let rolled = Roll { scrap: [60, 100, 100, 160][pick(4)], mines: pick(2) as u32, twist: Twist::ALL[pick(Twist::ALL.len())] };
+        let twist = self.forced_twist.unwrap_or(rolled.twist);
+        self.roll = self.fixed_roll.unwrap_or(Roll { twist, ..rolled });
+        let r = &mut self.rules;
+        match self.roll.twist {
+            Twist::DeepTanks => (r.fuel_max_mmps, r.regen_per_tick_mmps) = (2 * r.fuel_max_mmps, 2 * r.regen_per_tick_mmps),
+            Twist::QuickGuns => (r.shell_cooldown_ticks, r.shell_regen_ticks) = (r.shell_cooldown_ticks / 2, r.shell_regen_ticks / 2),
+            Twist::LongShots => (r.shell_speed_max, r.shell_lifetime_ticks) = (1.5 * r.shell_speed_max, 2 * r.shell_lifetime_ticks),
+            _ => {}
+        }
+    }
+
+    /// Test hook: every round from the next one on is rolled like this.
+    pub fn fix_roll(&mut self, roll: Roll) {
+        self.fixed_roll = Some(roll);
+    }
+
+    /// How this round differs from the others.
+    pub fn roll(&self) -> Roll {
+        self.roll
     }
 }

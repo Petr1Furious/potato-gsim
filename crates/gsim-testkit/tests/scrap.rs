@@ -4,7 +4,7 @@
 use gsim_client_core::{Controls, Session};
 use gsim_core::{Body, Kit, Particle, ShipState};
 use gsim_proto::shop::{self, Upgrade};
-use gsim_proto::{GameMode, PieceKind, PlayerId, Purse, Ware};
+use gsim_proto::{Roll, Twist, GameMode, PieceKind, PlayerId, Purse, Ware};
 use gsim_server::scenario::Scenario;
 use gsim_testkit::*;
 
@@ -29,6 +29,7 @@ fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(open_space(), seed);
     sim.server.set_rounds(0, 600, None);
     sim.server.state.op("ann");
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);
