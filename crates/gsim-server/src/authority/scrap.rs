@@ -82,28 +82,48 @@ impl Authority {
         }
     }
 
-    /// The ship is lost: what it carried floats away, and rapid fire is over.
-    pub(super) fn spill(&mut self, tick: Tick, player: PlayerId) {
+    /// The ship is lost (crashed into `body`, if it did): what it carried floats away, and
+    /// rapid fire is over.
+    pub(super) fn spill(&mut self, tick: Tick, player: PlayerId, body: Option<u32>) {
         let Some(p) = self.players.get_mut(&player) else { return };
         let changed = std::mem::take(&mut p.quick);
-        if self.drop_cargo(tick, player) || changed {
+        if self.drop_cargo(tick, player, body) || changed {
             self.loadout(tick, player);
         }
     }
 
     /// What the ship carries floats away from where it is. False if it carried nothing.
-    fn drop_cargo(&mut self, tick: Tick, player: PlayerId) -> bool {
+    /// From a crash into `body`, the cargo goes gently round that body instead: the ship hit it
+    /// far too fast for anything to be caught at that speed.
+    fn drop_cargo(&mut self, tick: Tick, player: PlayerId, body: Option<u32>) -> bool {
         let Some(p) = self.players.get_mut(&player) else { return false };
         let (cargo, ship) = (std::mem::take(&mut p.cargo), p.ship);
         if let Some(ship) = ship {
             let kinds = std::iter::repeat_n(PieceKind::Crystal, cargo.crystals as usize).chain(std::iter::repeat_n(PieceKind::Scrap, cargo.scrap as usize));
             let spilled: Vec<(PieceKind, Particle)> = kinds
                 .take(SPILL_MAX as usize)
-                .map(|kind| (kind, self.scatter(ship.p, 0.25 * CLOUD_SPREAD, SPILL_DRIFT)))
+                .map(|kind| (kind, match body.filter(|j| self.massive.alive[*j as usize]) {
+                    Some(j) => self.around(j as usize, ship.p),
+                    None => self.scatter(ship.p, 0.25 * CLOUD_SPREAD, SPILL_DRIFT),
+                }))
                 .collect();
             self.add_pieces(tick, spilled);
         }
         !cargo.is_empty()
+    }
+
+    /// On a slow circular orbit around body `j`, 6 to 10 radii out on the side where `from` (the
+    /// wreck) is, going round the way it was.
+    fn around(&mut self, j: usize, from: Particle) -> Particle {
+        let m = &self.massive;
+        let (bx, by, bvx, bvy, radius, pull) = (m.x[j], m.y[j], m.vx[j], m.vy[j], m.radius[j], m.pull[j].max(0.0));
+        let (dx, dy, dvx, dvy) = (from.x - bx, from.y - by, from.vx - bvx, from.vy - bvy);
+        let turn = if dx * dvy - dy * dvx < 0.0 { -1.0 } else { 1.0 };
+        let a = dy.atan2(dx) + self.scrap_rng.range(-0.6, 0.6);
+        let r = radius * self.scrap_rng.range(6.0, 10.0);
+        let v = (self.rules.g * pull / r).sqrt();
+        let (c, s) = (a.cos(), a.sin());
+        Particle { x: bx + r * c, y: by + r * s, vx: bvx - turn * v * s, vy: bvy + turn * v * c }
     }
 
     /// Somewhere near `p`, drifting away from it.
@@ -320,7 +340,7 @@ impl Authority {
                 let Some(at) = home else { return };
                 *count -= 1;
                 // The cargo stays behind.
-                self.drop_cargo(tick, id);
+                self.drop_cargo(tick, id, None);
                 self.loadout(tick, id);
                 let kit = self.players[&id].ship.map_or(ship.kit, |s| s.kit);
                 self.place_ship(id, ShipState { p: at, kit, ..ship });

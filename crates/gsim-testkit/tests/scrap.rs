@@ -232,3 +232,28 @@ fn a_lost_ship_spills_its_cargo_but_keeps_its_upgrades() {
     assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text.starts_with("Lost")));
     agree(&sim);
 }
+
+#[test]
+fn a_crash_leaves_the_cargo_going_gently_round_what_was_hit() {
+    let (mut sim, _, _, ann, bob) = duel(6);
+    take_scrap(&mut sim, ann);
+    take_scrap(&mut sim, ann);
+    let carried = sim.server.purse(ann).unwrap().0.scrap as usize;
+    let before = sim.server.pieces().len();
+    // Straight into bob's base at 20 km/s.
+    let j = sim.server.base_of_player(bob).unwrap().slot as usize;
+    let (bx, by, radius) = (sim.server.massive.x[j], sim.server.massive.y[j], sim.server.massive.radius[j]);
+    place(&mut sim, ann, Particle { x: bx + 2.0e8, y: by, vx: -20_000.0, vy: 0.0 });
+    sim.run_with(1.0, idle);
+    assert!(sim.server.ship(ann).is_none(), "crashed");
+    let spilled: Vec<Particle> = sim.server.pieces().into_iter().skip(before).map(|p| p.1).collect();
+    assert_eq!(spilled.len(), carried);
+    for p in &spilled {
+        let (d, v) = ((p.x - bx).hypot(p.y - by), p.vx.hypot(p.vy));
+        assert!(d < 11.0 * radius && v < 3_500.0, "{d} m out at {v} m/s");
+    }
+    // Going round, not falling in.
+    sim.run_with(3.0, idle);
+    assert_eq!(sim.server.pieces().len(), before + carried);
+    agree(&sim);
+}

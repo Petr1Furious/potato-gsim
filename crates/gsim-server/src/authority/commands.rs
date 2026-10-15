@@ -188,7 +188,7 @@ impl Authority {
         let tick = self.tick();
         let respawn_tick = tick + self.base_of(id).map_or(self.rules.respawn_ticks, |b| gsim_proto::shop::respawn_ticks(&self.rules, &b.upgrades)) as Tick;
         let playing = self.next_round_tick.is_none();
-        self.spill(tick, id);
+        self.spill(tick, id, None);
         if let Some(p) = self.players.get_mut(&id) {
             p.ship = None;
             p.hold = None;

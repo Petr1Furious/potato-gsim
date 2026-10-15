@@ -794,7 +794,7 @@ impl Authority {
         }
         for (victim, killer, body) in deaths {
             let respawn_tick = next + self.base_of(victim).map_or(rules.respawn_ticks, |b| shop::respawn_ticks(&rules, &b.upgrades)) as Tick;
-            self.spill(next, victim);
+            self.spill(next, victim, body);
             if let Some(p) = self.players.get_mut(&victim) {
                 p.ship = None;
                 p.deaths += playing_now as u32;

@@ -106,7 +106,8 @@ base's health and how many bases each player has destroyed (KO).
 Clouds of **scrap** float around the centre. A ship takes a piece by passing within 80 Mm of
 it, carries it, and banks it on coming home (into its zone). Every piece carried makes the ship
 5 % heavier (a crystal 15 %), so the same burn gives less delta-v: a full hold is slow and easy
-to catch. A ship that is lost spills its cargo where it was.
+to catch. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
+round what it hit.
 
 **Crystals** come from **mines**: planets near the centre (one, and one more for every two
 players) that give a crystal to a ship holding a qualifying orbit around them, every 16 s while
