@@ -138,6 +138,8 @@ pub struct PlayerRep {
     pub magazine: Magazine,
     /// Watching, with no ship.
     pub spectating: bool,
+    /// Their side in a round of bases (0: none).
+    pub team: TeamId,
     /// The ship survives one shell.
     pub shield: bool,
     /// Fires and reloads twice as fast, with twice the shells (from ammo, until the ship is lost).
@@ -233,10 +235,10 @@ pub struct World {
     pub crystals_due: Option<Tick>,
     /// Gravity wells: (tick dropped, x, y).
     pub wells: Vec<(Tick, f64, f64)>,
-    /// (player, base owner) for every ship on a siege orbit.
-    pub sieges: Vec<(PlayerId, PlayerId)>,
-    /// The last player in play, once the round is over.
-    pub winner: Option<PlayerId>,
+    /// (player, team) for every ship on a siege orbit around that team's base.
+    pub sieges: Vec<(PlayerId, TeamId)>,
+    /// The last team in play, once the round is over.
+    pub winner: Option<TeamId>,
     /// What just happened to us, newest last.
     pub alerts: VecDeque<Alert>,
     scratch: Scratch,
@@ -261,6 +263,7 @@ impl World {
                     next_fire_tick: p.next_fire_tick,
                     magazine: p.magazine,
                     spectating: p.spectating,
+                    team: p.team,
                     shield: p.shield,
                     quick: false,
                     cargo: p.cargo,
@@ -325,8 +328,43 @@ impl World {
         self.objectives.iter().any(|o| o.slot == slot)
     }
 
+    /// The player's team (0: none).
+    pub fn team_of(&self, player: PlayerId) -> TeamId {
+        self.players.get(&player).map_or(0, |p| p.team)
+    }
+
+    /// The player's team's base.
     pub fn base_of(&self, player: PlayerId) -> Option<&Base> {
-        self.bases.iter().find(|b| b.owner == player)
+        let team = self.team_of(player);
+        self.bases.iter().find(|b| b.team == team && team != 0)
+    }
+
+    /// The round is played in teams (rather than everyone on their own).
+    pub fn in_teams(&self) -> bool {
+        self.mode == GameMode::Bases && self.roll.teams > 1
+    }
+
+    /// The players on a team.
+    pub fn members(&self, team: TeamId) -> Vec<PlayerId> {
+        self.players.iter().filter(|(_, p)| p.team == team && team != 0).map(|(id, _)| *id).collect()
+    }
+
+    /// What to call a team: "Red" with teams, otherwise its player's name.
+    pub fn team_label(&self, team: TeamId) -> String {
+        if self.in_teams() {
+            capitalised(team_name(team))
+        } else {
+            self.members(team).first().map_or("?".to_string(), |id| self.player_name(*id).to_string())
+        }
+    }
+
+    /// "the red base", or "ann's base".
+    pub fn base_label(&self, team: TeamId) -> String {
+        if self.in_teams() {
+            format!("the {} base", team_name(team))
+        } else {
+            format!("{}'s base", self.team_label(team))
+        }
     }
 
     /// The player's ship (as far as simulated) is within their own standing base's zone, where
@@ -370,7 +408,7 @@ impl World {
     /// replay of the affected entity only) or in our future.
     pub fn apply_event(&mut self, e: Event, stats: &mut Stats) {
         match e {
-            Event::PlayerJoined { id, name, color } => {
+            Event::PlayerJoined { id, name, color, team } => {
                 self.say(self.head, format!("{name} joined the game"));
                 self.players.entry(id).or_insert(PlayerRep {
                     name,
@@ -384,6 +422,7 @@ impl World {
                     next_fire_tick: 0,
                     magazine: Magazine::full(self.head, &self.rules),
                     spectating: false,
+                    team,
                     shield: false,
                     quick: false,
                     cargo: Purse::default(),
@@ -587,21 +626,21 @@ impl World {
                     }
                 }
             }
-            Event::BaseDestroyed { tick, owner, by } => {
-                let whose = self.player_name(owner).to_string();
+            Event::BaseDestroyed { tick, team, by } => {
+                let base = self.base_label(team);
                 let text = match by {
-                    Some(by) if by == owner => format!("{whose} destroyed their own base"),
-                    Some(by) => format!("{} destroyed {whose}'s base", self.player_name(by)),
-                    None => format!("{whose}'s base was destroyed"),
+                    Some(by) if self.team_of(by) == team => format!("{} destroyed their own base", self.player_name(by)),
+                    Some(by) => format!("{} destroyed {base}", self.player_name(by)),
+                    None => capitalised(&format!("{base} fell")),
                 };
                 self.say(tick, text);
                 let me = self.my_id;
                 match by {
-                    _ if owner == me => self.alert(tick, if by == Some(me) { "You destroyed your own base".to_string() } else { "Your base is destroyed".to_string() }, false),
-                    Some(by) if by == me => self.alert(tick, format!("You destroyed {whose}'s base"), true),
+                    _ if self.team_of(me) == team => self.alert(tick, if by == Some(me) { "You destroyed your own base".to_string() } else { "Your base is destroyed".to_string() }, false),
+                    Some(by) if by == me => self.alert(tick, format!("You destroyed {base}"), true),
                     _ => {}
                 }
-                if let Some(b) = self.bases.iter_mut().find(|b| b.owner == owner) {
+                if let Some(b) = self.bases.iter_mut().find(|b| b.team == team) {
                     b.hp = 0;
                     let j = b.slot as usize;
                     if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| j < r.x.len()) {
@@ -609,7 +648,7 @@ impl World {
                         self.effects.push_back(Effect { tick, at, kind: EffectKind::BaseDestroyed });
                     }
                 }
-                if let Some(p) = by.filter(|by| *by != owner).and_then(|by| self.players.get_mut(&by)) {
+                if let Some(p) = by.and_then(|by| self.players.get_mut(&by)).filter(|p| p.team != team) {
                     p.captures += 1;
                 }
             }
@@ -619,7 +658,7 @@ impl World {
                 self.sieges.clear();
                 self.winner = winner;
                 let text = match winner {
-                    Some(w) => format!("{} wins the round", self.player_name(w)),
+                    Some(w) => format!("{} wins the round", self.team_label(w)),
                     None => "Round over".to_string(),
                 };
                 self.say(tick, text);

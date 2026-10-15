@@ -16,7 +16,7 @@ use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
 use gsim_proto::shop::{self, Upgrade, PICKUP_RADIUS, TIERS};
-use gsim_proto::{GameMode, Items, Twist, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, MINE_SECONDS};
+use gsim_proto::{GameMode, Items, TeamId, Twist, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, MINE_SECONDS};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -518,7 +518,16 @@ impl Game {
                 self.status = Some((why.to_string(), get_time() + 2.0));
             }
         }
-        let mut enemy_bases: Vec<u32> = world.bases.iter().filter(|b| b.hp > 0 && b.owner != world.my_id && alive(b.slot)).map(|b| b.slot).collect();
+        let my_team = world.team_of(world.my_id);
+        // A team's colour: with teams, the team's own; otherwise its player's.
+        let team_colour = |team: TeamId| {
+            if world.in_teams() {
+                style::team_colour(team)
+            } else {
+                world.members(team).first().and_then(|id| world.players.get(id)).map_or(style::DIM, |p| style::rgb(p.color))
+            }
+        };
+        let mut enemy_bases: Vec<u32> = world.bases.iter().filter(|b| b.hp > 0 && b.team != my_team && alive(b.slot)).map(|b| b.slot).collect();
         if let Some(ship) = own {
             let far = |slot: &u32| {
                 let b = body(*slot);
@@ -860,15 +869,16 @@ impl Game {
             let s = view.to_screen(at.x, at.y);
             let radius = row.props.radius[j];
             let r_px = (radius / view.mpp) as f32;
-            let owner = world.players.get(&b.owner);
-            let colour = owner.map_or(style::DIM, |p| style::rgb(p.color));
-            let name = owner.map_or("?", |p| p.name.as_str());
-            let mine = b.owner == world.my_id;
+            let members = world.members(b.team);
+            let colour = team_colour(b.team);
+            let label = world.team_label(b.team);
+            let name = label.as_str();
+            let mine = b.team == my_team && my_team != 0;
             let health = b.hp as f32 / BASE_HP as f32;
             // Around one's own base: the home zone, where shells cost nothing (brighter while
             // inside it), drawn even when the base itself is off screen. Around the others:
             // where a siege orbit has to stay.
-            let zone_radii = owner.map_or(gsim_proto::HOME_RADII, |p| shop::zone_radii(&p.upgrades));
+            let zone_radii = members.first().and_then(|id| world.players.get(id)).map_or(gsim_proto::HOME_RADII, |p| shop::zone_radii(&p.upgrades));
             let home = (zone_radii * radius / view.mpp) as f32;
             let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
             if b.hp > 0 && mine && home > 14.0 * ui {
@@ -918,7 +928,7 @@ impl Game {
                 }
                 continue;
             }
-            let besieged = world.sieges.iter().any(|x| x.1 == b.owner);
+            let besieged = world.sieges.iter().any(|x| x.1 == b.team);
             style::base(s, r_px, colour, health, besieged, b.slot, ui);
             let top = r_px.max(6.0 * ui).min(4000.0) + 16.0 * ui;
             if b.hp > 0 {
@@ -1192,6 +1202,10 @@ impl Game {
             let fuel = p.ship.as_ref().map_or(0, |t| t.last().fuel);
             let color = style::rgb(p.color);
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
+            if world.in_teams() && p.team != 0 {
+                // Which side it is on: a ring in the team's colour.
+                style::ring(s.0, s.1, 12.0 * ui, 1.2 * ui, style::alpha(style::team_colour(p.team), 0.75));
+            }
             if p.shield {
                 style::ship_shield(s, *id, ui);
             }
@@ -1289,15 +1303,24 @@ impl Game {
         let shells_max = me.map_or(world.rules.shell_max, |m| m.magazine.max);
         let (shells, next_shell) = me.map_or((0, 0.0), |m| (m.magazine.at(tick_f as Tick, &world.rules), m.magazine.next(tick_f as Tick, &world.rules)));
         // In a round of bases the first column is the base's health, and the board is in that order.
+        // With teams, a team's players together, the base's health in the team's colour.
         let base_hp = |id: &PlayerId| world.base_of(*id).map_or(-1, |b| b.hp as i64);
-        let mut scores: Vec<(String, i64, u32, u32, u32, bool, Color)> = world
+        let mut scores: Vec<ScoreRow> = world
             .players
             .iter()
             .filter(|(_, p)| !p.spectating)
-            .map(|(id, p)| (p.name.clone(), if bases { base_hp(id) } else { p.score(&world.rules) }, p.kills, p.deaths, p.captures, *id == world.my_id, style::rgb(p.color)))
+            .map(|(id, p)| ScoreRow {
+                name: p.name.clone(),
+                score: if bases { base_hp(id) } else { p.score(&world.rules) },
+                counts: [p.captures, p.kills, p.deaths],
+                mine: *id == world.my_id,
+                colour: style::rgb(p.color),
+                team: p.team,
+            })
             .collect();
+        let teams_on = world.in_teams();
         let watchers: Vec<(String, Color)> = world.players.values().filter(|p| p.spectating).map(|p| (p.name.clone(), style::rgb(p.color))).collect();
-        scores.sort_by(|a, b| b.1.cmp(&a.1).then(a.3.cmp(&b.3)));
+        scores.sort_by(|a, b| b.score.cmp(&a.score).then(a.team.cmp(&b.team)).then(a.counts[2].cmp(&b.counts[2])));
         let secs = |t: Tick| (t as f64 - tick_f).max(0.0) / world.rules.tick_hz as f64;
         let round_left = world.round_end_tick.map(secs);
         // Bases: how long until sudden death (0 once it is on).
@@ -1330,16 +1353,15 @@ impl Game {
         let besiegers: Vec<(String, Color)> = world
             .sieges
             .iter()
-            .filter(|x| x.1 == world.my_id)
+            .filter(|x| x.1 == my_team && my_team != 0)
             .map(|x| (world.player_name(x.0).to_string(), world.players.get(&x.0).map_or(style::DIM, |p| style::rgb(p.color))))
             .collect();
         let siege = siege_of.and_then(|slot| world.base_on(slot)).map(|b| {
-            let owner = world.players.get(&b.owner);
-            let name = owner.map_or("?".to_string(), |p| p.name.to_uppercase());
-            let colour = owner.map_or(style::DIM, |p| style::rgb(p.color));
+            let name = world.team_label(b.team).to_uppercase();
+            let colour = team_colour(b.team);
             let j = b.slot as usize;
             let state = own.map(|ship| orbit_status(&ship, &body(b.slot), row.props.pull[j], row.props.radius[j], &world.rules));
-            let on = world.sieges.iter().any(|x| x.0 == world.my_id && x.1 == b.owner);
+            let on = world.sieges.iter().any(|x| x.0 == world.my_id && x.1 == b.team);
             (name, colour, health(b), state.map(|o| (o, row.props.radius[j])), on)
         });
         let out = spectating && bases && world.base_of(world.my_id).is_some_and(|b| b.hp == 0);
@@ -1347,7 +1369,7 @@ impl Game {
         let mining = world.holds.get(&world.my_id).filter(|h| world.mines.iter().any(|m| m.slot == h.0)).map(|h| (h.1 % mine_every.max(1)) as f32 / mine_every.max(1) as f32);
         // Crystals turning up soon.
         let crystals_in = world.crystals_due.map(|t| (t as f64 - tick_f) / world.rules.tick_hz as f64).filter(|s| (0.0..10.0).contains(s) && bases && world.next_round_tick.is_none());
-        let winner = world.winner.map(|w| world.player_name(w).to_string());
+        let winner = world.winner.map(|w| world.team_label(w));
         // Under the clock: what is going on around us right now, as gauges (what, how far, colour),
         // then what just happened to us (fading out after a few seconds).
         let mut happening: Vec<(String, Option<String>, f32, Color)> = Vec::new();
@@ -1461,7 +1483,7 @@ impl Game {
                             let verdict = match (bases, &winner, scores.first()) {
                                 (true, Some(w), _) => format!("{w} wins"),
                                 (true, None, _) => "Nobody won".to_string(),
-                                (false, _, Some(best)) if best.1 > 0 => format!("{} wins with {}", best.0, best.1),
+                                (false, _, Some(best)) if best.score > 0 => format!("{} wins with {}", best.name, best.score),
                                 _ => "Nobody scored".to_string(),
                             };
                             ui.label(RichText::new(verdict).heading().color(gold));
@@ -1595,17 +1617,18 @@ impl Game {
                             style::caption(ui, head);
                         }
                         ui.end_row();
-                        for (name, score, k, d, caps, mine, colour) in &scores {
-                            let name = RichText::new(name).color(style::c32(*colour));
-                            ui.label(if *mine { name.underline() } else { name });
-                            let first = match (bases, *score) {
+                        for row in &scores {
+                            let name = RichText::new(&row.name).color(style::c32(row.colour));
+                            ui.label(if row.mine { name.underline() } else { name });
+                            let first = match (bases, row.score) {
                                 (false, s) => s.to_string(),
                                 (true, hp) if hp > 0 => format!("{:.0}%", 100.0 * hp as f32 / BASE_HP as f32),
                                 (true, 0) => "down".to_string(),
                                 (true, _) => "-".to_string(),
                             };
-                            ui.label(RichText::new(first).color(style::c32(style::TEXT)).strong());
-                            for n in [caps, k, d] {
+                            let base_colour = if teams_on { style::team_colour(row.team) } else { style::TEXT };
+                            ui.label(RichText::new(first).color(style::c32(base_colour)).strong());
+                            for n in row.counts {
                                 ui.label(RichText::new(n.to_string()).color(dim));
                             }
                             ui.end_row();
@@ -2120,4 +2143,16 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, s
         ui.label(RichText::new("A lost ship loses one tier of each ship upgrade.").small().color(dim));
     });
     bought
+}
+
+/// A line of the scoreboard.
+struct ScoreRow {
+    name: String,
+    /// Points, or with bases the health of the player's base (-1 for none).
+    score: i64,
+    /// Captures (with bases: bases destroyed), kills, deaths.
+    counts: [u32; 3],
+    mine: bool,
+    colour: Color,
+    team: TeamId,
 }

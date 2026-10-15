@@ -191,13 +191,12 @@ impl Session {
                     for b in &mut w.bases {
                         let hp = bases.iter().find(|new| new.slot == b.slot).map_or(b.hp, |new| new.hp);
                         b.hp = if b.hp == 0 { 0 } else { hp };
-                        b.owner = bases.iter().find(|new| new.slot == b.slot).map_or(b.owner, |new| new.owner);
                     }
                     w.sieges = sieges;
                     let mines: Vec<u32> = w.mines.iter().map(|s| s.slot).collect();
                     w.holds = holds.into_iter().filter(|h| mines.contains(&h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
-                    let me = w.my_id;
-                    for (_, by) in hits.into_iter().filter(|h| h.0 == me && h.1 != me) {
+                    let (me, mine) = (w.my_id, w.team_of(w.my_id));
+                    for (_, by) in hits.into_iter().filter(|h| h.0 == mine && mine != 0 && h.1 != me) {
                         let text = format!("{} is hitting your base", w.player_name(by));
                         w.alert(w.head, text, false);
                     }
@@ -228,8 +227,20 @@ impl Session {
                 _ => "plenty of scrap",
             };
             let mines = if w.roll.mines > 0 { ", a mine more" } else { "" };
+            let teams = if w.roll.teams > 1 { format!(", teams of {}", w.roll.teams) } else { String::new() };
             let twist = w.roll.twist;
-            self.log(now, ChatKind::System, None, format!("This round: {scrap}{mines}, {} ({})", twist.name(), twist.about()));
+            self.log(now, ChatKind::System, None, format!("This round: {scrap}{mines}{teams}, {} ({})", twist.name(), twist.about()));
+            if world.in_teams() {
+                // Who plays with whom.
+                let mut teams: Vec<TeamId> = w.bases.iter().map(|b| b.team).collect();
+                teams.sort_unstable();
+                let line: Vec<String> = teams.iter().map(|t| format!("{}: {}", world.team_label(*t), world.members(*t).iter().map(|id| world.player_name(*id)).collect::<Vec<_>>().join(", "))).collect();
+                self.log(now, ChatKind::System, None, line.join("  ·  "));
+                let mine = world.team_of(w.your_id);
+                if mine != 0 {
+                    world.alert(w.massive.tick, format!("You play for {}", team_name(mine)), true);
+                }
+            }
             if twist != Twist::Plain {
                 world.alert(w.massive.tick, format!("{} · {}", twist.name().to_uppercase(), twist.about()), true);
             }

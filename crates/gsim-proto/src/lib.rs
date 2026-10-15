@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -15,6 +15,8 @@ pub const MAX_CHAT_CHARS: usize = 200;
 pub type PlayerId = u32;
 pub type ShellId = u32;
 pub type PieceId = u32;
+/// A side in a round of bases: one player, or several sharing a base (0: none).
+pub type TeamId = u32;
 
 pub mod command;
 pub mod identity;
@@ -81,6 +83,8 @@ pub struct PlayerInfo {
     pub magazine: Magazine,
     /// Watching, with no ship.
     pub spectating: bool,
+    /// Their side in a round of bases.
+    pub team: TeamId,
     /// The ship survives one shell.
     pub shield: bool,
     /// What the ship carries, what is banked at home, and what has been bought.
@@ -120,6 +124,8 @@ pub struct Roll {
     pub scrap: u32,
     /// Mines beyond the usual.
     pub mines: u32,
+    /// Players on a team (1: every one for themselves).
+    pub teams: u32,
     pub twist: Twist,
 }
 
@@ -198,10 +204,17 @@ pub const REPAIR_HP: u32 = BASE_HP / 5;
 /// spawn inside it, and it is as far as the base pulls ships in full.
 pub const HOME_RADII: f64 = 100.0;
 
-/// A player's base: a body that does not move. It is gone (a hulk) at 0 hp.
+/// What teams are called (and coloured), from team 1 on.
+pub const TEAM_NAMES: [&str; 8] = ["red", "blue", "green", "gold", "violet", "cyan", "orange", "white"];
+
+pub fn team_name(team: TeamId) -> &'static str {
+    TEAM_NAMES[(team.max(1) as usize - 1) % TEAM_NAMES.len()]
+}
+
+/// A team's base: a body that does not move. It is gone (a hulk) at 0 hp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Base {
-    pub owner: PlayerId,
+    pub team: TeamId,
     pub slot: u32,
     pub hp: u32,
 }
@@ -291,7 +304,7 @@ pub struct Welcome {
 /// Reliable, ordered, tick-stamped facts. A `tick` is the first tick at which the fact holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    PlayerJoined { id: PlayerId, name: String, color: [u8; 3] },
+    PlayerJoined { id: PlayerId, name: String, color: [u8; 3], team: TeamId },
     PlayerColor { id: PlayerId, color: [u8; 3] },
     PlayerLeft { id: PlayerId },
     /// From `tick` on the player watches (and has no ship), or plays again (and gets one).
@@ -322,10 +335,10 @@ pub enum Event {
     Warped { tick: Tick, player: PlayerId },
     /// The shield of `player`'s ship took a shell and is gone.
     ShieldSpent { tick: Tick, player: PlayerId },
-    /// `by` brought the base of `owner` down to 0 hp.
-    BaseDestroyed { tick: Tick, owner: PlayerId, by: Option<PlayerId> },
-    /// Scores are final; a new world starts at `next_round_tick`. `winner`: the last player in play.
-    RoundOver { tick: Tick, next_round_tick: Tick, winner: Option<PlayerId> },
+    /// `by` (nobody: sudden death) brought the base of `team` down to 0 hp.
+    BaseDestroyed { tick: Tick, team: TeamId, by: Option<PlayerId> },
+    /// Scores are final; a new world starts at `next_round_tick`. `winner`: the last team in play.
+    RoundOver { tick: Tick, next_round_tick: Tick, winner: Option<TeamId> },
     /// These pieces are floating free from `tick` on.
     Pieces { tick: Tick, pieces: Vec<PieceInfo> },
     /// The piece is gone from `tick` on: taken by `by`, or lost (crashed, or far out).
@@ -359,10 +372,10 @@ pub enum ServerMsg {
     /// a qualifying orbit around which body for how many ticks.
     Progress { objectives: Vec<Objective>, holds: Vec<(PlayerId, u32, u32)> },
     /// Unreliable, a few times a second while bases change: their health, who is besieging
-    /// whose base (player, base owner), and who has held an orbit around which special body
-    /// for how many ticks (player, slot, ticks).
-    /// `hits`: (base owner, by whom) for every base hurt since the last of these.
-    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, PlayerId)>, holds: Vec<(PlayerId, u32, u32)>, hits: Vec<(PlayerId, PlayerId)> },
+    /// whose base (player, team), and who has held an orbit around which mine for how many
+    /// ticks (player, slot, ticks).
+    /// `hits`: (team, by whom) for every base hurt since the last of these.
+    Bases { bases: Vec<Base>, sieges: Vec<(PlayerId, TeamId)>, holds: Vec<(PlayerId, u32, u32)>, hits: Vec<(TeamId, PlayerId)> },
     /// Unreliable safety net: authoritative ship state at the start of `tick`.
     ShipCheck { tick: Tick, player: PlayerId, state: ShipState },
 }

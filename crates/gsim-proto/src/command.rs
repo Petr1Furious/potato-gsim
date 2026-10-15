@@ -106,6 +106,18 @@ pub const COMMANDS: &[Command] = &[
     },
     Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
     Command {
+        name: "teams",
+        help: "teams in the next rounds of bases: rolled, none, of 2 or of 3",
+        op: true,
+        params: &[req("roll|off|2|3", Arg::Word(&["roll", "off", "2", "3"]))],
+    },
+    Command {
+        name: "team",
+        help: "put a player on a team (1 red, 2 blue, ...) in the next rounds with teams",
+        op: true,
+        params: &[req("player", Arg::Player), req("number|none", Arg::Number)],
+    },
+    Command {
         name: "twist",
         help: "the twist of the next rounds of bases, or random",
         op: true,

@@ -155,6 +155,15 @@ impl Upgrades {
         self.0[u.index()] = (self.0[u.index()] + 1).min(TIERS);
     }
 
+    /// These tiers for the ship, and those of `base` for the base.
+    pub fn with_base(&self, base: &Upgrades) -> Upgrades {
+        let mut ups = *self;
+        for u in Upgrade::BASE {
+            ups.0[u.index()] = base.0[u.index()];
+        }
+        ups
+    }
+
     /// One tier less of everything for the ship (when it is lost).
     pub fn lower_ship(&mut self) {
         for u in Upgrade::SHIP {

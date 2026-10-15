@@ -28,7 +28,7 @@ fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(open_space(), seed);
     sim.server.set_rounds(0, 600, None);
     sim.server.state.op("ann");
-    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain, teams: 1 });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);
@@ -38,11 +38,11 @@ fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
 }
 
 fn hp(sim: &Sim, owner: PlayerId) -> u32 {
-    sim.server.bases().iter().find(|b| b.owner == owner).unwrap().hp
+    sim.server.base_of_player(owner).unwrap().hp
 }
 
 fn base_at(sim: &Sim, owner: PlayerId) -> (usize, f64, f64) {
-    let j = sim.server.bases().iter().find(|b| b.owner == owner).unwrap().slot as usize;
+    let j = sim.server.base_of_player(owner).unwrap().slot as usize;
     (j, sim.server.massive.x[j], sim.server.massive.y[j])
 }
 
@@ -219,7 +219,7 @@ fn late_players_watch_and_returning_owners_get_their_base_back() {
     assert_ne!(new_bob, bob);
     assert_eq!(sim.server.spectating(new_bob), Some(false));
     assert!(sim.server.ship(new_bob).is_some());
-    assert!(sim.server.bases().iter().any(|base| base.owner == new_bob));
+    assert!(sim.server.base_of_player(new_bob).is_some());
     assert_eq!(sim.server.round(), round);
     assert!(sim.clients[a].session.world.as_ref().unwrap().base_of(new_bob).is_some());
 }

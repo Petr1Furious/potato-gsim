@@ -29,39 +29,82 @@ const RAM_DAMAGE: u32 = 600;
 /// What a ship on a qualifying orbit around an enemy base takes off per second.
 const SIEGE_PER_SECOND: u32 = 60;
 
+/// A team's base, and what the team shares: its bank and the upgrades bought for the base.
 pub(super) struct BaseState {
-    pub owner: PlayerId,
-    /// The owner's name: whoever comes back under it gets the base back.
-    pub name: String,
+    pub team: TeamId,
+    /// The names of its players: whoever comes back under one gets their place back.
+    pub names: Vec<String>,
     pub slot: u32,
     pub hp: u32,
+    pub bank: Purse,
+    /// Only the tiers for the base (see [`Upgrade::BASE`]).
+    pub upgrades: Upgrades,
 }
 
 impl Authority {
     pub(super) fn base_list(&self) -> Vec<Base> {
-        self.bases.iter().map(|b| Base { owner: b.owner, slot: b.slot, hp: b.hp }).collect()
+        self.bases.iter().map(|b| Base { team: b.team, slot: b.slot, hp: b.hp }).collect()
     }
 
-    /// One base for everyone who plays (not those an operator set to watch), evenly on a ring
-    /// around the centre. Called with the new world's bodies, before it is built.
+    /// One base for every team (made of everyone who plays, not those an operator set to
+    /// watch, as the round rolled), evenly on a ring around the centre. Called with the new
+    /// world's bodies, before it is built.
     pub(super) fn lay_bases(&mut self, sc: &mut Scenario) {
         self.bases.clear();
+        for p in self.players.values_mut() {
+            p.team = 0;
+        }
         let bases = self.mode == GameMode::Bases;
         self.rules.base_reach = if bases { REACH_RADII * BASE_RADIUS } else { 0.0 };
         if !bases {
             return;
         }
-        let owners: Vec<(PlayerId, String)> = self.players.values().filter(|p| !p.spectating).map(|p| (p.id, p.name.clone())).collect();
+        let teams = self.form_teams();
         // Out where ships of the targets mode would spawn, as far apart as the world allows.
-        let (ring, n) = (sc.spawn_r.1, owners.len().max(1) as f64);
+        let (ring, n) = (sc.spawn_r.1, teams.len().max(1) as f64);
         let phase = self.rng.angle();
-        for (k, (owner, name)) in owners.into_iter().enumerate() {
+        for (k, members) in teams.into_iter().enumerate() {
+            let team = k as TeamId + 1;
             let a = phase + std::f64::consts::TAU * k as f64 / n;
             let slot = sc.bodies.len() as u32;
             sc.bodies.push(gsim_core::Body { x: ring * a.cos(), y: ring * a.sin(), vx: 0.0, vy: 0.0, mass: BASE_MASS, radius: BASE_RADIUS });
-            sc.names.push((slot, format!("{name}'s base")));
-            self.bases.push(BaseState { owner, name, slot, hp: BASE_HP });
+            let names: Vec<String> = members.iter().filter_map(|id| self.players.get(id)).map(|p| p.name.clone()).collect();
+            let label = if self.roll.teams > 1 { format!("{} base", capitalised(team_name(team))) } else { format!("{}'s base", names[0]) };
+            sc.names.push((slot, label));
+            for id in &members {
+                if let Some(p) = self.players.get_mut(id) {
+                    p.team = team;
+                }
+            }
+            self.bases.push(BaseState { team, names, slot, hp: BASE_HP, bank: Purse::default(), upgrades: Upgrades::default() });
         }
+    }
+
+    /// Who plays on which team this round: everyone on their own, or split at random into
+    /// teams of the size the round rolled (as even as they come; an operator's picks first).
+    fn form_teams(&mut self) -> Vec<Vec<PlayerId>> {
+        let mut playing: Vec<PlayerId> = self.players.values().filter(|p| !p.spectating).map(|p| p.id).collect();
+        let size = self.roll.teams.max(1) as usize;
+        if size == 1 {
+            return playing.into_iter().map(|id| vec![id]).collect();
+        }
+        // Shuffled, then dealt out in turn.
+        for k in (1..playing.len()).rev() {
+            let j = (self.scrap_rng.u64() % (k as u64 + 1)) as usize;
+            playing.swap(k, j);
+        }
+        let count = playing.len().div_ceil(size).max(2);
+        let mut teams: Vec<Vec<PlayerId>> = vec![Vec::new(); count];
+        let pinned = |a: &Authority, id: &PlayerId| a.players.get(id).and_then(|p| a.team_picks.get(&p.name)).map(|t| (*t as usize - 1) % count);
+        for id in playing.iter().filter(|id| pinned(self, id).is_some()) {
+            teams[pinned(self, id).unwrap()].push(*id);
+        }
+        for id in playing.iter().filter(|id| pinned(self, id).is_none()) {
+            let k = (0..count).min_by_key(|k| teams[*k].len()).unwrap();
+            teams[k].push(*id);
+        }
+        teams.retain(|t| !t.is_empty());
+        teams
     }
 
     /// Fix the bases of the world just built in place.
@@ -71,8 +114,15 @@ impl Authority {
         }
     }
 
+    /// The player's team's base.
     pub(super) fn base_of(&self, player: PlayerId) -> Option<&BaseState> {
-        self.bases.iter().find(|b| b.owner == player)
+        let team = self.players.get(&player).map_or(0, |p| p.team);
+        self.bases.iter().find(|b| b.team == team && team != 0)
+    }
+
+    pub(super) fn base_of_mut(&mut self, player: PlayerId) -> Option<&mut BaseState> {
+        let team = self.players.get(&player).map_or(0, |p| p.team);
+        self.bases.iter_mut().find(|b| b.team == team && team != 0)
     }
 
     /// In the bases mode a ship respawns while its base stands (and, on an operator's word,
@@ -85,10 +135,9 @@ impl Authority {
     /// [`shop::zone_radii`]), where shells cost nothing and cargo is banked.
     pub(super) fn at_home(&self, player: PlayerId) -> bool {
         let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
-        let Some(p) = self.players.get(&player) else { return false };
-        let Some(s) = p.ship else { return false };
+        let Some(s) = self.players.get(&player).and_then(|p| p.ship) else { return false };
         let (m, j) = (&self.massive, b.slot as usize);
-        let zone = shop::zone_radii(&p.upgrades) * m.radius[j];
+        let zone = shop::zone_radii(&b.upgrades) * m.radius[j];
         (s.p.x - m.x[j]).powi(2) + (s.p.y - m.y[j]).powi(2) <= zone * zone
     }
 
@@ -115,8 +164,7 @@ impl Authority {
     /// `by` hurts the base on `slot` (their own too: shells and rams do not tell friend from
     /// foe), if it still stands, as much as its armour lets them.
     pub(super) fn damage_base(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
-        let owner = self.bases.iter().find(|b| b.slot == slot).map(|b| b.owner);
-        let amount = owner.and_then(|o| self.players.get(&o)).map_or(amount, |p| shop::armoured(amount, &p.upgrades));
+        let amount = self.bases.iter().find(|b| b.slot == slot).map_or(amount, |b| shop::armoured(amount, &b.upgrades));
         self.hurt(tick, slot, Some(by), amount);
     }
 
@@ -124,21 +172,22 @@ impl Authority {
     fn hurt(&mut self, tick: Tick, slot: u32, by: Option<PlayerId>, amount: u32) {
         let Some(b) = self.bases.iter_mut().find(|b| b.slot == slot && b.hp > 0) else { return };
         b.hp = b.hp.saturating_sub(amount);
-        let (owner, left) = (b.owner, b.hp);
+        let (team, left) = (b.team, b.hp);
         self.bases_changed = true;
-        if let Some(by) = by.filter(|by| !self.base_hits.contains(&(owner, *by))) {
-            self.base_hits.push((owner, by));
+        if let Some(by) = by.filter(|by| !self.base_hits.contains(&(team, *by))) {
+            self.base_hits.push((team, by));
         }
         if left > 0 {
             return;
         }
-        if let Some(p) = by.filter(|by| *by != owner).and_then(|by| self.players.get_mut(&by)) {
+        if let Some(p) = by.and_then(|by| self.players.get_mut(&by)).filter(|p| p.team != team) {
             p.captures += 1;
         }
-        self.event(Event::BaseDestroyed { tick, owner, by });
-        // Somebody waiting for a ship gets none.
-        if self.players.get(&owner).is_some_and(|p| p.ship.is_none()) {
-            self.eliminate(owner);
+        self.event(Event::BaseDestroyed { tick, team, by });
+        // Whoever is waiting for a ship gets none.
+        let waiting: Vec<PlayerId> = self.players.values().filter(|p| p.team == team && p.ship.is_none()).map(|p| p.id).collect();
+        for id in waiting {
+            self.eliminate(id);
         }
     }
 
@@ -152,11 +201,11 @@ impl Authority {
         if playing {
             for p in self.players.values() {
                 let Some(ship) = p.ship else { continue };
-                for b in self.bases.iter().filter(|b| b.hp > 0 && b.owner != p.id) {
+                for b in self.bases.iter().filter(|b| b.hp > 0 && b.team != p.team) {
                     let (m, j) = (&self.massive, b.slot as usize);
                     let body = Particle { x: m.x[j], y: m.y[j], vx: m.vx[j], vy: m.vy[j] };
                     if orbit_status(&ship.p, &body, m.pull[j], m.radius[j], &rules).ok {
-                        sieges.push((p.id, b.owner));
+                        sieges.push((p.id, b.team));
                     }
                 }
             }
@@ -164,12 +213,12 @@ impl Authority {
         // Spread evenly over the ticks of a second, in whole points (as much a second as the
         // armour lets through).
         let hz = rules.tick_hz.max(1) as Tick;
-        for (by, owner) in sieges.clone() {
-            let rate = self.players.get(&owner).map_or(SIEGE_PER_SECOND, |p| shop::armoured(SIEGE_PER_SECOND, &p.upgrades)) as Tick;
+        for (by, team) in sieges.clone() {
+            let Some(b) = self.bases.iter().find(|b| b.team == team) else { continue };
+            let rate = shop::armoured(SIEGE_PER_SECOND, &b.upgrades) as Tick;
             let per_tick = (rate * (tick % hz + 1) / hz - rate * (tick % hz) / hz) as u32;
-            if let Some(slot) = self.base_of(owner).map(|b| b.slot) {
-                self.hurt(tick, slot, Some(by), per_tick);
-            }
+            let slot = b.slot;
+            self.hurt(tick, slot, Some(by), per_tick);
         }
         // Sudden death: every standing base wears down.
         if playing && self.sudden_death.is_some_and(|t| tick >= t) {
@@ -184,13 +233,16 @@ impl Authority {
             self.sieges = sieges;
             self.bases_changed = true;
         }
-        // Who is left: everyone playing, and whoever dropped out with their base still standing
-        // (they may come back for it).
+        // Which teams are left: those with somebody playing, and those whose players all dropped
+        // out with their base still standing (they may come back for it).
         if playing && self.bases.len() >= 2 {
-            let away = self.bases.iter().filter(|b| b.hp > 0 && !self.players.contains_key(&b.owner)).count();
-            let mut left = self.players.values().filter(|p| !p.spectating).map(|p| p.id);
-            if let (winner, None, 0) = (left.next(), left.next(), away) {
-                self.end_round(tick, winner);
+            let mut left: Vec<TeamId> = self.players.values().filter(|p| !p.spectating && p.team != 0).map(|p| p.team).collect();
+            let away = self.bases.iter().filter(|b| b.hp > 0 && !self.players.values().any(|p| p.team == b.team)).map(|b| b.team);
+            left.extend(away);
+            left.sort_unstable();
+            left.dedup();
+            if left.len() <= 1 {
+                self.end_round(tick, left.first().copied());
             }
         }
         if ((self.bases_changed || !holds.is_empty()) && tick.is_multiple_of(10)) || tick.is_multiple_of(hz) {
@@ -200,12 +252,11 @@ impl Authority {
         }
     }
 
-    /// A player who comes back under the name of a base's owner gets it back.
-    pub(super) fn reclaim_base(&mut self, id: PlayerId, name: &str) -> Option<bool> {
-        let b = self.bases.iter_mut().find(|b| b.name == name)?;
-        b.owner = id;
-        self.bases_changed = true;
-        Some(b.hp > 0)
+    /// A player who comes back under the name of one of a team's players gets their place on
+    /// it back: (the team, whether its base stands).
+    pub(super) fn reclaim_base(&self, name: &str) -> Option<(TeamId, bool)> {
+        let b = self.bases.iter().find(|b| b.names.iter().any(|n| n == name))?;
+        Some((b.team, b.hp > 0))
     }
 
     /// Switch modes: a new round starts in the new one (once somebody is here).
@@ -220,7 +271,7 @@ impl Authority {
         self.mode
     }
 
-    /// (owner, slot, hp) of every base.
+    /// (team, slot, hp) of every base.
     pub fn bases(&self) -> Vec<Base> {
         self.base_list()
     }
@@ -228,13 +279,23 @@ impl Authority {
     pub fn spectating(&self, player: PlayerId) -> Option<bool> {
         self.players.get(&player).map(|p| p.spectating)
     }
+
+    /// The player's team (0: none).
+    pub fn team(&self, player: PlayerId) -> Option<TeamId> {
+        self.players.get(&player).map(|p| p.team)
+    }
+
+    /// The player's team's base.
+    pub fn base_of_player(&self, player: PlayerId) -> Option<Base> {
+        self.base_of(player).map(|b| Base { team: b.team, slot: b.slot, hp: b.hp })
+    }
 }
 
 /// Damage numbers, for tests.
 pub const DAMAGE: (u32, u32, u32) = (SHELL_DAMAGE, RAM_DAMAGE, SIEGE_PER_SECOND);
 
 impl Authority {
-    /// Test hook: `by` takes `amount` off the base of `owner`.
+    /// Test hook: `by` takes `amount` off the base of `owner`'s team.
     pub fn hurt_base(&mut self, owner: PlayerId, by: PlayerId, amount: u32) {
         let tick = self.tick();
         if let Some(slot) = self.base_of(owner).map(|b| b.slot) {
@@ -254,9 +315,13 @@ impl Authority {
         }
         let rng = &mut self.scrap_rng;
         let mut pick = |n: usize| (rng.u64() % n as u64) as usize;
-        let rolled = Roll { scrap: [60, 100, 100, 160][pick(4)], mines: pick(2) as u32, twist: Twist::ALL[pick(Twist::ALL.len())] };
-        let twist = self.forced_twist.unwrap_or(rolled.twist);
-        self.roll = self.fixed_roll.unwrap_or(Roll { twist, ..rolled });
+        // Teams only with four or more playing: of two, or of three with six or more.
+        let playing = self.players.values().filter(|p| !p.spectating).count();
+        let sizes: Vec<u32> = [1, 2, 3].into_iter().filter(|k| *k == 1 || playing >= 2 * *k as usize).collect();
+        let teams = sizes[pick(sizes.len())];
+        let rolled = Roll { scrap: [60, 100, 100, 160][pick(4)], mines: pick(2) as u32, twist: Twist::ALL[pick(Twist::ALL.len())], teams };
+        let (twist, teams) = (self.forced_twist.unwrap_or(rolled.twist), self.forced_teams.unwrap_or(rolled.teams));
+        self.roll = self.fixed_roll.unwrap_or(Roll { twist, teams, ..rolled });
         let r = &mut self.rules;
         match self.roll.twist {
             Twist::DeepTanks => (r.fuel_max_mmps, r.regen_per_tick_mmps) = (2 * r.fuel_max_mmps, 2 * r.regen_per_tick_mmps),
@@ -275,4 +340,10 @@ impl Authority {
     pub fn roll(&self) -> Roll {
         self.roll
     }
+}
+
+/// "Red" for "red".
+fn capitalised(word: &str) -> String {
+    let mut c = word.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }

@@ -29,7 +29,7 @@ fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(open_space(), seed);
     sim.server.set_rounds(0, 600, None);
     sim.server.state.op("ann");
-    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain, teams: 1 });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);
@@ -54,7 +54,7 @@ fn take_scrap(sim: &mut Sim, who: PlayerId) {
 
 /// Back on a circular orbit around one's own base.
 fn go_home(sim: &mut Sim, who: PlayerId) {
-    let j = sim.server.bases().iter().find(|b| b.owner == who).unwrap().slot as usize;
+    let j = sim.server.base_of_player(who).unwrap().slot as usize;
     let m = &sim.server.massive;
     let r = 50.0 * m.radius[j];
     let v = (sim.server.rules.g * m.pull[j] / r).sqrt();

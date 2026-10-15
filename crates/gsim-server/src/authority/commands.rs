@@ -186,7 +186,7 @@ impl Authority {
     fn destroy(&mut self, id: PlayerId) -> Result<(), String> {
         self.ship_of(id)?;
         let tick = self.tick();
-        let respawn_tick = tick + self.players.get(&id).map_or(self.rules.respawn_ticks, |p| gsim_proto::shop::respawn_ticks(&self.rules, &p.upgrades)) as Tick;
+        let respawn_tick = tick + self.base_of(id).map_or(self.rules.respawn_ticks, |b| gsim_proto::shop::respawn_ticks(&self.rules, &b.upgrades)) as Tick;
         let playing = self.next_round_tick.is_none();
         self.spill(tick, id);
         if let Some(p) = self.players.get_mut(&id) {
@@ -460,6 +460,39 @@ impl Authority {
                 done(match self.forced_twist {
                     Some(t) => format!("The next rounds of bases have {}", t.name()),
                     None => "The next rounds of bases roll their twist".to_string(),
+                })
+            }
+            "teams" => {
+                self.forced_teams = match args.first().map(String::as_str) {
+                    Some("roll") => None,
+                    Some("off") => Some(1),
+                    Some("2") => Some(2),
+                    Some("3") => Some(3),
+                    _ => return Err(String::new()),
+                };
+                done(match self.forced_teams {
+                    None => "The next rounds of bases roll their teams".to_string(),
+                    Some(1) => "In the next rounds of bases everyone plays on their own".to_string(),
+                    Some(k) => format!("The next rounds of bases have teams of {k}"),
+                })
+            }
+            "team" => {
+                let who = self.select(args.first().ok_or("")?, me)?;
+                let team = match args.get(1).map(String::as_str) {
+                    Some("none") => None,
+                    Some(w) => Some(w.parse::<TeamId>().ok().filter(|t| (1..=8).contains(t)).ok_or("teams are numbered 1 to 8")?),
+                    None => return Err(String::new()),
+                };
+                for id in &who {
+                    let name = self.name_of(*id);
+                    match team {
+                        Some(t) => self.team_picks.insert(name, t),
+                        None => self.team_picks.remove(&name),
+                    };
+                }
+                done(match team {
+                    Some(t) => format!("{} will play for {} in the next rounds with teams", self.names_of(&who), team_name(t)),
+                    None => format!("{} will be put on a team at random", self.names_of(&who)),
                 })
             }
             "give" => {

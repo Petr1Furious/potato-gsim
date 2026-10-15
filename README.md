@@ -128,7 +128,10 @@ Every round of bases rolls how much scrap floats about, whether there is a mine 
 twist: deep tanks (twice the delta-v), quick guns (shells fire and come back twice as fast),
 long shots (faster shells that fly twice as long), scrap rush, crystal fever (crystals at the
 centre every 30 s) or heavy rams (2.5 times the damage to a base), or none; the chat says
-which, and the twist shows by the round number. A round of bases has no time limit: 12 minutes
+which, and the twist shows by the round number. With four or more playing, a round may also be played in
+**teams** of two (or of three, with six or more): split at random, each team shares one base,
+its bank and the upgrades bought for it (ship upgrades stay each player's own), and the last
+team in play wins. Ships wear a ring in their team's colour. A round of bases has no time limit: 12 minutes
 in comes **sudden death**, when every base loses 1 % a second and cannot be repaired.
 
 A round of targets lasts 10 minutes; then the scores are shown and a freshly generated world starts.
@@ -190,6 +193,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | `/target BODY` | Make a body a target |
 | `/targets count N`, `/targets per N` | A fixed number of targets, or one for every N players |
 | `/twist NAME\|random` | The twist of the next rounds of bases (`deep-tanks`, `quick-guns`, ...) |
+| `/teams roll\|off\|2\|3`, `/team PLAYER N\|none` | Teams in the next rounds of bases: rolled, none, or of 2 or 3; put a player on team N (1 red, 2 blue, ...) |
 | `/give scrap\|crystals N [PLAYER]` | Put scrap or crystals in a bank |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |

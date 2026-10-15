@@ -61,15 +61,17 @@ struct Player {
     god: bool,
     /// Watching, with no ship and no respawns.
     spectating: bool,
+    /// Their side in a round of bases (0: none).
+    team: TeamId,
     /// Only until the next round (out of this one, or joined while it was on).
     benched: bool,
     /// The ship survives one shell.
     shield: bool,
     /// Fires and reloads twice as fast, with twice the shells (from ammo, until the ship is lost).
     quick: bool,
-    /// What the ship carries, what is banked at home, and what has been bought.
+    /// What the ship carries, and the upgrades bought for it (those for the base, and the bank,
+    /// are the team's: see `BaseState`).
     cargo: Purse,
-    bank: Purse,
     upgrades: Upgrades,
     items: Items,
     /// Who `/r` answers.
@@ -184,6 +186,9 @@ pub struct Authority {
     roll: Roll,
     /// The twist an operator chose for the rounds to come, or the whole roll (for tests).
     forced_twist: Option<Twist>,
+    /// The team size an operator chose for the rounds to come, and who they put on which team.
+    forced_teams: Option<u32>,
+    team_picks: BTreeMap<String, TeamId>,
     fixed_roll: Option<Roll>,
     /// Scrap and crystals floating free, and when the next cloud of scrap may turn up.
     pieces: Vec<scrap::Piece>,
@@ -224,6 +229,8 @@ impl Authority {
             cloud_due: 0,
             sudden_death: None,
             forced_twist: None,
+            forced_teams: None,
+            team_picks: BTreeMap::new(),
             fixed_roll: None,
             roll: Roll::default(),
             plain_rules: rules.clone(),
@@ -413,11 +420,12 @@ impl Authority {
             // First player on an empty server: start a fresh round for them.
             self.start_round();
         }
-        let watch = bases && !restart && !self.reclaim_base(id, &name).unwrap_or(false);
+        let reclaimed = if bases && !restart { self.reclaim_base(&name) } else { None };
+        let watch = bases && !restart && !reclaimed.is_some_and(|r| r.1);
         self.next_player_id += 1;
         // Everyone already here learns about the newcomer; the newcomer learns everything
         // (itself included) from the snapshot.
-        self.event(Event::PlayerJoined { id, name: name.clone(), color });
+        self.event(Event::PlayerJoined { id, name: name.clone(), color, team: reclaimed.map_or(0, |r| r.0) });
         self.players.insert(
             id,
             Player {
@@ -438,11 +446,11 @@ impl Authority {
                 fires: VecDeque::new(),
                 god: false,
                 spectating: watch,
+                team: reclaimed.map_or(0, |r| r.0),
                 benched: watch,
                 shield: false,
                 quick: false,
                 cargo: Purse::default(),
-                bank: Purse::default(),
                 upgrades: Upgrades::default(),
                 items: Items::default(),
                 reply_to: None,
@@ -500,10 +508,11 @@ impl Authority {
                         next_fire_tick: p.next_fire_tick,
                         magazine: p.magazine,
                         spectating: p.spectating,
+                        team: p.team,
                         shield: p.shield,
                         cargo: p.cargo,
-                        bank: p.bank,
-                        upgrades: p.upgrades,
+                        bank: self.bank_of(p.id),
+                        upgrades: self.upgrades_of(p.id),
                         items: p.items,
                     }
                 })
@@ -779,7 +788,7 @@ impl Authority {
             }
         }
         for (victim, killer, body) in deaths {
-            let respawn_tick = next + self.players.get(&victim).map_or(rules.respawn_ticks, |p| shop::respawn_ticks(&rules, &p.upgrades)) as Tick;
+            let respawn_tick = next + self.base_of(victim).map_or(rules.respawn_ticks, |b| shop::respawn_ticks(&rules, &b.upgrades)) as Tick;
             self.spill(next, victim);
             if let Some(p) = self.players.get_mut(&victim) {
                 p.ship = None;
@@ -1150,7 +1159,7 @@ impl Authority {
             p.captures = 0;
             p.hold = None;
             p.shield = false;
-            (p.quick, p.cargo, p.bank, p.upgrades, p.items) = (false, Purse::default(), Purse::default(), Upgrades::default(), Items::default());
+            (p.quick, p.cargo, p.upgrades, p.items) = (false, Purse::default(), Upgrades::default(), Items::default());
             p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }

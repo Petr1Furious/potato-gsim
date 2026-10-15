@@ -212,6 +212,21 @@ pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, s
     }
 }
 
+/// A team's colour (in the order of [`gsim_proto::TEAM_NAMES`]).
+pub fn team_colour(team: gsim_proto::TeamId) -> Color {
+    const COLOURS: [Color; 8] = [
+        Color::new(1.0, 0.42, 0.42, 1.0),
+        Color::new(0.42, 0.66, 1.0, 1.0),
+        Color::new(0.45, 0.92, 0.52, 1.0),
+        Color::new(1.0, 0.82, 0.30, 1.0),
+        Color::new(0.78, 0.52, 1.0, 1.0),
+        Color::new(0.40, 0.92, 0.95, 1.0),
+        Color::new(1.0, 0.62, 0.25, 1.0),
+        Color::new(0.92, 0.92, 0.95, 1.0),
+    ];
+    COLOURS[(team.max(1) as usize - 1) % COLOURS.len()]
+}
+
 /// A shield's colour.
 pub const SHIELD: Color = Color::new(0.62, 0.72, 1.0, 1.0);
 /// A gravity well's.

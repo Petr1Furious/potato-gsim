@@ -176,10 +176,11 @@ impl Authority {
         }
         let home: Vec<PlayerId> = self.players.values().filter(|p| !p.cargo.is_empty()).map(|p| p.id).filter(|id| self.at_home(*id)).collect();
         for id in home {
-            let p = self.players.get_mut(&id).unwrap();
-            let cargo = std::mem::take(&mut p.cargo);
-            p.bank.add(cargo);
-            self.loadout(tick, id);
+            let cargo = std::mem::take(&mut self.players.get_mut(&id).unwrap().cargo);
+            if let Some(b) = self.base_of_mut(id) {
+                b.bank.add(cargo);
+            }
+            self.team_loadout(tick, id);
         }
     }
 
@@ -218,12 +219,33 @@ impl Authority {
     /// hears about it.
     pub(super) fn loadout(&mut self, tick: Tick, player: PlayerId) {
         let rules = self.rules.clone();
+        let (bank, upgrades) = (self.bank_of(player), self.upgrades_of(player));
         let Some(p) = self.players.get_mut(&player) else { return };
         if let Some(ship) = p.ship.as_mut() {
             ship.refit(shop::kit(&rules, &p.upgrades, &p.cargo));
         }
-        let loadout = Loadout { cargo: p.cargo, bank: p.bank, upgrades: p.upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick };
+        let loadout = Loadout { cargo: p.cargo, bank, upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick };
         self.event(Event::Loadout { tick, player, loadout });
+    }
+
+    /// [`Self::loadout`] for everyone on the player's team (who share a bank and a base).
+    fn team_loadout(&mut self, tick: Tick, player: PlayerId) {
+        let team = self.players.get(&player).map_or(0, |p| p.team);
+        let members: Vec<PlayerId> = self.players.values().filter(|p| p.id == player || (team != 0 && p.team == team)).map(|p| p.id).collect();
+        for id in members {
+            self.loadout(tick, id);
+        }
+    }
+
+    /// What the player's team has banked.
+    pub(super) fn bank_of(&self, player: PlayerId) -> Purse {
+        self.base_of(player).map_or(Purse::default(), |b| b.bank)
+    }
+
+    /// The player's upgrades for their ship, and their team's for its base.
+    pub(super) fn upgrades_of(&self, player: PlayerId) -> Upgrades {
+        let ship = self.players.get(&player).map_or(Upgrades::default(), |p| p.upgrades);
+        self.base_of(player).map_or(ship, |b| ship.with_base(&b.upgrades))
     }
 
     /// Something from the shop, for what is banked: only at home (or waiting there for a ship).
@@ -232,11 +254,12 @@ impl Authority {
         let (tick, rules) = (self.tick(), self.rules.clone());
         let home = self.at_home(id) || self.players.get(&id).is_some_and(|p| p.ship.is_none() && p.respawn_tick.is_some() && self.base_alive(id));
         let hp = self.base_of(id).map_or(0, |b| b.hp);
+        let (bank, upgrades) = (self.bank_of(id), self.upgrades_of(id));
         let sudden_death = self.sudden_death.is_some_and(|t| tick >= t);
         let Some(p) = self.players.get_mut(&id) else { return };
         let (name, price, full) = match ware {
             Ware::Upgrade(u) => {
-                let tier = p.upgrades.tier(u) + 1;
+                let tier = upgrades.tier(u) + 1;
                 (u.name(), u.price(tier.min(shop::TIERS)), tier > shop::TIERS)
             }
             Ware::Supply(s) => {
@@ -254,7 +277,7 @@ impl Authority {
             Some("The shop is open only at home".to_string())
         } else if full {
             Some(format!("No more {name} for now"))
-        } else if !p.bank.covers(price) {
+        } else if !bank.covers(price) {
             Some(format!("The {name} costs {}", price.describe()))
         } else {
             None
@@ -262,23 +285,29 @@ impl Authority {
         if let Some(text) = refusal {
             return self.send(Target::One(conn), ServerMsg::Chat(ChatLine { kind: ChatKind::Error, from: None, text }));
         }
-        p.bank.take(price);
         match ware {
-            Ware::Upgrade(u) => p.upgrades.raise(u),
+            Ware::Upgrade(u) if !u.for_base() => p.upgrades.raise(u),
+            Ware::Upgrade(_) => {}
             Ware::Supply(Supply::Shield) => p.shield = true,
             Ware::Supply(Supply::Ammo) => p.quick = true,
-            Ware::Supply(Supply::Repair) => {
-                if let Some(b) = self.bases.iter_mut().find(|b| b.owner == id && b.hp > 0) {
-                    b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
-                    self.bases_changed = true;
-                }
-            }
+            Ware::Supply(Supply::Repair) => {}
             Ware::Supply(s) => *p.items.slot(s).unwrap() += 1,
         }
         // (A new magazine for more shells, and ammo fills it.)
         let fresh = shop::magazine(tick, &rules, &p.upgrades, p.quick);
         p.magazine = if ware == Ware::Supply(Supply::Ammo) { fresh } else { p.magazine.refit(tick, fresh, &rules) };
-        self.loadout(tick, id);
+        // What the team shares: the bank, the base and what was bought for it.
+        let b = self.base_of_mut(id).expect("a base, to be at home");
+        b.bank.take(price);
+        match ware {
+            Ware::Upgrade(u) if u.for_base() => b.upgrades.raise(u),
+            Ware::Supply(Supply::Repair) => {
+                b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
+                self.bases_changed = true;
+            }
+            _ => {}
+        }
+        self.team_loadout(tick, id);
     }
 
     /// One of the supplies the ship carries: a jump home, or a gravity well where it is.
@@ -310,18 +339,18 @@ impl Authority {
         }
     }
 
-    /// Test and operator hook: put scrap and crystals in a player's bank.
+    /// Test and operator hook: put scrap and crystals in a player's team's bank.
     pub fn grant(&mut self, player: PlayerId, purse: Purse) {
         let tick = self.tick();
-        if let Some(p) = self.players.get_mut(&player) {
-            p.bank.add(purse);
-            self.loadout(tick, player);
+        if let Some(b) = self.base_of_mut(player) {
+            b.bank.add(purse);
+            self.team_loadout(tick, player);
         }
     }
 
     /// What a player carries, has banked and has bought.
     pub fn purse(&self, player: PlayerId) -> Option<(Purse, Purse, Upgrades)> {
-        self.players.get(&player).map(|p| (p.cargo, p.bank, p.upgrades))
+        self.players.get(&player).map(|p| (p.cargo, self.bank_of(player), self.upgrades_of(player)))
     }
 
     pub fn items(&self, player: PlayerId) -> Option<Items> {

@@ -28,7 +28,7 @@ fn open_space() -> Scenario {
 fn duel(seed: u64) -> (Sim, usize, usize, PlayerId, PlayerId) {
     let mut sim = Sim::new(open_space(), seed);
     sim.server.set_rounds(0, 600, None);
-    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain });
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain, teams: 1 });
     sim.server.set_mode(GameMode::Bases);
     let a = sim.add_client("ann", LINK);
     let b = sim.add_client("bob", LINK);
@@ -44,12 +44,12 @@ fn place(sim: &mut Sim, who: PlayerId, p: Particle) {
 }
 
 fn base_at(sim: &Sim, owner: PlayerId) -> (usize, f64, f64) {
-    let j = sim.server.bases().iter().find(|b| b.owner == owner).unwrap().slot as usize;
+    let j = sim.server.base_of_player(owner).unwrap().slot as usize;
     (j, sim.server.massive.x[j], sim.server.massive.y[j])
 }
 
 fn hp(sim: &Sim, owner: PlayerId) -> u32 {
-    sim.server.bases().iter().find(|b| b.owner == owner).unwrap().hp
+    sim.server.base_of_player(owner).unwrap().hp
 }
 
 /// A circular orbit `radii` base radii out around `owner`'s base.
