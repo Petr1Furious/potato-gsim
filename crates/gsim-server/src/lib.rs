@@ -42,8 +42,9 @@ pub fn set_log_level(level: Level) {
     LOG_LEVEL.store(level as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// A line of the server log: `2026-10-15 17:03:45 INFO  ann joined the game` (UTC), errors to
-/// stderr, anything below the level set left out.
+/// A line of the server log, much as Minecraft writes it:
+/// `[2026-10-15 17:03:45] [INFO]: ann joined the game` (UTC). Errors go to stderr, anything below
+/// the level set is left out.
 pub fn log(level: Level, text: &str) {
     if (level as u8) < LOG_LEVEL.load(std::sync::atomic::Ordering::Relaxed) {
         return;
@@ -51,7 +52,7 @@ pub fn log(level: Level, text: &str) {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let (y, mo, d) = civil_date(secs / 86_400);
     let (h, m, s) = (secs / 3600 % 24, secs / 60 % 60, secs % 60);
-    let line = format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02} {:<5} {text}", level.name());
+    let line = format!("[{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}] [{}]: {text}", level.name());
     if level == Level::Error {
         eprintln!("{line}");
     } else {
