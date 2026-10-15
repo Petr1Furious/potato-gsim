@@ -4,7 +4,7 @@
 
 use super::*;
 use gsim_core::MassiveView;
-use gsim_proto::shop::{self, PICKUP_RADIUS};
+use gsim_proto::shop;
 
 /// Pieces of scrap kept floating for every player in the round.
 const SCRAP_PER_PLAYER: usize = 24;
@@ -23,6 +23,16 @@ const CRYSTALS_FIRST_SECONDS: f64 = 60.0;
 const CRYSTALS_EVERY_SECONDS: f64 = 90.0;
 /// With crystal fever: first after this long, and then as often again.
 const FEVER_EVERY_SECONDS: f64 = 30.0;
+/// Supply crates turn up this far from the center (as for scrap), first this long into a round
+/// and then every so often (s); one with nothing left to give gives this much scrap.
+const CRATE_FIELD: (f64, f64) = (0.1, 0.7);
+const CRATE_FIRST_SECONDS: f64 = 45.0;
+const CRATE_EVERY_SECONDS: f64 = 120.0;
+const CRATE_SCRAP: u32 = 5;
+/// A piece further out than this many times the bases' ring, with no ship within
+/// `STRAY_COMPANY` (m), fades away.
+const STRAY_RINGS: f64 = 1.25;
+const STRAY_COMPANY: f64 = 3.0e9;
 /// How fast what a lost ship carried flies apart (m/s).
 const SPILL_DRIFT: f64 = 40.0;
 /// The most pieces a lost ship spills.
@@ -32,6 +42,8 @@ pub(super) struct Piece {
     pub id: PieceId,
     pub kind: PieceKind,
     pub p: Particle,
+    /// Fading away since this tick (far out, with nobody near).
+    pub fading: Option<Tick>,
 }
 
 /// One tick of every piece. Returns those gone: taken by a ship passing close (one of `ships`:
@@ -40,6 +52,7 @@ pub(super) struct Piece {
 pub(super) fn step_pieces(
     pieces: &mut [Piece],
     ships: &[Sweep],
+    reach: &[f64],
     view: &MassiveView,
     rules: &GameRules,
     scratch: &mut Scratch,
@@ -53,7 +66,7 @@ pub(super) fn step_pieces(
             continue;
         }
         let after = (piece.p.x, piece.p.y);
-        if let Some(by) = ships.iter().find(|s| swept_min_dist2(before, after, s.1, s.2) <= PICKUP_RADIUS * PICKUP_RADIUS) {
+        if let Some((by, _)) = ships.iter().zip(reach).find(|(s, r)| swept_min_dist2(before, after, s.1, s.2) <= *r * *r) {
             gone.push((piece.id, Some(by.0)));
         } else if after.0 * after.0 + after.1 * after.1 > far * far {
             gone.push((piece.id, None));
@@ -69,8 +82,19 @@ impl Authority {
         for (id, by) in gone {
             let Some(k) = self.pieces.iter().position(|p| p.id == id) else { continue };
             let piece = self.pieces.swap_remove(k);
+            // A crate holds a supply that will be carried, one there is room for (or, failing that,
+            // a few scrap).
+            let pick = self.scrap_rng.u64() as usize;
             if let Some(p) = by.and_then(|by| self.players.get_mut(&by)) {
-                p.cargo.add(Purse::one(piece.kind));
+                if piece.kind == PieceKind::Crate {
+                    let room: Vec<Supply> = Supply::CARRIED.into_iter().filter(|s| p.items.count(*s) < shop::CARRY).collect();
+                    match room.get(pick % room.len().max(1)) {
+                        Some(s) => *p.items.slot(*s).unwrap() += 1,
+                        None => p.cargo.add(Purse { scrap: CRATE_SCRAP, crystals: 0 }),
+                    }
+                } else {
+                    p.cargo.add(Purse::one(piece.kind));
+                }
                 if !laden.contains(&p.id) {
                     laden.push(p.id);
                 }
@@ -86,6 +110,7 @@ impl Authority {
     /// rapid fire is over.
     pub(super) fn spill(&mut self, tick: Tick, player: PlayerId, body: Option<u32>) {
         let Some(p) = self.players.get_mut(&player) else { return };
+        p.magnet_until = 0;
         let changed = std::mem::take(&mut p.quick);
         if self.drop_cargo(tick, player, body) || changed {
             self.loadout(tick, player);
@@ -138,8 +163,8 @@ impl Authority {
         for (kind, p) in new {
             let id = self.next_piece_id;
             self.next_piece_id += 1;
-            self.pieces.push(Piece { id, kind, p });
-            pieces.push(PieceInfo { id, kind, p });
+            self.pieces.push(Piece { id, kind, p, fading: None });
+            pieces.push(PieceInfo { id, kind, p, fading: None });
         }
         if !pieces.is_empty() {
             self.event(Event::Pieces { tick, pieces });
@@ -181,6 +206,12 @@ impl Authority {
                 }
             }
         }
+        if playing && self.crate_due.is_some_and(|due| tick >= due) {
+            if let Some(one) = self.cloud(PieceKind::Crate, 1, CRATE_FIELD) {
+                self.add_pieces(tick, one);
+            }
+            self.crate_due = Some(tick + (CRATE_EVERY_SECONDS * hz) as Tick);
+        }
         if playing && self.crystals_due.is_some_and(|due| tick >= due) {
             let fever = self.roll.twist == Twist::CrystalFever;
             let n = 1 + self.players.values().filter(|p| !p.spectating).count() / 6 + fever as usize;
@@ -191,6 +222,9 @@ impl Authority {
             self.crystals_due = Some(tick + (every * hz) as Tick);
             self.event(Event::CrystalsDue { due: self.crystals_due });
         }
+        if tick.is_multiple_of(self.rules.tick_hz.max(1) as Tick) {
+            self.fade_strays(tick);
+        }
         let home: Vec<PlayerId> = self.players.values().filter(|p| !p.cargo.is_empty()).map(|p| p.id).filter(|id| self.in_zone(*id)).collect();
         for id in home {
             let cargo = std::mem::take(&mut self.players.get_mut(&id).unwrap().cargo);
@@ -198,6 +232,39 @@ impl Authority {
                 b.bank.add(cargo);
             }
             self.team_loadout(tick, id);
+        }
+    }
+
+    /// Once a second: pieces that drifted far out with no ship near fade away, and are gone a
+    /// few seconds later (unless somebody comes near meanwhile).
+    fn fade_strays(&mut self, tick: Tick) {
+        let (cx, cy, _, _) = self.barycenter();
+        let far = STRAY_RINGS * self.spawn_r.1;
+        let ships: Vec<(f64, f64)> = self.players.values().filter_map(|p| p.ship).map(|s| (s.p.x, s.p.y)).collect();
+        let fade = (shop::FADE_SECONDS * self.rules.tick_hz as f64) as Tick;
+        let (mut changes, mut gone) = (Vec::new(), Vec::new());
+        for piece in &mut self.pieces {
+            let (x, y) = (piece.p.x, piece.p.y);
+            let stray = (x - cx).hypot(y - cy) > far && !ships.iter().any(|s| (s.0 - x).hypot(s.1 - y) < STRAY_COMPANY);
+            match (stray, piece.fading) {
+                (true, None) => {
+                    piece.fading = Some(tick);
+                    changes.push((piece.id, true));
+                }
+                (true, Some(since)) if tick >= since + fade => gone.push(piece.id),
+                (false, Some(_)) => {
+                    piece.fading = None;
+                    changes.push((piece.id, false));
+                }
+                _ => {}
+            }
+        }
+        for (id, fading) in changes {
+            self.event(Event::PieceFade { tick, id, fading });
+        }
+        self.pieces.retain(|p| !gone.contains(&p.id));
+        for id in gone {
+            self.event(Event::PieceGone { tick, id, by: None });
         }
     }
 
@@ -215,6 +282,7 @@ impl Authority {
     pub(super) fn sow_scrap(&mut self) {
         self.pieces.clear();
         self.crystals_due = None;
+        self.crate_due = None;
         if self.mode != GameMode::Bases {
             return;
         }
@@ -224,12 +292,13 @@ impl Authority {
             for (kind, p) in cloud {
                 let id = self.next_piece_id;
                 self.next_piece_id += 1;
-                self.pieces.push(Piece { id, kind, p });
+                self.pieces.push(Piece { id, kind, p, fading: None });
             }
         }
         self.cloud_due = tick;
         let first = if self.roll.twist == Twist::CrystalFever { FEVER_EVERY_SECONDS } else { CRYSTALS_FIRST_SECONDS };
         self.crystals_due = Some(tick + (first * self.rules.tick_hz as f64) as Tick);
+        self.crate_due = Some(tick + (CRATE_FIRST_SECONDS * self.rules.tick_hz as f64) as Tick);
     }
 
     /// The ship's engine and tank follow what it carries and what has been bought; everyone
@@ -241,7 +310,7 @@ impl Authority {
         if let Some(ship) = p.ship.as_mut() {
             ship.refit(shop::kit(&rules, &p.upgrades, &p.cargo));
         }
-        let loadout = Loadout { cargo: p.cargo, bank, upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick };
+        let loadout = Loadout { cargo: p.cargo, bank, upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick, magnet_until: p.magnet_until };
         self.event(Event::Loadout { tick, player, loadout });
     }
 
@@ -358,6 +427,32 @@ impl Authority {
                 self.event(Event::Well { tick, player: id, p });
                 self.loadout(tick, id);
             }
+            Supply::Emp => {
+                *count -= 1;
+                // Every ship on another team near enough: its engines go dead for a while.
+                let (team, hz) = (p.team, self.rules.tick_hz as f64);
+                let until = tick + (shop::EMP_SECONDS * hz) as Tick;
+                let near = |q: &Player| q.ship.is_some_and(|s| (s.p.x - ship.p.x).hypot(s.p.y - ship.p.y) <= shop::EMP_RADIUS);
+                let hit: Vec<PlayerId> = self.players.values().filter(|q| q.id != id && (q.team != team || team == 0) && near(q)).map(|q| q.id).collect();
+                for q in &hit {
+                    self.players.get_mut(q).unwrap().stunned = (tick, until);
+                }
+                self.event(Event::Emp { tick, player: id, hit, until });
+                self.loadout(tick, id);
+            }
+            Supply::Magnet => {
+                *count -= 1;
+                p.magnet_until = tick + (shop::MAGNET_SECONDS * self.rules.tick_hz as f64) as Tick;
+                self.loadout(tick, id);
+            }
+            Supply::Afterburner => {
+                *count -= 1;
+                if let Some(s) = p.ship.as_mut() {
+                    s.fuel += shop::AFTERBURNER_MMPS;
+                }
+                self.event(Event::Boost { tick, player: id, fuel: shop::AFTERBURNER_MMPS });
+                self.loadout(tick, id);
+            }
             _ => {}
         }
     }
@@ -408,7 +503,7 @@ impl Authority {
                     self.bases_changed = true;
                 }
             }
-            Supply::Warp | Supply::Well => {
+            _ => {
                 let n = p.items.slot(supply).unwrap();
                 *n = (*n as u32 + count).min(u8::MAX as u32) as u8;
             }

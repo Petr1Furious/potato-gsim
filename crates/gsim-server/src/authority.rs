@@ -7,7 +7,7 @@ use crate::state::ServerState;
 use gsim_core::objective::orbit_status;
 use gsim_core::particle::{step_particle, swept_min_dist2};
 use gsim_core::ship::step_ship;
-use gsim_core::{math, selftest, GameRules, InputTimeline, Magazine, MassiveState, MergeEvent, Particle, Scratch, ShipState, SystemFrame, Tick};
+use gsim_core::{math, selftest, GameRules, InputTimeline, Magazine, MassiveState, MergeEvent, Particle, Scratch, ShipInput, ShipState, SystemFrame, Tick};
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::net::IpAddr;
@@ -64,6 +64,10 @@ struct Player {
     spectating: bool,
     /// Their side in a round of bases (0: none).
     team: TeamId,
+    /// Its engines are dead over these ticks (an EMP): (from, until).
+    stunned: (Tick, Tick),
+    /// Until this tick it takes pieces from much further away (a scrap magnet).
+    magnet_until: Tick,
     /// Only until the next round (out of this one, or joined while it was on).
     benched: bool,
     /// The ship survives one shell.
@@ -181,6 +185,8 @@ pub struct Authority {
     mine_due: Vec<Tick>,
     /// When crystals next turn up near the center.
     crystals_due: Option<Tick>,
+    /// When the next supply crate turns up.
+    crate_due: Option<Tick>,
     /// Gravity wells: (tick fired, where each is now).
     wells: Vec<(Tick, Particle)>,
     /// From this tick on every base wears down.
@@ -191,6 +197,10 @@ pub struct Authority {
     forced_twist: Option<Twist>,
     /// The team size an operator chose for the rounds to come, and who they put on which team.
     forced_teams: Option<u32>,
+    /// Seconds into a round of bases before sudden death (0: never), and what every base then
+    /// loses a second (percent of its health).
+    sudden_seconds: f64,
+    decay_percent: f64,
     team_picks: BTreeMap<String, TeamId>,
     fixed_roll: Option<Roll>,
     /// Scrap and crystals floating free, and when the next cloud of scrap may turn up.
@@ -226,6 +236,7 @@ impl Authority {
             mines: Vec::new(),
             mine_due: Vec::new(),
             crystals_due: None,
+            crate_due: None,
             wells: Vec::new(),
             pieces: Vec::new(),
             next_piece_id: 1,
@@ -233,6 +244,8 @@ impl Authority {
             sudden_death: None,
             forced_twist: None,
             forced_teams: None,
+            sudden_seconds: SUDDEN_DEATH_SECONDS,
+            decay_percent: 1.0,
             team_picks: BTreeMap::new(),
             fixed_roll: None,
             roll: Roll::default(),
@@ -460,6 +473,8 @@ impl Authority {
                 god: false,
                 spectating: watch,
                 team: reclaimed.map_or(0, |r| r.0),
+                stunned: (0, 0),
+                magnet_until: 0,
                 benched: watch,
                 shield: false,
                 quick: false,
@@ -521,6 +536,7 @@ impl Authority {
                         magazine: p.magazine,
                         spectating: p.spectating,
                         team: p.team,
+                        stunned: p.stunned,
                         shield: p.shield,
                         cargo: p.cargo,
                         bank: self.bank_of(p.id),
@@ -534,7 +550,7 @@ impl Authority {
                 .iter()
                 .map(|s| ShellInfo { id: s.id, owner: s.owner, spawn_tick: s.spawn_tick, p: s.p })
                 .collect(),
-            pieces: self.pieces.iter().map(|p| PieceInfo { id: p.id, kind: p.kind, p: p.p }).collect(),
+            pieces: self.pieces.iter().map(|p| PieceInfo { id: p.id, kind: p.kind, p: p.p, fading: p.fading }).collect(),
         }
     }
 
@@ -721,7 +737,9 @@ impl Authority {
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
             let before = (ship.p.x, ship.p.y);
-            match step_ship(ship, p.timeline.at(t), &wells, &view, &rules, &mut self.scratch) {
+            // An EMP leaves the engine dead for a while.
+            let input = if (p.stunned.0..p.stunned.1).contains(&t) { ShipInput { thrust: 0, ..p.timeline.at(t) } } else { p.timeline.at(t) };
+            match step_ship(ship, input, &wells, &view, &rules, &mut self.scratch) {
                 Some(body) => deaths.push((p.id, None, Some(body))),
                 None => segs.push((p.id, before, (ship.p.x, ship.p.y))),
             }
@@ -772,7 +790,9 @@ impl Authority {
         // lost this tick).
         let lost: Vec<PlayerId> = deaths.iter().map(|d| d.0).collect();
         segs.retain(|s| !lost.contains(&s.0));
-        let picked = scrap::step_pieces(&mut self.pieces, &segs, &view, &rules, &mut self.scratch, 4.0 * self.world_r);
+        // (How far each ship takes pieces from: further with a scrap magnet.)
+        let reach: Vec<f64> = segs.iter().map(|s| if self.players.get(&s.0).is_some_and(|p| t < p.magnet_until) { shop::MAGNET_REACH } else { 1.0 } * shop::PICKUP_RADIUS).collect();
+        let picked = scrap::step_pieces(&mut self.pieces, &segs, &reach, &view, &rules, &mut self.scratch, 4.0 * self.world_r);
 
         // Wells fly on as shells do (and are gone if they hit something).
         let scratch = &mut self.scratch;
@@ -1180,7 +1200,7 @@ impl Authority {
         // A round of bases has no time limit: sudden death ends it.
         let bases = self.mode == GameMode::Bases;
         self.round_end_tick = (self.round_ticks > 0 && !bases).then(|| tick + self.round_ticks);
-        self.sudden_death = bases.then(|| tick + (SUDDEN_DEATH_SECONDS * self.rules.tick_hz as f64) as Tick);
+        self.sudden_death = (bases && self.sudden_seconds > 0.0).then(|| tick + (self.sudden_seconds * self.rules.tick_hz as f64) as Tick);
         self.objectives.clear();
         for p in self.players.values_mut() {
             p.ship = None;

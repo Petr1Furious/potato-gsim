@@ -373,6 +373,19 @@ impl Game {
             if is_key_pressed(KeyCode::E) {
                 well_asked = true;
             }
+            // The hotbar: 1 to 5 use the supplies carried (in the shop, they buy).
+            if !self.shop_open {
+                for (key, supply) in SHOP_KEYS.into_iter().zip(Supply::CARRIED) {
+                    if !is_key_pressed(key) {
+                        continue;
+                    }
+                    if supply == Supply::Well {
+                        well_asked = true;
+                    } else {
+                        self.net.session.use_supply(supply, 0, 0.0);
+                    }
+                }
+            }
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
                 settings.save();
@@ -1009,7 +1022,9 @@ impl Game {
             if reach_px > 14.0 * ui && reach_px < 1.0e5 {
                 style::ring(s.0, s.1, reach_px, ui, style::alpha(style::piece_color(piece.kind), 0.12));
             }
-            style::piece(s, piece.kind, spin * (0.7 + (id % 5) as f32 * 0.3) + *id as f32, ui);
+            // Fading away, far out with nobody near.
+            let fade = piece.fading.map_or(1.0, |since| (1.0 - (tick_f - since as f64) / (shop::FADE_SECONDS * world.rules.tick_hz as f64)).clamp(0.0, 1.0) as f32);
+            style::piece(s, piece.kind, spin * (0.7 + (id % 5) as f32 * 0.3) + *id as f32, fade, ui);
         }
         // Gravity wells.
         let well_ticks = world.rules.well_ticks as f64;
@@ -1050,6 +1065,7 @@ impl Game {
                     style::disc(s.0, s.1, 26.0 * ui, style::alpha(style::GOLD, 0.35 * (1.0 - (age as f32 / 0.4).min(1.0))));
                 }
                 EffectKind::Warped => style::warp(s, style::ACCENT, (age as f32 / 0.6).min(1.0), ui),
+                EffectKind::Emp => style::emp(s, (shop::EMP_RADIUS / view.mpp) as f32, (age as f32 / 0.8).min(1.0), ui),
                 EffectKind::Mined => {
                     // Rings bursting outwards in the crystals' color.
                     let c = style::piece_color(PieceKind::Crystal);
@@ -1214,6 +1230,15 @@ impl Game {
             let fuel = p.ship.as_ref().map_or(0, |t| t.last().fuel);
             let color = style::rgb(p.color);
             draw_ship(s, facing as f32, color, input.thrust > 0 && fuel > 0, ui);
+            if (p.stunned.0..p.stunned.1).contains(&t0) {
+                // Engines dead (an EMP): sparks about it.
+                style::sparks(s, ui);
+            }
+            if (t0 as f64) < p.magnet_until as f64 {
+                // A scrap magnet: how far it reaches.
+                let reach = (shop::MAGNET_REACH * PICKUP_RADIUS / view.mpp) as f32;
+                style::ring(s.0, s.1, reach.max(16.0 * ui), ui, style::alpha(style::piece_color(PieceKind::Scrap), 0.35));
+            }
             if world.in_teams() && p.team != 0 {
                 // Which side it is on: a ring in the team's color.
                 style::ring(s.0, s.1, 12.0 * ui, 1.2 * ui, style::alpha(style::team_color(p.team), 0.75));
@@ -1682,9 +1707,11 @@ impl Game {
                                 style::gauge(ui, "HOLD", &what, thrust_share, style::piece_color(PieceKind::Scrap));
                             }
                             // Supplies carried, and the keys that use them.
-                            for (n, key, what) in [(items.warps, "Q", "WARP HOME"), (items.wells, "E", "GRAVITY WELL")] {
+                            for (k, supply) in Supply::CARRIED.into_iter().enumerate() {
+                                let n = items.count(supply);
                                 if n > 0 {
-                                    style::row(ui, what, RichText::new(n.to_string()).color(gold), Some(key));
+                                    let key = (k + 1).to_string();
+                                    style::row(ui, &supply.name().to_uppercase(), RichText::new(n.to_string()).color(gold), Some(&key));
                                 }
                             }
                         }

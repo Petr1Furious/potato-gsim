@@ -378,8 +378,7 @@ fn each_round_rolls_its_scrap_mines_and_twist() {
     }
     assert!(seen.len() >= 3, "{seen:?}");
     // An operator picks the twist; it bends the rules everybody plays by.
-    sim.clients[a].session.send_chat("/twist deep-tanks");
-    sim.clients[a].session.send_chat("/round new");
+    sim.clients[a].session.send_chat("/mode bases twist=deep-tanks");
     sim.run_with(1.0, idle);
     assert_eq!(sim.server.roll().twist, Twist::DeepTanks);
     assert_eq!(sim.server.rules.fuel_max_mmps, 2 * plain.fuel_max_mmps);
@@ -388,8 +387,7 @@ fn each_round_rolls_its_scrap_mines_and_twist() {
     let ann = sim.player_id(a).unwrap();
     assert_eq!(sim.server.ship(ann).unwrap().kit.tank, 2 * plain.fuel_max_mmps);
     assert!(chat(&sim.clients[a].session).iter().any(|l| l.starts_with("Round ") && l.contains("deep tanks")));
-    sim.clients[a].session.send_chat("/twist quick-guns");
-    sim.clients[a].session.send_chat("/round new");
+    sim.clients[a].session.send_chat("/mode bases twist=quick-guns");
     sim.run_with(1.0, idle);
     assert_eq!(sim.server.rules.fuel_max_mmps, plain.fuel_max_mmps, "the last twist is gone");
     assert_eq!(sim.server.magazine(ann).unwrap().cooldown(), plain.shell_cooldown_ticks as u64 / 2);
@@ -425,4 +423,41 @@ fn the_round_ends_when_one_player_is_left_or_a_lone_one_is_out() {
     sim.run_with(10.0, idle);
     assert_eq!(sim.server.round(), round + 2);
     assert!(sim.server.ship(ann).is_some(), "and ann plays the next one");
+}
+
+#[test]
+fn mode_settings_and_the_minecraft_commands() {
+    let (mut sim, a, b, ann, bob) = duel(14);
+    let said = |sim: &Sim, i: usize| chat(&sim.clients[i].session);
+    sim.clients[a].session.send_chat("/mode bases twist=heavy-rams teams=off sudden=0 decay=2");
+    sim.run_with(1.0, idle);
+    assert!(said(&sim, a).contains(&"Mode bases: twist=heavy-rams teams=off sudden=0 decay=2".to_string()), "{:?}", said(&sim, a));
+    assert_eq!(sim.server.roll().twist, Twist::HeavyRams);
+    assert_eq!(sim.clients[a].session.world.as_ref().unwrap().sudden_death, None, "no sudden death");
+    sim.clients[a].session.send_chat("/mode bases twist=nonsense");
+    sim.run_with(1.0, idle);
+    assert!(said(&sim, a).contains(&"no twist called \"nonsense\"".to_string()));
+    sim.clients[a].session.send_chat("/mode");
+    sim.run_with(1.0, idle);
+    assert_eq!(said(&sim, a).last().unwrap(), "Mode bases: twist=heavy-rams teams=off sudden=0 decay=2");
+    // /say and /me speak to everyone; /tell is /msg.
+    sim.clients[a].session.send_chat("/say hello all");
+    sim.run_with(1.0, idle);
+    sim.clients[b].session.send_chat("/me waves");
+    sim.run_with(1.0, idle);
+    sim.clients[b].session.send_chat("/tell ann psst");
+    sim.run_with(1.0, idle);
+    assert!(said(&sim, b).contains(&"[ann] hello all".to_string()));
+    assert!(said(&sim, a).contains(&"* bob waves".to_string()));
+    assert!(said(&sim, a).contains(&"psst".to_string()));
+    // /list tells how each is doing; /round end gives the round to the base that stands best.
+    sim.server.hurt_base(bob, ann, 1000);
+    sim.clients[a].session.send_chat("/list");
+    sim.run_with(1.0, idle);
+    assert!(said(&sim, a).iter().any(|l| l.starts_with("There are 2 players online:") && l.contains("ann (op, base 100 %, playing)") && l.contains("bob (base 83 %, playing)")), "{:?}", said(&sim, a));
+    sim.clients[a].session.send_chat("/round end");
+    sim.run_with(1.0, idle);
+    let w = sim.clients[b].session.world.as_ref().unwrap();
+    assert_eq!(w.winner, sim.server.team(ann));
+    assert!(said(&sim, b).contains(&"ann ended the round".to_string()));
 }

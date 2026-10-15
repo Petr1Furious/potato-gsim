@@ -106,7 +106,8 @@ base's health and how many bases each player has destroyed (KO).
 Clouds of **scrap** float around the center. A ship takes a piece by passing within 80 Mm of
 it, carries it, and banks it on coming home (into its zone). Every piece carried makes the ship
 5 % heavier (a crystal 15 %), so the same burn gives less delta-v: a full hold is slow and easy
-to catch. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
+to catch. Pieces that drift far beyond the bases with no ship within 3 Gm fade away over a few
+seconds. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
 round what it hit.
 
 **Crystals** come from **mines**: planets near the center (one, and one more for every two
@@ -125,9 +126,12 @@ upgrades, three tiers each, kept when the ship is lost: thrust (up to x3), delta
 home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
 Supplies: a shield (drawn around the ship; it survives one shell), rapid fire (twice the
 shells, fired and coming back twice as fast, until the ship is lost), base repair (+20 %), and
-two to carry along: warp home (`Q`: a jump back home, leaving the cargo behind) and a gravity
-well (`E`: fired towards the cursor like a shell, after a second it pulls every ship near it in
-for 10 s).
+five to carry along, used with the keys 1 to 5 while the shop is closed: warp home (1 or `Q`: a
+jump back home, leaving the cargo behind), a gravity well (2 or `E`: fired towards the cursor
+like a shell, after a second it pulls every ship near it in for 10 s), an EMP (3: the engines
+of enemy ships within 300 Mm go dead for 3 s), a scrap magnet (4: pieces are taken from three
+times as far for 30 s) and an afterburner (5: 10 km/s of delta-v beyond a full tank). Every two
+minutes a **supply crate** turns up somewhere: the first ship through it gets a carried supply.
 
 Every round of bases rolls how much scrap floats about, whether there is a mine more, and a
 twist: deep tanks (twice the delta-v), quick guns (shells fire and come back twice as fast),
@@ -182,23 +186,23 @@ kills, captures and new targets appear in chat too. Names of players and bodies 
 are clickable: a body gets selected, a player gets followed by the camera. `G` drops a
 marker under the cursor that everyone sees for a few seconds.
 
-Everyone: `/help`, `/list`, `/msg PLAYER TEXT`, `/r TEXT`, `/respawn`. Wherever a player is
+Everyone: `/help`, `/list` (with teams, bases and who is out), `/msg PLAYER TEXT` (or `/tell`, `/w`), `/r TEXT`, `/me ACTION`, `/respawn`. Wherever a player is
 expected, `@s` is you, `@a` everyone and `@r` someone at random; `@t` is the target body.
 
 Operators (listed in `ops.txt`; the host of a solo game always is one):
 
 | Command | Effect |
 |---|---|
-| `/round new`, `/round time S`, `/round length S` | Restart the round; set the time left (with bases: until sudden death); set the round length |
+| `/round new`, `/round end`, `/round time S`, `/round length S` | Start a new round; end this one (with bases, the best-standing base wins); set the time left (with bases: until sudden death); set the round length |
 | `/tp [PLAYER] PLAYER\|~DX ~DY\|X Y` | Teleport onto a player or to coordinates in meters (`~` is relative, units like `5Gm` work) |
 | `/orbit [PLAYER] BODY` | Put a ship on a circular orbit around a body, 20 radii up |
 | `/preset NAME [KEY=VALUE ...]`, `/timescale X` | New round in another world (e.g. `/preset random count=300 seed=7`; what is not set returns to its default) or at another time scale |
-| `/mode targets\|bases` | New round with targets or with bases |
+| `/mode [targets\|bases] [KEY=VALUE ...]` | New round with targets or with bases, with settings for bases that stay until changed: `twist=random\|plain\|quick-guns\|...`, `teams=roll\|off\|2\|3`, `sudden=SECONDS` until sudden death (0: none), `decay=PERCENT` a second; alone, the settings in force |
 | `/gamemode spectator\|play [PLAYER]` | Watch without a ship (`Space` follows the next player), or play again; with bases, at one's own base even if it has fallen |
 | `/target BODY` | Make a body a target |
 | `/targets count N`, `/targets per N` | A fixed number of targets, or one for every N players |
-| `/twist NAME\|random` | The twist of the next rounds of bases (`deep-tanks`, `quick-guns`, ...) |
-| `/teams roll\|off\|2\|3`, `/team PLAYER N\|none` | Teams in the next rounds of bases: rolled, none, or of 2 or 3; put a player on team N (1 red, 2 blue, ...) |
+| `/team PLAYER N\|none` | Put a player on team N (1 red, 2 blue, ...) in the next rounds with teams |
+| `/say TEXT` | Say something to everyone as [you] |
 | `/give PLAYER ITEM [COUNT]` | Give scrap or crystals (into the bank) or supplies (`shield`, `rapid-fire`, `base-repair`, `warp-home`, `gravity-well`) |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |
@@ -218,7 +222,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
-| B, 1 - 8, Q, E | Shop (bases, at home), buy upgrades; warp home, fire a gravity well |
+| B, 1 - 8, 1 - 5, Q, E | Shop (bases, at home), buy upgrades; use supplies (Q warp home, E gravity well) |
 | Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 

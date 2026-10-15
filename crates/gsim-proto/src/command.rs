@@ -70,13 +70,17 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "help", help: "list the commands you can use", op: false, params: &[] },
     Command { name: "list", help: "who is online", op: false, params: &[] },
     Command { name: "msg", help: "private message", op: false, params: &[req("player", Arg::Player), req("message", Arg::Text)] },
+    Command { name: "tell", help: "private message (as /msg)", op: false, params: &[req("player", Arg::Player), req("message", Arg::Text)] },
+    Command { name: "w", help: "private message (as /msg)", op: false, params: &[req("player", Arg::Player), req("message", Arg::Text)] },
+    Command { name: "me", help: "say what you are doing: * you ...", op: false, params: &[req("action", Arg::Text)] },
+    Command { name: "say", help: "say something to everyone as [you]", op: true, params: &[req("message", Arg::Text)] },
     Command { name: "r", help: "reply to the last private message", op: false, params: &[req("message", Arg::Text)] },
     Command { name: "respawn", help: "destroy your ship and start over", op: false, params: &[opt("player", Arg::Player)] },
     Command {
         name: "round",
-        help: "restart the round, or set the time left / the round length",
+        help: "start a new round, end this one, or set the time left / the round length",
         op: true,
-        params: &[req("new|time|length", Arg::Word(&["new", "time", "length"])), opt("seconds", Arg::Number)],
+        params: &[req("new|end|time|length", Arg::Word(&["new", "end", "time", "length"])), opt("seconds", Arg::Number)],
     },
     Command {
         name: "tp",
@@ -91,7 +95,12 @@ pub const COMMANDS: &[Command] = &[
         params: &[req("player|body", Arg::PlayerOrBody), opt("body", Arg::Body)],
     },
     Command { name: "preset", help: "start a new round in another world", op: true, params: &[req("preset", Arg::Preset), opt("key=value ...", Arg::Settings)] },
-    Command { name: "mode", help: "start a new round with targets or with bases", op: true, params: &[req("targets|bases", Arg::Word(&["targets", "bases"]))] },
+    Command {
+        name: "mode",
+        help: "start a new round with targets or with bases, with these settings for bases (they stay until changed); alone, the settings in force",
+        op: true,
+        params: &[opt("targets|bases", Arg::Word(&["targets", "bases"])), opt("key=value ...", Arg::Settings)],
+    },
     Command { name: "timescale", help: "simulated seconds per second; starts a new round", op: true, params: &[req("factor", Arg::Number)] },
     Command { name: "target", help: "make a body a target", op: true, params: &[req("body", Arg::Body)] },
     Command {
@@ -108,22 +117,10 @@ pub const COMMANDS: &[Command] = &[
     },
     Command { name: "fuel", help: "refill delta-v", op: true, params: &[opt("player", Arg::Player)] },
     Command {
-        name: "teams",
-        help: "teams in the next rounds of bases: rolled, none, of 2 or of 3",
-        op: true,
-        params: &[req("roll|off|2|3", Arg::Word(&["roll", "off", "2", "3"]))],
-    },
-    Command {
         name: "team",
         help: "put a player on a team (1 red, 2 blue, ...) in the next rounds with teams",
         op: true,
         params: &[req("player", Arg::Player), req("number|none", Arg::Number)],
-    },
-    Command {
-        name: "twist",
-        help: "the twist of the next rounds of bases, or random",
-        op: true,
-        params: &[req("twist", Arg::Word(&["random", "plain", "deep-tanks", "quick-guns", "long-shots", "scrap-rush", "crystal-fever", "heavy-rams"]))],
     },
     Command {
         name: "give",
@@ -162,6 +159,14 @@ pub const COMMANDS: &[Command] = &[
         op: true,
         params: &[req("on|off|add|remove|list", Arg::Word(&["on", "off", "add", "remove", "list"])), opt("player", Arg::Player)],
     },
+];
+
+/// What `/mode` takes as `key=value`, with the words each value may be (none: a number).
+pub const MODE_SETTINGS: &[(&str, &[&str])] = &[
+    ("twist", &["random", "plain", "deep-tanks", "quick-guns", "long-shots", "scrap-rush", "crystal-fever", "heavy-rams"]),
+    ("teams", &["roll", "off", "2", "3"]),
+    ("sudden", &[]),
+    ("decay", &[]),
 ];
 
 pub fn find(name: &str) -> Option<&'static Command> {

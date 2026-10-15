@@ -9,10 +9,14 @@ use serde::{Deserialize, Serialize};
 pub enum PieceKind {
     Scrap,
     Crystal,
+    /// A supply crate: a random supply for whoever takes it.
+    Crate,
 }
 
 /// How close a ship has to pass a piece to take it (m).
 pub const PICKUP_RADIUS: f64 = 8.0e7;
+/// Seconds a piece takes to fade away once it has drifted far out with nobody near.
+pub const FADE_SECONDS: f64 = 6.0;
 
 /// Scrap and crystals: carried in a ship's hold, or banked at home.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +49,7 @@ impl Purse {
         match kind {
             PieceKind::Scrap => Purse { scrap: 1, crystals: 0 },
             PieceKind::Crystal => Purse { scrap: 0, crystals: 1 },
+            PieceKind::Crate => Purse::default(),
         }
     }
 
@@ -235,13 +240,21 @@ pub enum Supply {
     Warp,
     /// Carried: fired like a shell, it pulls every ship near it in for a while.
     Well,
+    /// Carried: the engines of enemy ships near this one go dead for a moment.
+    Emp,
+    /// Carried: for a while the ship takes scrap and crystals from much further away.
+    Magnet,
+    /// Carried: more delta-v, beyond a full tank.
+    Afterburner,
 }
 
 /// The most of each carried supply a player can have.
 pub const CARRY: u8 = 2;
 
 impl Supply {
-    pub const ALL: [Supply; 5] = [Supply::Shield, Supply::RapidFire, Supply::Repair, Supply::Warp, Supply::Well];
+    pub const ALL: [Supply; 8] = [Supply::Shield, Supply::RapidFire, Supply::Repair, Supply::Warp, Supply::Well, Supply::Emp, Supply::Magnet, Supply::Afterburner];
+    /// Those carried, in the order of the keys that use them (1 to 5).
+    pub const CARRIED: [Supply; 5] = [Supply::Warp, Supply::Well, Supply::Emp, Supply::Magnet, Supply::Afterburner];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -250,12 +263,15 @@ impl Supply {
             Supply::Repair => "base repair",
             Supply::Warp => "warp home",
             Supply::Well => "gravity well",
+            Supply::Emp => "EMP",
+            Supply::Magnet => "scrap magnet",
+            Supply::Afterburner => "afterburner",
         }
     }
 
     /// How commands name it.
     pub fn key(self) -> String {
-        self.name().replace(' ', "-")
+        self.name().to_lowercase().replace(' ', "-")
     }
 
     pub fn price(self) -> Purse {
@@ -265,39 +281,40 @@ impl Supply {
             Supply::Repair => Purse { scrap: 8, crystals: 0 },
             Supply::Warp => Purse { scrap: 6, crystals: 0 },
             Supply::Well => Purse { scrap: 4, crystals: 1 },
+            Supply::Emp => Purse { scrap: 6, crystals: 1 },
+            Supply::Magnet => Purse { scrap: 3, crystals: 0 },
+            Supply::Afterburner => Purse { scrap: 5, crystals: 0 },
         }
     }
 
     /// Carried, to be used later (the others take effect when bought).
     pub fn carried(self) -> bool {
-        matches!(self, Supply::Warp | Supply::Well)
+        Self::CARRIED.contains(&self)
     }
 }
 
-/// Supplies carried: warps home and gravity wells.
+/// How many of each carried supply (see [`Supply::CARRIED`]) a player has.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Items {
-    pub warps: u8,
-    pub wells: u8,
-}
+pub struct Items(pub [u8; 5]);
 
 impl Items {
     pub fn count(&self, s: Supply) -> u8 {
-        match s {
-            Supply::Warp => self.warps,
-            Supply::Well => self.wells,
-            _ => 0,
-        }
+        Supply::CARRIED.iter().position(|c| *c == s).map_or(0, |k| self.0[k])
     }
 
     pub fn slot(&mut self, s: Supply) -> Option<&mut u8> {
-        match s {
-            Supply::Warp => Some(&mut self.warps),
-            Supply::Well => Some(&mut self.wells),
-            _ => None,
-        }
+        Supply::CARRIED.iter().position(|c| *c == s).map(|k| &mut self.0[k])
     }
 }
+
+/// What an EMP reaches (m), and for how long the engines it hits stay dead (s).
+pub const EMP_RADIUS: f64 = 3.0e8;
+pub const EMP_SECONDS: f64 = 3.0;
+/// How long a scrap magnet lasts (s), and how many times as far it reaches.
+pub const MAGNET_SECONDS: f64 = 30.0;
+pub const MAGNET_REACH: f64 = 3.0;
+/// What an afterburner adds (mm/s of delta-v).
+pub const AFTERBURNER_MMPS: i64 = 10_000_000;
 
 /// Anything the shop sells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -147,7 +147,7 @@ fn teams_are_rolled_only_with_enough_players_and_operators_can_pick() {
     assert!(sizes.contains(&1) && sizes.contains(&2), "{sizes:?}");
     assert!(!sizes.contains(&3), "three a side takes six");
     // ann and dan together, by hand.
-    for line in ["/teams 2", "/team ann 2", "/team dan 2", "/round new"] {
+    for line in ["/team ann 2", "/team dan 2", "/mode bases teams=2"] {
         sim.clients[0].session.send_chat(line);
         sim.run_with(1.0, idle);
     }

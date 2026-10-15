@@ -2,7 +2,7 @@
 
 use gsim_client_core::{Controls, Session};
 use gsim_core::{math, Body, Particle, ShipState};
-use gsim_proto::shop::Upgrade;
+use gsim_proto::shop::{self, Upgrade};
 use gsim_proto::{Roll, Twist, GameMode, PieceKind, PlayerId, Purse, Supply, Ware, BASE_HP, HOME_RADII, REPAIR_HP};
 use gsim_server::authority::DAMAGE;
 use gsim_server::scenario::Scenario;
@@ -146,11 +146,11 @@ fn supplies_are_sold_at_home_and_carried_two_at_most() {
     for _ in 0..3 {
         buy(&mut sim, a, Ware::Supply(Supply::Warp));
     }
-    assert_eq!(sim.server.items(ann).unwrap().warps, 2);
+    assert_eq!(sim.server.items(ann).unwrap().count(Supply::Warp), 2);
     assert!(chat(&sim.clients[a].session).contains(&"No more warp home for now".to_string()));
     place(&mut sim, ann, Particle { x: 2.0e11, y: 0.0, vx: 0.0, vy: 0.0 });
     buy(&mut sim, a, Ware::Supply(Supply::Well));
-    assert_eq!(sim.server.items(ann).unwrap().wells, 0);
+    assert_eq!(sim.server.items(ann).unwrap().count(Supply::Well), 0);
     assert!(chat(&sim.clients[a].session).contains(&"The shop is open only at home".to_string()));
     sim.run_with(0.5, idle);
     assert_eq!(sim.clients[a].session.world.as_ref().unwrap().players[&ann].items, sim.server.items(ann).unwrap());
@@ -175,7 +175,7 @@ fn a_warp_jumps_home_and_leaves_the_cargo_behind() {
     assert_eq!(sim.server.purse(ann).unwrap().0.scrap, 0, "nothing came along");
     assert_eq!(sim.server.purse(ann).unwrap().1.scrap, 500 - Supply::Warp.price().scrap, "nor was it banked");
     assert_eq!(sim.server.pieces().len(), pieces + carried as usize);
-    assert_eq!(sim.server.items(ann).unwrap().warps, 0);
+    assert_eq!(sim.server.items(ann).unwrap().count(Supply::Warp), 0);
     sim.run_with(1.0, idle);
     assert!(!chat(&sim.clients[b].session).iter().any(|l| l.contains("jumped")), "no news of it");
     agree(&sim);
@@ -258,10 +258,67 @@ fn the_shop_stays_open_at_a_fallen_base_and_give_hands_out_anything() {
     sim.run_with(0.5, idle);
     sim.clients[a].session.send_chat("/give bob shield");
     sim.run_with(0.5, idle);
-    assert_eq!(sim.server.items(bob).unwrap().wells, 3);
+    assert_eq!(sim.server.items(bob).unwrap().count(Supply::Well), 3);
     assert_eq!(sim.server.purse(bob).unwrap().1.scrap, 7);
     assert_eq!(sim.server.shielded(bob), Some(true));
     let w = sim.clients[b].session.world.as_ref().unwrap();
-    assert_eq!(w.players[&bob].items.wells, 3);
+    assert_eq!(w.players[&bob].items.count(Supply::Well), 3);
     assert!(w.players[&bob].shield);
+}
+
+#[test]
+fn an_emp_kills_enemy_engines_for_a_moment() {
+    let (mut sim, a, b, ann, bob) = duel(10);
+    sim.server.grant_supply(ann, Supply::Emp, 1);
+    place(&mut sim, ann, Particle { x: 2.0e11, y: 0.0, vx: 0.0, vy: 0.0 });
+    place(&mut sim, bob, Particle { x: 2.0e11 + 1.0e8, y: 0.0, vx: 0.0, vy: 0.0 });
+    sim.run_with(0.3, idle);
+    sim.clients[a].session.use_supply(Supply::Emp, 0, 0.0);
+    // bob burns flat out the whole time, ann too: only ann gets anywhere at first.
+    let full = |_: usize, _: f64| Controls { angle: 0, thrust: 100, ..Controls::default() };
+    sim.run_with(2.0, full);
+    let (va, vb) = (sim.server.ship(ann).unwrap().p.vx, sim.server.ship(bob).unwrap().p.vx);
+    assert!(va > 1000.0 && vb.abs() < 1.0, "ann {va} m/s, bob {vb} m/s");
+    sim.run_with(2.0, full);
+    assert!(sim.server.ship(bob).unwrap().p.vx > 500.0, "bob's engines are back");
+    assert!(sim.clients[b].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text.contains("EMP")));
+    agree(&sim);
+}
+
+#[test]
+fn an_afterburner_and_a_scrap_magnet() {
+    let (mut sim, a, _, ann, _) = duel(11);
+    let rules = sim.server.rules.clone();
+    sim.server.grant_supply(ann, Supply::Afterburner, 1);
+    sim.server.grant_supply(ann, Supply::Magnet, 1);
+    sim.run_with(0.3, idle);
+    let fuel = sim.server.ship(ann).unwrap().fuel;
+    sim.clients[a].session.use_supply(Supply::Afterburner, 0, 0.0);
+    sim.run_with(0.5, idle);
+    assert_eq!(sim.server.ship(ann).unwrap().fuel, fuel + shop::AFTERBURNER_MMPS);
+    assert!(fuel + shop::AFTERBURNER_MMPS > rules.fuel_max_mmps, "beyond a full tank");
+    agree(&sim);
+    // With a magnet a piece is taken from twice as far as it otherwise could be.
+    sim.clients[a].session.use_supply(Supply::Magnet, 0, 0.0);
+    sim.run_with(0.5, idle);
+    let (_, p) = *sim.server.pieces().iter().find(|p| p.0 == PieceKind::Scrap).unwrap();
+    place(&mut sim, ann, Particle { x: p.x - 2.0 * shop::PICKUP_RADIUS, ..p });
+    sim.run_with(0.3, idle);
+    assert!(sim.server.purse(ann).unwrap().0.scrap >= 1);
+    agree(&sim);
+}
+
+#[test]
+fn crates_turn_up_and_hold_a_supply() {
+    let (mut sim, a, _, ann, _) = duel(12);
+    sim.run_with(46.0, idle);
+    let (_, p) = *sim.server.pieces().iter().find(|p| p.0 == PieceKind::Crate).expect("a crate 45 s in");
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text == "A supply crate turned up"));
+    let before: u8 = Supply::CARRIED.iter().map(|s| sim.server.items(ann).unwrap().count(*s)).sum();
+    place(&mut sim, ann, Particle { x: p.x - 1.0e7, ..p });
+    sim.run_with(0.5, idle);
+    let after: u8 = Supply::CARRIED.iter().map(|s| sim.server.items(ann).unwrap().count(*s)).sum();
+    assert_eq!(after, before + 1);
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text.starts_with("+1 ")));
+    agree(&sim);
 }

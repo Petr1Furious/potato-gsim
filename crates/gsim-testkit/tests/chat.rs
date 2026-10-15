@@ -204,7 +204,7 @@ fn moderation_from_chat() {
     say(&mut sim, c, "/deop cat");
     assert!(!sim.clients[c].session.op);
     say(&mut sim, c, "/list");
-    assert_eq!(system(&sim.clients[c].session).last().unwrap(), "There are 1 players online: cat");
+    assert_eq!(system(&sim.clients[c].session).last().unwrap(), "There is 1 player online: cat");
 
     say(&mut sim, c, "/op cat");
     assert_eq!(errors(&sim.clients[c].session).last().unwrap(), "/op is for operators");

@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 26;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -86,6 +86,8 @@ pub struct PlayerInfo {
     pub spectating: bool,
     /// Their side in a round of bases.
     pub team: TeamId,
+    /// Its engines are dead over these ticks (from an EMP): (from, until).
+    pub stunned: (Tick, Tick),
     /// The ship survives one shell.
     pub shield: bool,
     /// What the ship carries, what is banked at home, and what has been bought.
@@ -190,10 +192,8 @@ impl Twist {
     }
 }
 
-/// Seconds into a round of bases when sudden death starts, and what every base then loses a
-/// second.
+/// Seconds into a round of bases when sudden death starts (unless `/mode` says otherwise).
 pub const SUDDEN_DEATH_SECONDS: f64 = 720.0;
-pub const SUDDEN_DEATH_PER_SECOND: u32 = BASE_HP / 100;
 
 /// A base's health when it is new.
 pub const BASE_HP: u32 = 6000;
@@ -256,6 +256,8 @@ pub struct Loadout {
     pub shield: bool,
     /// Twice the shells, fired twice as fast (from ammo, until the ship is lost).
     pub quick: bool,
+    /// Until this tick the ship takes pieces from much further away (a scrap magnet).
+    pub magnet_until: Tick,
 }
 
 /// A piece of scrap or a crystal, floating free.
@@ -264,6 +266,8 @@ pub struct PieceInfo {
     pub id: PieceId,
     pub kind: PieceKind,
     pub p: Particle,
+    /// Fading away since this tick (far out, with nobody near).
+    pub fading: Option<Tick>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -338,6 +342,10 @@ pub enum Event {
     Well { tick: Tick, player: PlayerId, p: Particle },
     /// `player` jumped home, leaving their cargo behind.
     Warped { tick: Tick, player: PlayerId },
+    /// `player` set off an EMP at `tick`: the engines of `hit` are dead from then until `until`.
+    Emp { tick: Tick, player: PlayerId, hit: Vec<PlayerId>, until: Tick },
+    /// `player`'s ship has `fuel` more delta-v (mm/s) from `tick` on (an afterburner).
+    Boost { tick: Tick, player: PlayerId, fuel: i64 },
     /// The shield of `player`'s ship took a shell and is gone.
     ShieldSpent { tick: Tick, player: PlayerId },
     /// `by` (nobody: sudden death) brought the base of `team` down to 0 hp.
@@ -346,6 +354,8 @@ pub enum Event {
     RoundOver { tick: Tick, next_round_tick: Tick, winner: Option<TeamId> },
     /// These pieces are floating free from `tick` on.
     Pieces { tick: Tick, pieces: Vec<PieceInfo> },
+    /// The piece starts fading away at `tick` (`fading`), or stops (somebody came near).
+    PieceFade { tick: Tick, id: PieceId, fading: bool },
     /// The piece is gone from `tick` on: taken by `by`, or lost (crashed, or far out).
     PieceGone { tick: Tick, id: PieceId, by: Option<PlayerId> },
     /// From `tick` on the player carries `cargo`, has `bank` at home and these upgrades and

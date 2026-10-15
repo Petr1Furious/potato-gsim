@@ -257,3 +257,29 @@ fn a_crash_leaves_the_cargo_going_gently_round_what_was_hit() {
     assert_eq!(sim.server.pieces().len(), before + carried);
     agree(&sim);
 }
+
+#[test]
+fn pieces_far_out_fade_away_unless_somebody_is_near() {
+    let (mut sim, a, b, ann, bob) = duel(7);
+    take_scrap(&mut sim, ann);
+    take_scrap(&mut sim, ann);
+    let carried = sim.server.purse(ann).unwrap().0.scrap as usize;
+    // Spilled far beyond the bases (their ring is 30 Gm out), with bob keeping it company.
+    let far = Particle { x: 6.0e10, y: 0.0, vx: 0.0, vy: 0.0 };
+    place(&mut sim, ann, far);
+    place(&mut sim, bob, Particle { x: far.x + 1.0e9, ..far });
+    sim.run_with(0.2, idle);
+    sim.clients[a].session.send_chat("/kill ann");
+    let count = |sim: &Sim| sim.server.pieces().iter().filter(|(_, p)| p.x > 5.0e10).count();
+    sim.run_with(10.0, idle);
+    assert_eq!(count(&sim), carried, "bob is near: they stay");
+    // bob goes home: they fade, and are gone some 6 s later.
+    sim.clients[a].session.send_chat("/kill bob");
+    sim.run_with(2.0, idle);
+    let w = sim.clients[b].session.world.as_ref().unwrap();
+    assert!(w.pieces.values().filter(|p| p.fading.is_some()).count() >= carried, "they fade");
+    assert_eq!(count(&sim), carried);
+    sim.run_with(6.0, idle);
+    assert_eq!(count(&sim), 0, "and are gone");
+    agree(&sim);
+}

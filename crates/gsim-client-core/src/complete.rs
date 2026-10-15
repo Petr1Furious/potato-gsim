@@ -102,17 +102,30 @@ fn pool(arg: Arg, ctx: &Context) -> Vec<String> {
     }
 }
 
-/// The keys `/preset` accepts after the preset named in `args`: its parameters and the seed.
+/// The keys a command takes as `key=value`: `/mode` its own, `/preset` the parameters of the
+/// preset named in `args` and the seed.
 fn setting_keys<'a>(spec: &Command, args: &[Word], ctx: &Context<'a>) -> Vec<&'a str> {
+    if spec.name == "mode" {
+        return command::MODE_SETTINGS.iter().map(|s| s.0).collect();
+    }
     let named = spec.params.iter().position(|p| p.arg == Arg::Preset).and_then(|i| args.get(i));
     let mut keys: Vec<&str> = named.and_then(|w| ctx.presets.iter().find(|p| p.0 == w.text)).map(|p| p.1.clone()).unwrap_or_default();
     keys.push("seed");
     keys
 }
 
-/// Is `word` a finished `key=number` with one of `keys`?
-fn is_setting(word: &str, keys: &[&str]) -> bool {
-    word.split_once('=').is_some_and(|(key, value)| keys.contains(&key) && if key == "seed" { value.parse::<u64>().is_ok() } else { parse_meters(value).is_some() })
+/// The words a setting's value may be (none: it is a number).
+fn setting_values(spec: &Command, key: &str) -> &'static [&'static str] {
+    let mode = command::MODE_SETTINGS.iter().find(|s| spec.name == "mode" && s.0 == key);
+    mode.map_or(&[], |s| s.1)
+}
+
+/// Is `word` a finished `key=value` with one of `keys`?
+fn is_setting(spec: &Command, word: &str, keys: &[&str]) -> bool {
+    word.split_once('=').is_some_and(|(key, value)| {
+        let words = setting_values(spec, key);
+        keys.contains(&key) && if !words.is_empty() { words.contains(&value) } else if key == "seed" { value.parse::<u64>().is_ok() } else { parse_meters(value).is_some() }
+    })
 }
 
 fn matching(pool: Vec<String>, partial: &str, quoted: bool) -> Vec<String> {
@@ -199,7 +212,11 @@ fn command_line(input: &str, ctx: &Context) -> Analysis {
         // `key=` for what is not set yet; the value after it is the player's to type.
         let given = |key: &str| args.iter().enumerate().any(|(i, w)| i != index && w.text.split_once('=').is_some_and(|(k, _)| k == key));
         let keys = setting_keys(spec, args, ctx).into_iter().filter(|k| !given(k)).map(|k| format!("{k}="));
-        if partial.contains('=') { Vec::new() } else { matching(keys.collect(), partial, false) }
+        match partial.split_once('=') {
+            // After `key=`, the words its value may be.
+            Some((key, _)) => matching(setting_values(spec, key).iter().map(|v| format!("{key}={v}")).collect(), partial, false),
+            None => matching(keys.collect(), partial, false),
+        }
     } else {
         matching(pool(arg, ctx), partial, true)
     };
@@ -234,7 +251,7 @@ fn valid(spec: &Command, i: usize, arg: &Arg, word: &str, args: &[Word], ctx: &C
         _ if after_coordinate => is_coordinate(word),
         Arg::Word(words) => words.contains(&word),
         Arg::Preset => ctx.presets.iter().any(|p| p.0 == word),
-        Arg::Settings => is_setting(word, &setting_keys(spec, args, ctx)),
+        Arg::Settings => is_setting(spec, word, &setting_keys(spec, args, ctx)),
         Arg::Number => word.parse::<f64>().is_ok(),
         // Names are checked by the server: a player may have just joined.
         _ => true,
@@ -346,8 +363,8 @@ mod tests {
 
         // Command names: listed as soon as the slash is typed, narrowed while typing.
         assert_eq!(an("/").suggestions.len(), command::COMMANDS.len());
-        assert_eq!(an("/t").suggestions, ["/target", "/targets", "/team", "/teams", "/timescale", "/tp", "/twist"]);
-        assert_eq!(analyze("/", &guest, false).suggestions, ["/help", "/list", "/msg", "/r", "/respawn"]);
+        assert_eq!(an("/t").suggestions, ["/target", "/targets", "/team", "/tell", "/timescale", "/tp"]);
+        assert_eq!(analyze("/", &guest, false).suggestions, ["/help", "/list", "/me", "/msg", "/r", "/respawn", "/tell", "/w"]);
         assert_eq!(an("/t").start, 0);
         // Accepting inserts the word and nothing else.
         assert_eq!(apply("/t", 0, "/tp"), "/tp");

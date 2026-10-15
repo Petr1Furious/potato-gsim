@@ -5,7 +5,7 @@ use crate::eph::Eph;
 use crate::session::Stats;
 use gsim_core::particle::step_particle;
 use gsim_core::ship::step_ship;
-use gsim_core::{math, EphRow, GameRules, InputTimeline, Kit, Magazine, Particle, Scratch, ShipState, Tick};
+use gsim_core::{math, EphRow, GameRules, InputTimeline, Kit, Magazine, Particle, Scratch, ShipInput, ShipState, Tick};
 use gsim_proto::shop;
 use gsim_proto::*;
 use std::collections::{BTreeMap, VecDeque};
@@ -140,6 +140,12 @@ pub struct PlayerRep {
     pub spectating: bool,
     /// Their side in a round of bases (0: none).
     pub team: TeamId,
+    /// Its engines are dead over these ticks (an EMP): (from, until).
+    pub stunned: (Tick, Tick),
+    /// Until this tick it takes pieces from much further away (a scrap magnet).
+    pub magnet_until: Tick,
+    /// Delta-v added (an afterburner), by the tick it shows from.
+    pub boosts: BTreeMap<Tick, i64>,
     /// The ship survives one shell.
     pub shield: bool,
     /// Fires and reloads twice as fast, with twice the shells (from ammo, until the ship is lost).
@@ -157,6 +163,8 @@ pub struct PlayerRep {
 pub struct PieceRep {
     pub kind: PieceKind,
     pub track: Track<Particle>,
+    /// Fading away since this tick (far out, with nobody near).
+    pub fading: Option<Tick>,
 }
 
 pub struct ShellRep {
@@ -177,6 +185,8 @@ pub enum EffectKind {
     Mined,
     /// A ship jumped home from here.
     Warped,
+    /// An EMP went off here.
+    Emp,
     /// A ship's shield took a shell.
     ShieldBroken,
     /// Somebody took a piece of scrap or a crystal.
@@ -264,6 +274,9 @@ impl World {
                     magazine: p.magazine,
                     spectating: p.spectating,
                     team: p.team,
+                    stunned: p.stunned,
+                    magnet_until: 0,
+                    boosts: BTreeMap::new(),
                     shield: p.shield,
                     quick: false,
                     cargo: p.cargo,
@@ -280,7 +293,7 @@ impl World {
             .iter()
             .map(|s| (s.id, ShellRep { owner: s.owner, spawn_tick: s.spawn_tick, track: Track::new(tick, s.p) }))
             .collect();
-        let pieces = w.pieces.iter().map(|p| (p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p) })).collect();
+        let pieces = w.pieces.iter().map(|p| (p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p), fading: p.fading })).collect();
         Self {
             rules: w.rules.clone(),
             my_id: w.your_id,
@@ -429,6 +442,9 @@ impl World {
                     magazine: Magazine::full(self.head, &self.rules),
                     spectating: false,
                     team,
+                    stunned: (0, 0),
+                    magnet_until: 0,
+                    boosts: BTreeMap::new(),
                     shield: false,
                     quick: false,
                     cargo: Purse::default(),
@@ -606,6 +622,30 @@ impl World {
                     }
                 }
             }
+            Event::Emp { tick, player, hit, until } => {
+                for id in &hit {
+                    if let Some(p) = self.players.get_mut(id) {
+                        p.stunned = (tick, until);
+                        if let Some(ship) = p.ship.as_mut() {
+                            ship.mark_dirty(tick);
+                        }
+                    }
+                }
+                if hit.contains(&self.my_id) {
+                    self.alert(tick, format!("{}'s EMP: engines dead", self.player_name(player)), false);
+                }
+                if let Some(at) = self.players.get(&player).and_then(|p| p.ship.as_ref()).map(|s| s.at(tick).unwrap_or(s.last()).p) {
+                    self.effects.push_back(Effect { tick, at, kind: EffectKind::Emp });
+                }
+            }
+            Event::Boost { tick, player, fuel } => {
+                if let Some(p) = self.players.get_mut(&player) {
+                    *p.boosts.entry(tick).or_insert(0) += fuel;
+                    if let Some(ship) = p.ship.as_mut() {
+                        ship.mark_dirty(tick.saturating_sub(1));
+                    }
+                }
+            }
             Event::Warped { tick, player } => {
                 if let Some(at) = self.players.get(&player).and_then(|p| p.ship.as_ref()).map(|s| s.at(tick).unwrap_or(s.last()).p) {
                     self.effects.push_back(Effect { tick, at, kind: EffectKind::Warped });
@@ -662,8 +702,16 @@ impl World {
                 self.alert(tick, text, winner.is_some_and(|w| w == self.team_of(self.my_id)));
             }
             Event::Pieces { tick, pieces } => {
+                if pieces.iter().any(|p| p.kind == PieceKind::Crate) {
+                    self.alert(tick, "A supply crate turned up".to_string(), true);
+                }
                 for p in pieces {
-                    self.pieces.insert(p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p) });
+                    self.pieces.insert(p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p), fading: p.fading });
+                }
+            }
+            Event::PieceFade { tick, id, fading } => {
+                if let Some(piece) = self.pieces.get_mut(&id) {
+                    piece.fading = fading.then_some(tick);
                 }
             }
             Event::PieceGone { tick, id, by } => {
@@ -709,10 +757,16 @@ impl World {
         }
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
-            let (timeline, kits, wells) = (&p.timeline, &p.kits, &self.wells);
+            let (timeline, kits, wells, stunned, boosts) = (&p.timeline, &p.kits, &self.wells, p.stunned, &p.boosts);
             let rolled = ship.advance(target, |s, t| {
                 let row = eph.get(t)?;
-                let hit = step_ship(s, timeline.at(t), &pulling(wells, t, rules), &row.view(), rules, scratch);
+                // An EMP leaves the engine dead for a while.
+                let input = if (stunned.0..stunned.1).contains(&t) { ShipInput { thrust: 0, ..timeline.at(t) } } else { timeline.at(t) };
+                let hit = step_ship(s, input, &pulling(wells, t, rules), &row.view(), rules, scratch);
+                // An afterburner's delta-v from the tick it was lit.
+                if let Some(fuel) = boosts.get(&(t + 1)) {
+                    s.fuel += fuel;
+                }
                 // What the ship carries or has bought shows from the tick it changed.
                 if let Some(kit) = kits.range(..=t + 1).next_back().map(|k| *k.1).filter(|k| *k != s.kit) {
                     s.refit(kit);
@@ -810,9 +864,11 @@ impl World {
         } else if emptied {
             Some(if new.bank != p.bank { (format!("Banked {}", p.cargo.describe()), true) } else { (format!("Lost {}", p.cargo.describe()), false) })
         } else {
-            None
+            // A supply not bought: from a crate (or an operator).
+            let gained = Supply::CARRIED.into_iter().find(|s| new.items.count(*s) > p.items.count(*s)).filter(|_| new.bank == p.bank);
+            gained.map(|s| (format!("+1 {}", s.name()), true))
         };
-        (p.cargo, p.bank, p.upgrades, p.items, p.magazine, p.shield, p.quick) = (new.cargo, new.bank, new.upgrades, new.items, new.magazine, new.shield, new.quick);
+        (p.cargo, p.bank, p.upgrades, p.items, p.magazine, p.shield, p.quick, p.magnet_until) = (new.cargo, new.bank, new.upgrades, new.items, new.magazine, new.shield, new.quick, new.magnet_until);
         let kit = shop::kit(&self.rules, &new.upgrades, &new.cargo);
         p.kits.insert(tick, kit);
         // (Only the one in force at the oldest tick still kept, and those after it.)

@@ -115,7 +115,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Chat, command", "T, /");
         style::key_row(ui, "Point at the map", "G");
         style::key_row(ui, "Shop (bases, at home), buy", "B, 1 - 8");
-        style::key_row(ui, "Warp home, gravity well", "Q, E");
+        style::key_row(ui, "Use supplies (warp home, gravity well, ...)", "1 - 5, Q, E");
         style::key_row(ui, "Self-destruct (hold)", "BACKSPACE");
     }
     if large {

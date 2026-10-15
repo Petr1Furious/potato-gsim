@@ -235,7 +235,7 @@ impl Authority {
         }
         // Sudden death: every standing base wears down.
         if playing && self.sudden_death.is_some_and(|t| tick >= t) {
-            let rate = SUDDEN_DEATH_PER_SECOND as Tick;
+            let rate = (BASE_HP as f64 * self.decay_percent / 100.0).round() as Tick;
             let per_tick = (rate * (tick % hz + 1) / hz - rate * (tick % hz) / hz) as u32;
             let standing: Vec<u32> = self.bases.iter().filter(|b| b.hp > 0).map(|b| b.slot).collect();
             for slot in standing {
@@ -333,8 +333,9 @@ impl Authority {
         let sizes: Vec<u32> = [1, 2, 3].into_iter().filter(|k| *k == 1 || playing >= 2 * *k as usize).collect();
         let teams = sizes[pick(sizes.len())];
         let rolled = Roll { scrap: [60, 100, 100, 160][pick(4)], mines: pick(2) as u32, twist: Twist::ALL[pick(Twist::ALL.len())], teams };
-        let (twist, teams) = (self.forced_twist.unwrap_or(rolled.twist), self.forced_teams.unwrap_or(rolled.teams));
-        self.roll = self.fixed_roll.unwrap_or(Roll { twist, teams, ..rolled });
+        // What an operator set wins over the roll (and over a test's fixed one).
+        let base = self.fixed_roll.unwrap_or(rolled);
+        self.roll = Roll { twist: self.forced_twist.unwrap_or(base.twist), teams: self.forced_teams.unwrap_or(base.teams), ..base };
         let r = &mut self.rules;
         match self.roll.twist {
             Twist::DeepTanks => (r.fuel_max_mmps, r.regen_per_tick_mmps) = (2 * r.fuel_max_mmps, 2 * r.regen_per_tick_mmps),
@@ -359,4 +360,44 @@ impl Authority {
 fn capitalized(word: &str) -> String {
     let mut c = word.chars();
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+impl Authority {
+    /// `/mode` settings: `twist=`, `teams=`, `sudden=` (seconds, 0 for none) and `decay=` (percent
+    /// a second). All of them or none take effect.
+    pub(super) fn mode_settings(&mut self, words: &[String]) -> Result<(), String> {
+        let (mut twist, mut teams, mut sudden, mut decay) = (self.forced_twist, self.forced_teams, self.sudden_seconds, self.decay_percent);
+        for word in words {
+            let (key, value) = word.split_once('=').ok_or(format!("expected key=value, not {word:?}"))?;
+            let number = || value.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).ok_or(format!("{key} takes a number"));
+            match key {
+                "twist" if value == "random" => twist = None,
+                "twist" => twist = Some(Twist::ALL.into_iter().find(|t| t.key() == value).ok_or(format!("no twist called {value:?}"))?),
+                "teams" => {
+                    teams = match value {
+                        "roll" => None,
+                        "off" => Some(1),
+                        "2" | "3" => Some(value.parse().unwrap()),
+                        _ => return Err("teams are roll, off, 2 or 3".to_string()),
+                    }
+                }
+                "sudden" => sudden = number()?,
+                "decay" => decay = number()?.max(0.01),
+                _ => return Err(format!("no setting called {key:?} (twist, teams, sudden, decay)")),
+            }
+        }
+        (self.forced_twist, self.forced_teams, self.sudden_seconds, self.decay_percent) = (twist, teams, sudden, decay);
+        Ok(())
+    }
+
+    /// "Mode bases: twist=random teams=roll sudden=720 decay=1".
+    pub(super) fn mode_summary(&self) -> String {
+        let twist = self.forced_twist.map_or("random", |t| t.key());
+        let teams = match self.forced_teams {
+            None => "roll".to_string(),
+            Some(1) => "off".to_string(),
+            Some(k) => k.to_string(),
+        };
+        format!("Mode {}: twist={twist} teams={teams} sudden={} decay={}", self.mode.name(), self.sudden_seconds, self.decay_percent)
+    }
 }

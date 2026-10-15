@@ -263,11 +263,49 @@ impl Authority {
                 Ok(None)
             }
             "list" => {
-                let names: Vec<String> =
-                    self.players.values().map(|p| if self.state.is_op(&p.name) { format!("{} (op)", p.name) } else { p.name.clone() }).collect();
-                done(format!("There are {} players online: {}", names.len(), names.join(", ")))
+                // Each with what matters in this round: their team, their base, playing or not.
+                let bases = self.mode == GameMode::Bases;
+                let names: Vec<String> = self
+                    .players
+                    .values()
+                    .map(|p| {
+                        let mut about = Vec::new();
+                        if self.state.is_op(&p.name) {
+                            about.push("op".to_string());
+                        }
+                        if bases && self.roll.teams > 1 && p.team != 0 {
+                            about.push(team_name(p.team).to_string());
+                        }
+                        if let Some(b) = self.base_of(p.id).filter(|_| bases) {
+                            about.push(if b.hp > 0 { format!("base {} %", 100 * b.hp / BASE_HP) } else { "base down".to_string() });
+                        }
+                        let out = bases && p.spectating && self.base_of(p.id).is_some_and(|b| b.hp == 0);
+                        if out || p.spectating || bases {
+                            about.push(if out { "out" } else if p.spectating { "watching" } else { "playing" }.to_string());
+                        }
+                        if about.is_empty() { p.name.clone() } else { format!("{} ({})", p.name, about.join(", ")) }
+                    })
+                    .collect();
+                let count = if names.len() == 1 { "There is 1 player".to_string() } else { format!("There are {} players", names.len()) };
+                done(format!("{count} online: {}", names.join(", ")))
             }
-            "msg" | "r" => {
+            "say" => {
+                let text = rest(0);
+                if text.is_empty() {
+                    return Err(String::new());
+                }
+                self.announce(format!("[{}] {text}", self.name_of(me)));
+                Ok(None)
+            }
+            "me" => {
+                let text = rest(0);
+                if text.is_empty() {
+                    return Err(String::new());
+                }
+                self.announce(format!("* {} {text}", self.name_of(me)));
+                Ok(None)
+            }
+            "msg" | "tell" | "w" | "r" => {
                 let (to, text) = if name == "r" {
                     let to = self.players.get(&me).and_then(|p| p.reply_to).filter(|t| self.players.contains_key(t));
                     (vec![to.ok_or("nobody to reply to")?], rest(0))
@@ -331,6 +369,21 @@ impl Authority {
                         self.event(Event::RoundClock { round_end_tick: self.round_end_tick, sudden_death: self.sudden_death });
                         done(format!("The round ends in {s} seconds"))
                     }
+                    Some("end") if self.next_round_tick.is_none() => {
+                        // With bases: the team whose base stands best wins (nobody, on a tie).
+                        let tick = self.tick();
+                        let mut standing: Vec<(u32, TeamId)> = self.bases.iter().filter(|b| b.hp > 0).map(|b| (b.hp, b.team)).collect();
+                        standing.sort_unstable_by(|a, b| b.cmp(a));
+                        let winner = match standing.as_slice() {
+                            [best, next, ..] if best.0 == next.0 => None,
+                            [best, ..] => Some(best.1),
+                            [] => None,
+                        };
+                        self.end_round(tick, winner);
+                        self.announce(format!("{} ended the round", self.name_of(me)));
+                        Ok(None)
+                    }
+                    Some("end") => Err("the round is over already".to_string()),
                     Some("length") => {
                         let s = seconds()?;
                         self.round_ticks = (s * hz) as Tick;
@@ -417,10 +470,12 @@ impl Authority {
                 Ok(None)
             }
             "mode" => {
-                let mode = args.first().and_then(|w| GameMode::parse(w)).ok_or("")?;
+                let Some(word) = args.first() else { return done(self.mode_summary()) };
+                let mode = GameMode::parse(word).ok_or("")?;
+                self.mode_settings(&args[1..])?;
                 self.set_mode(mode);
                 self.announce(format!("{} started a round of {}", self.name_of(me), mode.name()));
-                Ok(None)
+                done(self.mode_summary())
             }
             "timescale" => {
                 let scale = args.first().and_then(|s| s.parse::<f64>().ok()).filter(|x| (1.0..=1.0e7).contains(x)).ok_or("")?;
@@ -462,31 +517,6 @@ impl Authority {
                     return Err("nobody there has a ship right now".into());
                 }
                 done(format!("Refueled {}", self.names_of(&filled)))
-            }
-            "twist" => {
-                let word = args.first().ok_or("")?;
-                self.forced_twist = match word.as_str() {
-                    "random" => None,
-                    w => Some(Twist::ALL.into_iter().find(|t| t.key() == w).ok_or(format!("no twist called {w:?}"))?),
-                };
-                done(match self.forced_twist {
-                    Some(t) => format!("The next rounds of bases have {}", t.name()),
-                    None => "The next rounds of bases roll their twist".to_string(),
-                })
-            }
-            "teams" => {
-                self.forced_teams = match args.first().map(String::as_str) {
-                    Some("roll") => None,
-                    Some("off") => Some(1),
-                    Some("2") => Some(2),
-                    Some("3") => Some(3),
-                    _ => return Err(String::new()),
-                };
-                done(match self.forced_teams {
-                    None => "The next rounds of bases roll their teams".to_string(),
-                    Some(1) => "In the next rounds of bases everyone plays on their own".to_string(),
-                    Some(k) => format!("The next rounds of bases have teams of {k}"),
-                })
             }
             "team" => {
                 let who = self.select(args.first().ok_or("")?, me)?;

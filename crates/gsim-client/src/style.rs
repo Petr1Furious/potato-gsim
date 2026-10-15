@@ -250,7 +250,7 @@ pub fn mine(s: (f32, f32), r: f32, left: u32, held: f32, ui: f32) {
         let a = time * 0.5 + k as f32 * TAU / stock as f32;
         let at = (s.0 + a.cos() * (ring + 7.0 * ui), s.1 + a.sin() * (ring + 7.0 * ui));
         if k < left {
-            piece(at, gsim_proto::PieceKind::Crystal, time + k as f32 * 2.1, ui);
+            piece(at, gsim_proto::PieceKind::Crystal, time + k as f32 * 2.1, 1.0, ui);
         } else {
             disc(at.0, at.1, 2.0 * ui, alpha(c, 0.25));
         }
@@ -290,6 +290,26 @@ pub fn well(s: (f32, f32), reach: f32, left: f32, ui: f32) {
 pub fn well_seed(s: (f32, f32), ready: f32, ui: f32) {
     disc(s.0, s.1, (2.0 + 2.0 * ready) * ui, alpha(WELL, 0.9));
     ring(s.0, s.1, (10.0 - 6.0 * ready) * ui, ui, alpha(WELL, 0.25 + 0.5 * ready));
+}
+
+/// An EMP going off: a bright ring racing out to `reach` (screen pixels), `age` 0 to 1.
+pub fn emp(s: (f32, f32), reach: f32, age: f32, ui: f32) {
+    let c = Color::new(0.6, 0.85, 1.0, 1.0);
+    let r = reach.clamp(30.0 * ui, 3000.0) * age.sqrt();
+    ring(s.0, s.1, r, (3.0 - 2.0 * age) * ui, alpha(c, (1.0 - age) * (1.0 - age)));
+    disc(s.0, s.1, r, alpha(c, 0.08 * (1.0 - age)));
+}
+
+/// Sparks about a ship whose engines are dead.
+pub fn sparks(s: (f32, f32), ui: f32) {
+    use std::f32::consts::TAU;
+    let t = get_time() as f32;
+    for k in 0..5 {
+        let a = k as f32 * TAU / 5.0 + (t * 7.0 + k as f32).sin() * 0.8;
+        let r = (9.0 + 4.0 * (t * 13.0 + k as f32 * 2.3).sin().abs()) * ui;
+        let (x, y) = (s.0 + r * a.cos(), s.1 + r * a.sin());
+        draw_line(x, y, x + 3.0 * ui * (a + 1.2).cos(), y + 3.0 * ui * (a + 1.2).sin(), 1.2 * ui, Color::new(0.6, 0.85, 1.0, 0.9));
+    }
 }
 
 /// A ship jumping away (`age` 0 to 1): a flash, and a ring closing in on it.
@@ -362,36 +382,48 @@ pub fn piece_color(kind: gsim_proto::PieceKind) -> Color {
     match kind {
         gsim_proto::PieceKind::Scrap => Color::new(0.90, 0.72, 0.50, 1.0),
         gsim_proto::PieceKind::Crystal => Color::new(0.55, 0.95, 1.0, 1.0),
+        gsim_proto::PieceKind::Crate => GOLD,
     }
 }
 
-/// A piece floating free: scrap a tumbling shard of metal, a crystal a glinting diamond.
-/// `spin` turns it (radians).
-pub fn piece(s: (f32, f32), kind: gsim_proto::PieceKind, spin: f32, ui: f32) {
+/// A piece floating free: scrap a tumbling shard of metal, a crystal a glinting diamond, a
+/// crate a box. `spin` turns it (radians); `fade` (1 to 0) is how much of it is left to see.
+pub fn piece(s: (f32, f32), kind: gsim_proto::PieceKind, spin: f32, fade: f32, ui: f32) {
     use std::f32::consts::TAU;
-    let c = piece_color(kind);
+    let c = alpha(piece_color(kind), fade);
     let at = |a: f32, r: f32| vec2(s.0 + r * ui * (spin + a).cos(), s.1 + r * ui * (spin + a).sin());
     match kind {
         gsim_proto::PieceKind::Scrap => {
-            disc(s.0, s.1, 5.5 * ui, alpha(c, 0.10));
+            disc(s.0, s.1, 5.5 * ui, alpha(c, 0.10 * fade));
             // Lopsided, so that it is seen to tumble; lit on the side that faces up.
             let (p, q, r) = (at(0.0, 5.2), at(0.36 * TAU, 3.3), at(0.68 * TAU, 4.2));
-            draw_triangle(p, q, r, mix(c, BACKGROUND, 0.35));
+            draw_triangle(p, q, r, alpha(mix(c, BACKGROUND, 0.35), fade));
             draw_triangle(p, q, vec2(s.0, s.1), c);
-            draw_triangle_lines(p, q, r, 0.8 * ui, alpha(WHITE, 0.35));
+            draw_triangle_lines(p, q, r, 0.8 * ui, alpha(WHITE, 0.35 * fade));
+        }
+        gsim_proto::PieceKind::Crate => {
+            // A box, turning slowly, that glints.
+            disc(s.0, s.1, 12.0 * ui, alpha(c, (0.12 + 0.06 * (spin * 2.0).sin()) * fade));
+            let corner = |k: f32| at(0.3 * spin + k * TAU / 4.0 + TAU / 8.0, 6.0);
+            let (a, b, cc, d) = (corner(0.0), corner(1.0), corner(2.0), corner(3.0));
+            draw_triangle(a, b, cc, alpha(mix(c, BACKGROUND, 0.25), fade));
+            draw_triangle(a, cc, d, alpha(mix(c, BACKGROUND, 0.25), fade));
+            for (p, q) in [(a, b), (b, cc), (cc, d), (d, a), (a, cc), (b, d)] {
+                draw_line(p.x, p.y, q.x, q.y, 1.0 * ui, c);
+            }
         }
         gsim_proto::PieceKind::Crystal => {
-            disc(s.0, s.1, 9.0 * ui, alpha(c, 0.10));
-            disc(s.0, s.1, 5.0 * ui, alpha(c, 0.14));
+            disc(s.0, s.1, 9.0 * ui, alpha(c, 0.10 * fade));
+            disc(s.0, s.1, 5.0 * ui, alpha(c, 0.14 * fade));
             let tilt = 0.15 * spin.sin();
             let tip = |a: f32, r: f32| vec2(s.0 + r * ui * (tilt + a).sin(), s.1 - r * ui * (tilt + a).cos());
             let (top, right, bottom, left) = (tip(0.0, 5.5), tip(0.25 * TAU, 3.0), tip(0.5 * TAU, 5.5), tip(0.75 * TAU, 3.0));
             draw_triangle(top, right, bottom, c);
-            draw_triangle(top, left, bottom, mix(c, BACKGROUND, 0.3));
+            draw_triangle(top, left, bottom, alpha(mix(c, BACKGROUND, 0.3), fade));
             // A glint now and then.
             let glint = (spin * 1.7).sin().max(0.0).powi(6);
             if glint > 0.02 {
-                let (l, k) = ((3.0 + 6.0 * glint) * ui, alpha(WHITE, glint));
+                let (l, k) = ((3.0 + 6.0 * glint) * ui, alpha(WHITE, glint * fade));
                 draw_line(top.x - l, top.y, top.x + l, top.y, 1.0 * ui, k);
                 draw_line(top.x, top.y - l, top.x, top.y + l, 1.0 * ui, k);
             }
