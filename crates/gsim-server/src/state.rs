@@ -163,7 +163,7 @@ impl ServerState {
 
     fn persist(&mut self, file: &str) {
         if let Err(e) = self.save(file) {
-            crate::log("WARN", &format!("Could not write {file}: {e}"));
+            crate::log(crate::Level::Error, &format!("Could not write {file}: {e}"));
         }
         self.remember_stamps();
     }

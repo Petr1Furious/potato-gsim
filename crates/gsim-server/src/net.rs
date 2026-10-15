@@ -7,6 +7,7 @@ use gsim_proto::*;
 use renet::{RenetServer, ServerEvent};
 use renet_netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig};
 use crate::state::ServerState;
+use crate::Level;
 use crate::web::{Event, WebServer};
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
@@ -133,15 +134,15 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
     };
 
     let period = 1.0 / authority.rules.tick_hz as f64;
-    let say = |level: &str, text: &str| {
+    let say = |level: Level, text: &str| {
         if !opts.quiet {
             crate::log(level, text);
         }
     };
-    say("INFO", &format!("Starting gsim server version {} (protocol {})", env!("CARGO_PKG_VERSION"), gsim_proto::PROTOCOL_VERSION));
-    say("INFO", &format!("Game mode: {}, world: {}, {} Hz, time x{}", authority.mode().name(), opts.preset, authority.rules.tick_hz, opts.time_scale));
-    say("INFO", &format!("Starting gsim server on {local}{}", opts.web.map_or(String::new(), |web| format!(" (browsers on tcp {web})"))));
-    say("INFO", &format!("Done ({:.3}s)!", started.elapsed().as_secs_f64()));
+    say(Level::Info, &format!("gsim server {} (protocol {})", env!("CARGO_PKG_VERSION"), gsim_proto::PROTOCOL_VERSION));
+    say(Level::Info, &format!("Game mode: {}, world: {}, {} Hz, time x{}", authority.mode().name(), opts.preset, authority.rules.tick_hz, opts.time_scale));
+    say(Level::Info, &format!("Listening on udp {local}{}", opts.web.map_or(String::new(), |web| format!(", browsers on tcp {web}"))));
+    say(Level::Info, &format!("Ready ({:.0} ms)", started.elapsed().as_secs_f64() * 1e3));
 
     let mut last = Instant::now();
     let mut debt = 0.0f64;
@@ -158,7 +159,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         last = now;
         server.update(elapsed);
         if let Err(e) = transport.update(elapsed, &mut server) {
-            say("WARN", &format!("Network error: {e}"));
+            say(Level::Warn, &format!("Network error: {e}"));
         }
         debt += elapsed.as_secs_f64();
         if debt > MAX_DEBT_SECONDS {
@@ -173,7 +174,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
                 }
                 ServerEvent::ClientDisconnected { client_id, reason } => {
                     if let Some(name) = authority.player_of(client_id).and_then(|id| authority.name(id)) {
-                        say("INFO", &format!("{name} lost connection: {reason}"));
+                        say(Level::Info, &format!("{name} lost connection: {reason}"));
                     }
                     authority.disconnect(client_id);
                 }
@@ -250,7 +251,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         if dropped > 0.5 && now >= report_at {
             report_at = now + Duration::from_secs(15);
             let ticks = (dropped / period).round();
-            say("WARN", &format!("Can't keep up! Is the server overloaded? Running {:.0}ms or {ticks:.0} ticks behind", dropped * 1e3));
+            say(Level::Warn, &format!("Can't keep up! Is the server overloaded? Running {:.0}ms or {ticks:.0} ticks behind", dropped * 1e3));
             dropped = 0.0;
         }
 
@@ -258,7 +259,7 @@ pub fn run(opts: ServerOptions, stop: Arc<AtomicBool>) -> Result<(), String> {
         let wait = (period - debt).clamp(0.0, 0.002);
         std::thread::sleep(Duration::from_secs_f64(wait.max(0.0002)));
     }
-    say("INFO", "Stopping server");
+    say(Level::Info, "Stopping server");
     transport.disconnect_all(&mut server);
     if let Some(web) = &mut web {
         web.close_all();

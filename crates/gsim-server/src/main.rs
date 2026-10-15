@@ -72,12 +72,16 @@ struct Args {
     /// Only let players on the whitelist join
     #[arg(long, env = "GSIM_WHITELIST")]
     whitelist: bool,
+    /// The least that goes into the log: info (everything), warn or error
+    #[arg(long, env = "GSIM_LOG", default_value = "info", value_parser = |s: &str| gsim_server::Level::parse(s).ok_or("info, warn or error"))]
+    log: gsim_server::Level,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 fn main() {
     let args = Args::parse();
+    gsim_server::set_log_level(args.log);
     if let Some(Command::Admin { action }) = &args.command {
         std::process::exit(admin(&args.state_dir, action));
     }
@@ -125,11 +129,11 @@ fn main() {
         op_all: false,
     };
     if !gsim_core::selftest::passes() {
-        eprintln!("FATAL: simulation self-test failed on this machine; refusing to host.");
+        gsim_server::log(gsim_server::Level::Error, "The simulation self-test failed on this machine: refusing to host");
         std::process::exit(2);
     }
     if let Err(e) = run(opts, Arc::new(AtomicBool::new(false))) {
-        eprintln!("error: {e}");
+        gsim_server::log(gsim_server::Level::Error, &format!("Could not start: {e}"));
         std::process::exit(1);
     }
 }

@@ -23,3 +23,4 @@ services:
       GSIM_TARGET_SECONDS: "90"   # a target nobody captures moves on after this long; 0 = never
       GSIM_PLAYERS_PER_TARGET: "2"   # one target for every 2 players; or GSIM_TARGETS for a fixed number (not both)
       GSIM_WHITELIST: "false"     # true = only names in data/whitelist.txt may join
+      GSIM_LOG: info              # info | warn | error: the least that goes into the log

@@ -6,11 +6,11 @@ use super::*;
 impl Authority {
     /// A line for the server log.
     pub(super) fn log(&mut self, text: impl Into<String>) {
-        self.log.push(("INFO", text.into()));
+        self.log.push((crate::Level::Info, text.into()));
     }
 
     /// The lines logged since the last call: (level, text).
-    pub fn drain_log(&mut self) -> Vec<(&'static str, String)> {
+    pub fn drain_log(&mut self) -> Vec<(crate::Level, String)> {
         std::mem::take(&mut self.log)
     }
 

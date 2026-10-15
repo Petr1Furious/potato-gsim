@@ -40,7 +40,7 @@ On NixOS prefix commands with `./x` (e.g. `./x cargo test --workspace`) or use `
 
 ```sh
 mkdir -p data && docker compose up -d --build   # builds the image, runs it on 27777 (udp and tcp)
-docker logs -f potato-gsim          # who joins and leaves, chat, commands, rounds
+docker logs -f potato-gsim          # who joins and leaves, chat, commands, rounds (GSIM_LOG=warn: problems only)
 ```
 
 Settings are environment variables in `docker-compose.yml` (`GSIM_PRESET`, `GSIM_SET`,

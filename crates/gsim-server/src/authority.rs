@@ -150,7 +150,7 @@ pub struct Authority {
     /// Connections the transport should close once their last message is out.
     kicks: Vec<ConnId>,
     /// Lines for the server log, not yet printed: (level, text).
-    log: Vec<(&'static str, String)>,
+    log: Vec<(crate::Level, String)>,
     /// Used to restart the same world when no generator is configured.
     initial: Scenario,
     generator: Option<(String, Params)>,
@@ -368,7 +368,7 @@ impl Authority {
     /// Refuse a connection: tell it why, then have the transport close it.
     fn reject(&mut self, conn: ConnId, who: &str, reason: String) {
         let at = self.addrs.get(&conn).map_or("?".to_string(), |ip| ip.to_string());
-        self.log(format!("Disconnecting {who} (/{at}): {reason}"));
+        self.log(format!("Refused {who} from {at}: {reason}"));
         self.send(Target::One(conn), ServerMsg::Reject { reason });
         self.pending.remove(&conn);
         self.kicks.push(conn);
@@ -437,7 +437,7 @@ impl Authority {
         // (itself included) from the snapshot.
         self.event(Event::PlayerJoined { id, name: name.clone(), color, team: reclaimed.map_or(0, |r| r.0) });
         let at = self.addrs.get(&conn).map_or("?".to_string(), |ip| ip.to_string());
-        self.log(format!("{name}[/{at}] logged in (key {})", identity::fingerprint(&key)));
+        self.log(format!("{name} logged in from {at} (key {})", identity::fingerprint(&key)));
         self.log(format!("{name} joined the game"));
         self.players.insert(
             id,
