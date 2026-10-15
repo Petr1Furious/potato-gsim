@@ -157,39 +157,39 @@ fn a_laden_ship_gains_less_from_the_same_burn() {
 fn the_shop_sells_the_next_tier_at_home_only() {
     let (mut sim, a, b, ann, bob) = duel(4);
     let rules = sim.server.rules.clone();
-    sim.server.grant(ann, Purse { scrap: 40, crystals: 0 });
+    sim.server.grant(ann, Purse { scrap: 12, crystals: 0 });
     // Away from home: no.
     place(&mut sim, ann, Particle { x: 0.0, y: 2.0e11, vx: 0.0, vy: 0.0 });
-    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Engine));
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Thrust));
     sim.run_with(0.5, idle);
     assert!(chat(&sim.clients[a].session).contains(&"The shop is open only at home".to_string()));
-    assert_eq!(sim.server.purse(ann).unwrap().2.tier(Upgrade::Engine), 0);
+    assert_eq!(sim.server.purse(ann).unwrap().2.tier(Upgrade::Thrust), 0);
     // At home: yes, while the bank lasts.
     go_home(&mut sim, ann);
     sim.run_with(0.5, idle);
     let fuel = sim.server.ship(ann).unwrap().fuel;
-    for u in [Upgrade::Engine, Upgrade::Engine, Upgrade::Tank] {
+    for u in [Upgrade::Thrust, Upgrade::Thrust, Upgrade::DeltaV] {
         sim.clients[a].session.buy(Ware::Upgrade(u));
     }
     sim.run_with(0.5, idle);
     let (_, bank, ups) = sim.server.purse(ann).unwrap();
-    assert_eq!((ups.tier(Upgrade::Engine), ups.tier(Upgrade::Tank)), (2, 0), "the tank was too dear");
-    assert_eq!(bank.scrap, 40 - 10 - 25);
+    assert_eq!((ups.tier(Upgrade::Thrust), ups.tier(Upgrade::DeltaV)), (2, 0), "the tank was too dear");
+    assert_eq!(bank.scrap, 0);
     let ship = sim.server.ship(ann).unwrap();
-    assert_eq!(ship.kit.burn, Kit::of(&rules).burn * 160 / 100);
+    assert_eq!(ship.kit.burn, Kit::of(&rules).burn * 2);
     // A bigger tank comes filled.
-    sim.server.grant(ann, Purse { scrap: 5, crystals: 0 });
-    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Tank));
+    sim.server.grant(ann, Purse { scrap: 4, crystals: 0 });
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::DeltaV));
     sim.run_with(0.5, idle);
     let ship = sim.server.ship(ann).unwrap();
-    assert_eq!(ship.kit.tank, rules.fuel_max_mmps * 130 / 100);
-    assert!(ship.fuel >= fuel + rules.fuel_max_mmps * 3 / 10 - 1000, "{} from {fuel}", ship.fuel);
+    assert_eq!(ship.kit.tank, rules.fuel_max_mmps * 3 / 2);
+    assert!(ship.fuel >= fuel + rules.fuel_max_mmps / 2 - 1000, "{} from {fuel}", ship.fuel);
     // More shells, and faster ones.
-    sim.server.grant(ann, Purse { scrap: 20, crystals: 0 });
-    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Magazine));
-    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Guns));
+    sim.server.grant(ann, Purse { scrap: 8, crystals: 0 });
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Shells));
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::ShellSpeed));
     sim.run_with(0.5, idle);
-    assert_eq!(sim.server.magazine(ann).unwrap().max, rules.shell_max * 3 / 2);
+    assert_eq!(sim.server.magazine(ann).unwrap().max, rules.shell_max * 2);
     for i in [a, b] {
         let w = sim.clients[i].session.world.as_ref().unwrap();
         assert_eq!(w.players[&ann].upgrades, sim.server.purse(ann).unwrap().2);
@@ -201,14 +201,14 @@ fn the_shop_sells_the_next_tier_at_home_only() {
 }
 
 #[test]
-fn a_lost_ship_spills_its_cargo_and_drops_a_tier_of_everything() {
+fn a_lost_ship_spills_its_cargo_but_keeps_its_upgrades() {
     let (mut sim, a, b, ann, _) = duel(5);
     let rules = sim.server.rules.clone();
-    sim.server.grant(ann, Purse { scrap: 35, crystals: 0 });
+    sim.server.grant(ann, Purse { scrap: 12, crystals: 0 });
     go_home(&mut sim, ann);
     sim.run_with(0.5, idle);
-    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Engine));
-    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Engine));
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Thrust));
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Thrust));
     sim.run_with(0.5, idle);
     take_scrap(&mut sim, ann);
     take_scrap(&mut sim, ann);
@@ -223,12 +223,12 @@ fn a_lost_ship_spills_its_cargo_and_drops_a_tier_of_everything() {
     assert!(near >= carried as usize, "{near} of {carried} near the wreck");
     let (cargo, _, ups) = sim.server.purse(ann).unwrap();
     assert!(cargo.is_empty());
-    assert_eq!(ups.tier(Upgrade::Engine), 1);
+    assert_eq!(ups.tier(Upgrade::Thrust), 2);
     sim.run_with(6.0, idle);
     let ship = sim.server.ship(ann).expect("a new ship");
     assert_eq!(ship.kit, shop::kit(&rules, &ups, &Purse::default()));
     let w = sim.clients[b].session.world.as_ref().unwrap();
-    assert_eq!(w.players[&ann].upgrades.tier(Upgrade::Engine), 1);
+    assert_eq!(w.players[&ann].upgrades.tier(Upgrade::Thrust), 2);
     assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text.starts_with("Lost")));
     agree(&sim);
 }

@@ -109,20 +109,24 @@ it, carries it, and banks it on coming home (into its zone). Every piece carried
 to catch. A ship that is lost spills its cargo where it was.
 
 **Crystals** come from **mines**: planets near the centre (one, and one more for every two
-players) that give a crystal to a ship holding a qualifying orbit around them, every 8 s while
-it stays, until their three are gone; then the mine opens on another body 20 s later. A few
-crystals also turn up at the centre a minute into the round and every 90 s after (announced
+players) that give a crystal to a ship holding a qualifying orbit around them, every 16 s while
+it stays, until their three are gone; then the mine opens on another body 20 s later. A crystal
+or two also turn up at the centre a minute into the round and every 90 s after (announced
 10 s ahead). Operators can name the first mine in commands (`/orbit mine`).
 
-At home (or waiting there for a ship), `B` opens the shop. Ship upgrades, three tiers each:
-engine (thrust), tank (delta-v), magazine (shells), reload and guns (shell speed), for 10, 25
-and 50 scrap (the last also takes 3 crystals); a lost ship loses one tier of each. Base
-upgrades, kept for the round: armour (damage down to 45 %), zone (out to 1120 Mm) and
-shipyard (a new ship in down to 1.5 s), for 15, 35 and 60 scrap (and 3 crystals). Supplies:
-a shield (drawn around the ship; it survives one shell), ammo (twice the shells, fired and
-coming back twice as fast, until the ship is lost), repair (+20 % base health), and two to
-carry along: warp home (`Q`: a jump back home, leaving the cargo behind) and a gravity well
-(`E`: pulls every ship near where it was dropped in for 6 s).
+Within its home zone a ship feels only its own base: other bodies' pull fades out over the same
+stretch as the base's own pull fades in, so orbits around home keep their shape.
+
+At home (or waiting there for a ship), `B` opens the shop, even once the base has fallen. Ship
+upgrades, three tiers each, kept when the ship is lost: thrust (up to x3), delta-v (up to
+60 km/s), shells (up to 50), fire rate (up to x3) and shell speed (up to 24 km/s), for 4, 8 and
+16 scrap (the last also takes 4 crystals). Base upgrades, shared by its team: armour (up to x3),
+home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
+Supplies: a shield (drawn around the ship; it survives one shell), rapid fire (twice the
+shells, fired and coming back twice as fast, until the ship is lost), base repair (+20 %), and
+two to carry along: warp home (`Q`: a jump back home, leaving the cargo behind) and a gravity
+well (`E`: fired towards the cursor like a shell, after a second it pulls every ship near it in
+for 10 s).
 
 Every round of bases rolls how much scrap floats about, whether there is a mine more, and a
 twist: deep tanks (twice the delta-v), quick guns (shells fire and come back twice as fast),
@@ -194,7 +198,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | `/targets count N`, `/targets per N` | A fixed number of targets, or one for every N players |
 | `/twist NAME\|random` | The twist of the next rounds of bases (`deep-tanks`, `quick-guns`, ...) |
 | `/teams roll\|off\|2\|3`, `/team PLAYER N\|none` | Teams in the next rounds of bases: rolled, none, or of 2 or 3; put a player on team N (1 red, 2 blue, ...) |
-| `/give scrap\|crystals N [PLAYER]` | Put scrap or crystals in a bank |
+| `/give PLAYER ITEM [COUNT]` | Give scrap or crystals (into the bank) or supplies (`shield`, `rapid-fire`, `base-repair`, `warp-home`, `gravity-well`) |
 | `/fuel`, `/god`, `/kill`, `/respawn PLAYER`, `/score PLAYER KILLS ORBITS` | Refill, immunity to shells, destroy, set scores |
 | `/kick`, `/ban`, `/unban`, `/ban-ip`, `/unban-ip`, `/op`, `/deop`, `/whitelist ...` | Moderation, same lists as the admin tool |
 
@@ -213,7 +217,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
-| B, 1 - 8, Q, E | Shop (bases, at home), buy upgrades; warp home, drop a gravity well |
+| B, 1 - 8, Q, E | Shop (bases, at home), buy upgrades; warp home, fire a gravity well |
 | Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 

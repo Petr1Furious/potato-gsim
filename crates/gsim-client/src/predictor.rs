@@ -22,8 +22,8 @@ pub struct Job {
     pub ship: ShipState,
     pub start: Tick,
     pub timeline: InputTimeline,
-    /// Gravity wells: (tick dropped, x, y).
-    pub wells: Vec<(Tick, f64, f64)>,
+    /// Gravity wells: from the tick each starts pulling, where it is tick by tick.
+    pub wells: Vec<(Tick, Vec<(f64, f64)>)>,
     pub ticks: u32,
     pub show_ship: bool,
     /// Also predict with the scheduled thrust kept on, until it has spent `burn_mmps`.
@@ -115,7 +115,7 @@ fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
 /// The coasting path worked out last time, tick by tick from `start`.
 pub struct Coast {
     reader: EphReader,
-    wells: Vec<(Tick, f64, f64)>,
+    wells: Vec<(Tick, Vec<(f64, f64)>)>,
     start: Tick,
     states: Vec<ShipState>,
     impact: Option<u32>,
@@ -149,7 +149,7 @@ fn coast(job: &Job, kept: &mut Option<Coast>, until: f64) -> Option<Path> {
         }
         let Some(row) = job.reader.get(k.start + k.states.len() as Tick - 1) else { break };
         let mut s = *k.states.last().unwrap();
-        let wells = wells_at(&job.wells, k.start + k.states.len() as Tick - 1, &job.rules);
+        let wells = wells_at(&job.wells, k.start + k.states.len() as Tick - 1);
         k.impact = step_ship(&mut s, ShipInput::default(), &wells, &row.view(), &job.rules, &mut scratch);
         k.states.push(s);
     }
@@ -225,7 +225,7 @@ impl Doing {
             let whole = !job.held
                 || self.held.go(job, job.ticks, until, |s, tick, row| {
                     let input = if s.fuel > burning_until { job.timeline.at(tick) } else { ShipInput::default() };
-                    let hit = step_ship(s, input, &wells_at(&job.wells, tick, &job.rules), &row.view(), &job.rules, &mut scratch);
+                    let hit = step_ship(s, input, &wells_at(&job.wells, tick), &row.view(), &job.rules, &mut scratch);
                     ((s.p.x, s.p.y), hit)
                 });
             if !whole {

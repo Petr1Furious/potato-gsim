@@ -51,7 +51,7 @@ struct Asked {
     burn_mmps: i64,
     shell: Option<Particle>,
     ref_slot: Option<u32>,
-    wells: Vec<(Tick, f64, f64)>,
+    wells: Vec<(Tick, Vec<(f64, f64)>)>,
 }
 
 /// From the page. `world` numbers the worlds, so that what belongs to an earlier one is

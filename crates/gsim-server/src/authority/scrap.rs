@@ -82,13 +82,10 @@ impl Authority {
         }
     }
 
-    /// The ship is lost: what it carried floats away, and every upgrade for it drops a tier.
+    /// The ship is lost: what it carried floats away, and rapid fire is over.
     pub(super) fn spill(&mut self, tick: Tick, player: PlayerId) {
         let Some(p) = self.players.get_mut(&player) else { return };
-        let had = p.upgrades;
-        p.upgrades.lower_ship();
-        p.quick = false;
-        let changed = had != p.upgrades;
+        let changed = std::mem::take(&mut p.quick);
         if self.drop_cargo(tick, player) || changed {
             self.loadout(tick, player);
         }
@@ -166,7 +163,7 @@ impl Authority {
         }
         if playing && self.crystals_due.is_some_and(|due| tick >= due) {
             let fever = self.roll.twist == Twist::CrystalFever;
-            let n = 2 + self.players.values().filter(|p| !p.spectating).count() / 3 + fever as usize;
+            let n = 1 + self.players.values().filter(|p| !p.spectating).count() / 6 + fever as usize;
             if let Some(cloud) = self.cloud(PieceKind::Crystal, n, CRYSTAL_FIELD) {
                 self.add_pieces(tick, cloud);
             }
@@ -174,7 +171,7 @@ impl Authority {
             self.crystals_due = Some(tick + (every * hz) as Tick);
             self.event(Event::CrystalsDue { due: self.crystals_due });
         }
-        let home: Vec<PlayerId> = self.players.values().filter(|p| !p.cargo.is_empty()).map(|p| p.id).filter(|id| self.at_home(*id)).collect();
+        let home: Vec<PlayerId> = self.players.values().filter(|p| !p.cargo.is_empty()).map(|p| p.id).filter(|id| self.in_zone(*id)).collect();
         for id in home {
             let cargo = std::mem::take(&mut self.players.get_mut(&id).unwrap().cargo);
             if let Some(b) = self.base_of_mut(id) {
@@ -252,7 +249,7 @@ impl Authority {
     pub(super) fn buy(&mut self, conn: ConnId, ware: Ware) {
         let Some(&id) = self.by_conn.get(&conn) else { return };
         let (tick, rules) = (self.tick(), self.rules.clone());
-        let home = self.at_home(id) || self.players.get(&id).is_some_and(|p| p.ship.is_none() && p.respawn_tick.is_some() && self.base_alive(id));
+        let home = self.in_zone(id) || self.players.get(&id).is_some_and(|p| p.ship.is_none() && p.respawn_tick.is_some() && self.base_alive(id));
         let hp = self.base_of(id).map_or(0, |b| b.hp);
         let (bank, upgrades) = (self.bank_of(id), self.upgrades_of(id));
         let sudden_death = self.sudden_death.is_some_and(|t| tick >= t);
@@ -289,13 +286,13 @@ impl Authority {
             Ware::Upgrade(u) if !u.for_base() => p.upgrades.raise(u),
             Ware::Upgrade(_) => {}
             Ware::Supply(Supply::Shield) => p.shield = true,
-            Ware::Supply(Supply::Ammo) => p.quick = true,
+            Ware::Supply(Supply::RapidFire) => p.quick = true,
             Ware::Supply(Supply::Repair) => {}
             Ware::Supply(s) => *p.items.slot(s).unwrap() += 1,
         }
         // (A new magazine for more shells, and ammo fills it.)
         let fresh = shop::magazine(tick, &rules, &p.upgrades, p.quick);
-        p.magazine = if ware == Ware::Supply(Supply::Ammo) { fresh } else { p.magazine.refit(tick, fresh, &rules) };
+        p.magazine = if ware == Ware::Supply(Supply::RapidFire) { fresh } else { p.magazine.refit(tick, fresh, &rules) };
         // What the team shares: the bank, the base and what was bought for it.
         let b = self.base_of_mut(id).expect("a base, to be at home");
         b.bank.take(price);
@@ -311,7 +308,7 @@ impl Authority {
     }
 
     /// One of the supplies the ship carries: a jump home, or a gravity well where it is.
-    pub(super) fn use_supply(&mut self, conn: ConnId, supply: Supply) {
+    pub(super) fn use_supply(&mut self, conn: ConnId, supply: Supply, angle: u16, speed: f32) {
         let Some(&id) = self.by_conn.get(&conn) else { return };
         let tick = self.tick();
         let home = self.base_spawn(id);
@@ -331,8 +328,14 @@ impl Authority {
             }
             Supply::Well => {
                 *count -= 1;
-                self.wells.push((tick, ship.p.x, ship.p.y));
-                self.event(Event::Well { tick, player: id, x: ship.p.x, y: ship.p.y });
+                // Off the ship as a shell would go.
+                let fastest = shop::shell_speed_max(&self.rules, &p.upgrades);
+                let speed = if speed.is_finite() { speed as f64 } else { 0.0 }.clamp(self.rules.shell_speed_min, fastest);
+                let (dx, dy) = math::angle_to_dir(angle);
+                let muzzle = self.rules.ship_radius + 2.0 * self.rules.shell_radius;
+                let p = Particle { x: ship.p.x + dx * muzzle, y: ship.p.y + dy * muzzle, vx: ship.p.vx + dx * speed, vy: ship.p.vy + dy * speed };
+                self.wells.push((tick, p));
+                self.event(Event::Well { tick, player: id, p });
                 self.loadout(tick, id);
             }
             _ => {}
@@ -365,5 +368,31 @@ impl Authority {
     /// When crystals next turn up.
     pub fn crystals_due(&self) -> Option<Tick> {
         self.crystals_due
+    }
+}
+
+impl Authority {
+    /// Operator hook: supplies, as if bought (`count` of those carried, beyond what one may buy).
+    pub fn grant_supply(&mut self, player: PlayerId, supply: Supply, count: u32) {
+        let (tick, rules) = (self.tick(), self.rules.clone());
+        let Some(p) = self.players.get_mut(&player) else { return };
+        match supply {
+            Supply::Shield => p.shield = true,
+            Supply::RapidFire => {
+                p.quick = true;
+                p.magazine = shop::magazine(tick, &rules, &p.upgrades, true);
+            }
+            Supply::Repair => {
+                if let Some(b) = self.base_of_mut(player).filter(|b| b.hp > 0) {
+                    b.hp = (b.hp + count * REPAIR_HP).min(BASE_HP);
+                    self.bases_changed = true;
+                }
+            }
+            Supply::Warp | Supply::Well => {
+                let n = p.items.slot(supply).unwrap();
+                *n = (*n as u32 + count).min(u8::MAX as u32) as u8;
+            }
+        }
+        self.loadout(tick, player);
     }
 }

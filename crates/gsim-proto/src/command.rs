@@ -125,9 +125,13 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "give",
-        help: "put scrap or crystals in a player's bank",
+        help: "give a player scrap or crystals (into their bank) or supplies",
         op: true,
-        params: &[req("scrap|crystals", Arg::Word(&["scrap", "crystals"])), req("amount", Arg::Number), opt("player", Arg::Player)],
+        params: &[
+            req("player", Arg::Player),
+            req("item", Arg::Word(&["scrap", "crystals", "shield", "rapid-fire", "base-repair", "warp-home", "gravity-well"])),
+            opt("count", Arg::Number),
+        ],
     },
     Command {
         name: "gamemode",

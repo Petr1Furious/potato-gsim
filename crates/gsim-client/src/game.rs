@@ -288,6 +288,8 @@ impl Game {
         let keys = !self.ui_has_keyboard && !self.menu_open && !self.chat.open;
         let mouse = mouse_position();
         let mut shop_asked = false;
+        // E was pressed: fire a gravity well towards the cursor, as a shell.
+        let mut well_asked = false;
 
         // --- toggles -------------------------------------------------------------------------
         if is_key_pressed(KeyCode::Escape) {
@@ -366,10 +368,10 @@ impl Game {
             }
             // The supplies the ship carries.
             if is_key_pressed(KeyCode::Q) {
-                self.net.session.use_supply(Supply::Warp);
+                self.net.session.use_supply(Supply::Warp, 0, 0.0);
             }
             if is_key_pressed(KeyCode::E) {
-                self.net.session.use_supply(Supply::Well);
+                well_asked = true;
             }
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
@@ -420,6 +422,10 @@ impl Game {
             if keys && is_key_down(KeyCode::Space) {
                 let (angle, speed) = self.shell_aim(&ship, (mwx, mwy));
                 controls.fire = Some((angle, speed as f32));
+            }
+            if well_asked {
+                let (angle, speed) = self.shell_aim(&ship, (mwx, mwy));
+                self.net.session.use_supply(Supply::Well, angle, speed as f32);
             }
         }
         // Held long enough, the self-destruct key gives the ship up, once per press.
@@ -510,7 +516,7 @@ impl Game {
         // The shop: at home only (or there waiting for a ship), in a round of bases.
         let playing = world.me().is_some_and(|m| !m.spectating) && world.next_round_tick.is_none();
         let waiting = world.me().is_some_and(|m| m.ship.is_none() && m.respawn_tick.is_some());
-        let can_shop = bases && playing && world.base_of(world.my_id).is_some_and(|b| b.hp > 0) && (waiting || world.at_home(world.my_id));
+        let can_shop = bases && playing && world.base_of(world.my_id).is_some_and(|b| (waiting && b.hp > 0) || world.in_zone(world.my_id));
         if self.shop_open && !can_shop {
             self.shop_open = false;
             if shop_asked {
@@ -881,8 +887,8 @@ impl Game {
             let zone_radii = members.first().and_then(|id| world.players.get(id)).map_or(gsim_proto::HOME_RADII, |p| shop::zone_radii(&p.upgrades));
             let home = (zone_radii * radius / view.mpp) as f32;
             let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
-            if b.hp > 0 && mine && home > 14.0 * ui {
-                let lit = world.at_home(world.my_id);
+            if mine && home > 14.0 * ui {
+                let lit = world.in_zone(world.my_id);
                 if home < 1.0e6 {
                     style::zone(s, home, colour, lit, ui);
                 } else {
@@ -1010,10 +1016,16 @@ impl Game {
         // Drawn out to where it pulls as hard as the engine pushes.
         let thrust = world.rules.burn_per_tick_mmps as f64 * 1.0e-3 / world.rules.dt;
         let well_reach = (world.rules.g * world.rules.well_mass / thrust).sqrt();
-        for (at, x, y) in &world.wells {
-            let left = 1.0 - (tick_f - *at as f64) / well_ticks;
-            if (0.0..=1.0).contains(&left) {
-                style::well(view.to_screen(*x, *y), (well_reach / view.mpp) as f32, left as f32, ui);
+        let well_arm = world.rules.well_arm_ticks as f64;
+        for w in &world.wells {
+            let Some(p) = w.at(tick_f as Tick) else { continue };
+            let s = view.to_screen(p.x, p.y);
+            let age = tick_f - w.fired as f64;
+            if age < well_arm {
+                // On its way: a dark seed, gathering.
+                style::well_seed(s, (age / well_arm) as f32, ui);
+            } else if age < well_arm + well_ticks {
+                style::well(s, (well_reach / view.mpp) as f32, (1.0 - (age - well_arm) / well_ticks) as f32, ui);
             }
         }
         for e in &world.effects {
@@ -1087,7 +1099,7 @@ impl Game {
                         reader: world.eph.reader(),
                         rules: world.rules.clone(),
                         ship: *track.last(),
-                        wells: world.wells.clone(),
+                        wells: world.well_paths(),
                         start: track.end(),
                         timeline: me.timeline.clone(),
                         ticks: self.lookahead_ticks,
@@ -1443,6 +1455,7 @@ impl Game {
         let thrust_share = kit.map_or(1.0, |k| k.push as f32 / k.burn.max(1) as f32);
         let (cargo, bank, upgrades) = me.map_or(Default::default(), |m| (m.cargo, m.bank, m.upgrades));
         let shop_open = self.shop_open;
+        let rules_now = world.rules.clone();
         let mut bought: Option<Ware> = None;
         let (items, shielded) = me.map_or((Items::default(), false), |m| (m.items, m.shield));
         let thrust_pct = self.thrust_pct;
@@ -1668,16 +1681,11 @@ impl Game {
                                 let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
                                 style::gauge(ui, "HOLD", &what, thrust_share, style::piece_colour(PieceKind::Scrap));
                             }
-                            if items.warps > 0 || items.wells > 0 {
-                                // Supplies carried, and the keys that use them.
-                                ui.horizontal(|ui| {
-                                    for (n, key, what) in [(items.warps, "Q", "warp home"), (items.wells, "E", "gravity well")] {
-                                        if n > 0 {
-                                            style::key_hint(ui, key);
-                                            ui.label(RichText::new(format!("{what} {n}")).color(gold));
-                                        }
-                                    }
-                                });
+                            // Supplies carried, and the keys that use them.
+                            for (n, key, what) in [(items.warps, "Q", "WARP HOME"), (items.wells, "E", "GRAVITY WELL")] {
+                                if n > 0 {
+                                    style::row(ui, what, RichText::new(n.to_string()).color(gold), Some(key));
+                                }
                             }
                         }
                         None if spectating => {
@@ -1692,17 +1700,9 @@ impl Game {
                         }
                     }
                     if bases && playing {
-                        ui.horizontal(|ui| {
-                            style::caption(ui, "BANK");
-                            ui.label(RichText::new(format!("{} scrap", bank.scrap)).color(style::c32(style::piece_colour(PieceKind::Scrap))));
-                            ui.label(RichText::new(format!("{} crystals", bank.crystals)).color(style::c32(style::piece_colour(PieceKind::Crystal))));
-                        });
-                        if can_shop {
-                            ui.horizontal(|ui| {
-                                style::key_hint(ui, "B");
-                                ui.label(RichText::new("shop").color(dim));
-                            });
-                        }
+                        // What is banked, and the key for the shop where it is open.
+                        let value = RichText::new(format!("{} scrap · {} crystals", bank.scrap, bank.crystals)).color(style::c32(style::piece_colour(PieceKind::Scrap)));
+                        style::row(ui, "BANK", value, can_shop.then_some("B"));
                     }
                 });
             });
@@ -1734,7 +1734,7 @@ impl Game {
             }
 
             if shop_open {
-                bought = shop(ctx, &bank, &upgrades, &items, shielded);
+                bought = shop(ctx, &rules_now, &bank, &upgrades, &items, shielded);
             }
 
             chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
@@ -2067,7 +2067,7 @@ impl Game {
 
 /// The shop, at home: the next tier of each upgrade, and supplies, for what is banked.
 /// Returns what was bought, if anything.
-fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, shield: bool) -> Option<Ware> {
+fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrades: &Upgrades, items: &Items, shield: bool) -> Option<Ware> {
     use egui::RichText;
     let mut bought = None;
     let (dim, gold, text) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::TEXT));
@@ -2091,7 +2091,7 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, s
                     }
                     ui.end_row();
                 }
-                let (tier, tiers) = (upgrades.tier(u), u.tiers());
+                let tier = upgrades.tier(u);
                 style::key_hint(ui, &(k + 1).to_string());
                 ui.label(RichText::new(u.name().to_uppercase()).strong());
                 // Tiers bought, out of all of them.
@@ -2104,9 +2104,9 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, s
                         ui.painter().rect_stroke(pip, 1.0, egui::Stroke::new(1.0, dim), egui::StrokeKind::Inside);
                     }
                 }
-                ui.label(RichText::new(tiers[tier as usize]).color(dim));
+                ui.label(RichText::new(u.tier_text(rules, tier)).color(dim));
                 if tier < TIERS {
-                    ui.label(RichText::new(tiers[tier as usize + 1]).color(text));
+                    ui.label(RichText::new(u.tier_text(rules, tier + 1)).color(text));
                     if price_button(ui, u.price(tier + 1), true) {
                         bought = Some(Ware::Upgrade(u));
                     }
@@ -2117,7 +2117,7 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, s
                 ui.end_row();
             }
         });
-        egui::Grid::new("supplies").num_columns(4).spacing([10.0, 5.0]).show(ui, |ui| {
+        egui::Grid::new("supplies").num_columns(3).spacing([10.0, 5.0]).show(ui, |ui| {
             style::caption(ui, "SUPPLIES");
             ui.end_row();
             for s in Supply::ALL {
@@ -2128,7 +2128,6 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, s
                     _ => String::new(),
                 };
                 ui.label(RichText::new(have).color(gold));
-                ui.label(RichText::new(s.about()).color(dim));
                 let can = match s {
                     Supply::Shield => !shield,
                     _ => !s.carried() || items.count(s) < shop::CARRY,
@@ -2139,8 +2138,6 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, s
                 ui.end_row();
             }
         });
-        ui.add_space(4.0);
-        ui.label(RichText::new("A lost ship loses one tier of each ship upgrade.").small().color(dim));
     });
     bought
 }

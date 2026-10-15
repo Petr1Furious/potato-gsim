@@ -68,72 +68,71 @@ pub const CRYSTAL_WEIGHT: u32 = 15;
 /// What can be bought for a ship, in tiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Upgrade {
-    /// Thrust.
-    Engine,
-    /// Delta-v.
-    Tank,
+    Thrust,
+    DeltaV,
     /// Shells carried.
-    Magazine,
-    /// Shells fired and coming back sooner.
-    Reload,
-    /// Faster shells.
-    Guns,
+    Shells,
+    /// How fast shells are fired and come back.
+    FireRate,
+    ShellSpeed,
     /// The base takes less damage.
     Armour,
     /// A wider home zone.
-    Zone,
+    HomeZone,
     /// New ships sooner.
-    Shipyard,
+    Respawn,
 }
 
 /// Tiers above the bare ship.
 pub const TIERS: u8 = 3;
 
 impl Upgrade {
-    pub const SHIP: [Upgrade; 5] = [Upgrade::Engine, Upgrade::Tank, Upgrade::Magazine, Upgrade::Reload, Upgrade::Guns];
-    pub const BASE: [Upgrade; 3] = [Upgrade::Armour, Upgrade::Zone, Upgrade::Shipyard];
+    pub const SHIP: [Upgrade; 5] = [Upgrade::Thrust, Upgrade::DeltaV, Upgrade::Shells, Upgrade::FireRate, Upgrade::ShellSpeed];
+    pub const BASE: [Upgrade; 3] = [Upgrade::Armour, Upgrade::HomeZone, Upgrade::Respawn];
 
-    /// For the base, kept for the whole round (not for the ship, and lost a tier with it).
+    /// For the base (shared by its team), rather than for the ship.
     pub fn for_base(self) -> bool {
         Self::BASE.contains(&self)
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Upgrade::Engine => "engine",
-            Upgrade::Tank => "tank",
-            Upgrade::Magazine => "magazine",
-            Upgrade::Reload => "reload",
-            Upgrade::Guns => "guns",
+            Upgrade::Thrust => "thrust",
+            Upgrade::DeltaV => "delta-v",
+            Upgrade::Shells => "shells",
+            Upgrade::FireRate => "fire rate",
+            Upgrade::ShellSpeed => "shell speed",
             Upgrade::Armour => "armour",
-            Upgrade::Zone => "zone",
-            Upgrade::Shipyard => "shipyard",
+            Upgrade::HomeZone => "home zone",
+            Upgrade::Respawn => "respawn",
         }
     }
 
-    /// What each tier gives, bare ship first.
-    pub fn tiers(self) -> [&'static str; TIERS as usize + 1] {
+    /// What tier `tier` (0 for none) amounts to, under these rules: "x1.5", "30 km/s".
+    pub fn tier_text(self, rules: &GameRules, tier: u8) -> String {
+        let ups = Upgrades::default().at(self, tier);
+        let times = |pct: i64| format!("x{}", pct as f64 / 100.0);
         match self {
-            Upgrade::Engine => ["thrust x1", "thrust x1.3", "thrust x1.6", "thrust x2"],
-            Upgrade::Tank => ["20 km/s", "26 km/s", "32 km/s", "40 km/s"],
-            Upgrade::Magazine => ["10 shells", "15 shells", "20 shells", "30 shells"],
-            Upgrade::Reload => ["x1", "x1.3 faster", "x1.7 faster", "x2.2 faster"],
-            Upgrade::Guns => ["8 km/s", "10 km/s", "12.5 km/s", "16 km/s"],
-            Upgrade::Armour => ["full damage", "75 % damage", "60 % damage", "45 % damage"],
-            Upgrade::Zone => ["640 Mm", "800 Mm", "960 Mm", "1120 Mm"],
-            Upgrade::Shipyard => ["ship in 5 s", "in 3.5 s", "in 2.5 s", "in 1.5 s"],
+            Upgrade::Thrust => times(ups.percent(self, THRUST)),
+            Upgrade::DeltaV => format!("{} km/s", kit(rules, &ups, &Purse::default()).tank / 1_000_000),
+            Upgrade::Shells => magazine(0, rules, &ups, false).max.to_string(),
+            Upgrade::FireRate => times(ups.percent(self, FIRE_RATE)),
+            Upgrade::ShellSpeed => format!("{} km/s", shell_speed_max(rules, &ups) / 1000.0),
+            Upgrade::Armour => times(ups.percent(self, ARMOUR)),
+            Upgrade::HomeZone => format!("{:.0} Mm", zone_radii(&ups) * crate::BASE_RADIUS / 1.0e6),
+            Upgrade::Respawn => format!("{} s", respawn_ticks(rules, &ups) as f64 / rules.tick_hz as f64),
         }
     }
 
     /// What tier `tier` (1 to 3) costs.
     pub fn price(self, tier: u8) -> Purse {
         match (self.for_base(), tier) {
-            (true, 1) => Purse { scrap: 15, crystals: 0 },
-            (true, 2) => Purse { scrap: 35, crystals: 0 },
-            (true, _) => Purse { scrap: 60, crystals: 3 },
-            (false, 1) => Purse { scrap: 10, crystals: 0 },
-            (false, 2) => Purse { scrap: 25, crystals: 0 },
-            (false, _) => Purse { scrap: 50, crystals: 3 },
+            (true, 1) => Purse { scrap: 6, crystals: 0 },
+            (true, 2) => Purse { scrap: 12, crystals: 0 },
+            (true, _) => Purse { scrap: 24, crystals: 4 },
+            (false, 1) => Purse { scrap: 4, crystals: 0 },
+            (false, 2) => Purse { scrap: 8, crystals: 0 },
+            (false, _) => Purse { scrap: 16, crystals: 4 },
         }
     }
 
@@ -164,11 +163,10 @@ impl Upgrades {
         ups
     }
 
-    /// One tier less of everything for the ship (when it is lost).
-    pub fn lower_ship(&mut self) {
-        for u in Upgrade::SHIP {
-            self.0[u.index()] = self.0[u.index()].saturating_sub(1);
-        }
+    /// The same with this tier of `u`.
+    fn at(mut self, u: Upgrade, tier: u8) -> Upgrades {
+        self.0[u.index()] = tier.min(TIERS);
+        self
     }
 
     /// Percent of the bare ship's figure at this upgrade's tier.
@@ -177,21 +175,26 @@ impl Upgrades {
     }
 }
 
+/// Thrust, fire rate and armour, in percent of the bare figure, by tier.
+const THRUST: [i64; 4] = [100, 150, 200, 300];
+const FIRE_RATE: [i64; 4] = [100, 150, 200, 300];
+const ARMOUR: [i64; 4] = [100, 150, 200, 300];
+
 /// The engine and tank of a ship with these upgrades and this much in its hold.
 pub fn kit(rules: &GameRules, ups: &Upgrades, hold: &Purse) -> Kit {
     let bare = Kit::of(rules);
-    let burn = bare.burn * ups.percent(Upgrade::Engine, [100, 130, 160, 200]) / 100;
-    let tank = bare.tank * ups.percent(Upgrade::Tank, [100, 130, 160, 200]) / 100;
+    let burn = bare.burn * ups.percent(Upgrade::Thrust, THRUST) / 100;
+    let tank = bare.tank * ups.percent(Upgrade::DeltaV, [100, 150, 225, 300]) / 100;
     let weight = 100 + (SCRAP_WEIGHT * hold.scrap + CRYSTAL_WEIGHT * hold.crystals) as i64;
     Kit { burn, push: burn * 100 / weight, tank }
 }
 
-/// A full magazine for these upgrades; `quick` (from ammo) fires and reloads twice as fast,
+/// A full magazine for these upgrades; `quick` (rapid fire) fires and reloads twice as fast,
 /// with twice the shells.
 pub fn magazine(tick: Tick, rules: &GameRules, ups: &Upgrades, quick: bool) -> Magazine {
-    let max = rules.shell_max * ups.percent(Upgrade::Magazine, [100, 150, 200, 300]) as u32 / 100;
-    let per = ups.percent(Upgrade::Reload, [100, 75, 60, 45]) as u32;
-    let (cooldown, regen) = (rules.shell_cooldown_ticks * per / 100, rules.shell_regen_ticks * per / 100);
+    let max = rules.shell_max * ups.percent(Upgrade::Shells, [100, 200, 300, 500]) as u32 / 100;
+    let rate = ups.percent(Upgrade::FireRate, FIRE_RATE) as u32;
+    let (cooldown, regen) = (rules.shell_cooldown_ticks * 100 / rate, rules.shell_regen_ticks * 100 / rate);
     if quick {
         Magazine::new(tick, 2 * max, cooldown / 2, regen / 2)
     } else {
@@ -201,22 +204,22 @@ pub fn magazine(tick: Tick, rules: &GameRules, ups: &Upgrades, quick: bool) -> M
 
 /// The fastest a shell leaves the guns (m/s).
 pub fn shell_speed_max(rules: &GameRules, ups: &Upgrades) -> f64 {
-    rules.shell_speed_max * ups.percent(Upgrade::Guns, [100, 125, 156, 200]) as f64 / 100.0
+    rules.shell_speed_max * ups.percent(Upgrade::ShellSpeed, [100, 150, 200, 300]) as f64 / 100.0
 }
 
 /// How far around the base its home zone reaches, in base radii.
 pub fn zone_radii(ups: &Upgrades) -> f64 {
-    crate::HOME_RADII * ups.percent(Upgrade::Zone, [100, 125, 150, 175]) as f64 / 100.0
+    crate::HOME_RADII * ups.percent(Upgrade::HomeZone, [100, 150, 200, 250]) as f64 / 100.0
 }
 
 /// What is left of `amount` of damage to a base with these upgrades.
 pub fn armoured(amount: u32, ups: &Upgrades) -> u32 {
-    (amount as i64 * ups.percent(Upgrade::Armour, [100, 75, 60, 45]) / 100) as u32
+    (amount as i64 * 100 / ups.percent(Upgrade::Armour, ARMOUR)) as u32
 }
 
 /// Ticks before a lost ship is replaced.
 pub fn respawn_ticks(rules: &GameRules, ups: &Upgrades) -> u32 {
-    (rules.respawn_ticks as i64 * ups.percent(Upgrade::Shipyard, [100, 70, 50, 30]) / 100) as u32
+    (rules.respawn_ticks as i64 * ups.percent(Upgrade::Respawn, [100, 60, 40, 20]) / 100) as u32
 }
 
 /// What the shop sells once at a time.
@@ -225,12 +228,12 @@ pub enum Supply {
     /// The ship survives one shell.
     Shield,
     /// Twice the shells, fired and coming back twice as fast, until the ship is lost.
-    Ammo,
+    RapidFire,
     /// A fifth of the base's health back.
     Repair,
     /// Carried: a jump back home, leaving the cargo behind.
     Warp,
-    /// Carried: dropped where the ship is, it pulls every ship near it in for a while.
+    /// Carried: fired like a shell, it pulls every ship near it in for a while.
     Well,
 }
 
@@ -238,35 +241,30 @@ pub enum Supply {
 pub const CARRY: u8 = 2;
 
 impl Supply {
-    pub const ALL: [Supply; 5] = [Supply::Shield, Supply::Ammo, Supply::Repair, Supply::Warp, Supply::Well];
+    pub const ALL: [Supply; 5] = [Supply::Shield, Supply::RapidFire, Supply::Repair, Supply::Warp, Supply::Well];
 
     pub fn name(self) -> &'static str {
         match self {
             Supply::Shield => "shield",
-            Supply::Ammo => "ammo",
-            Supply::Repair => "repair",
+            Supply::RapidFire => "rapid fire",
+            Supply::Repair => "base repair",
             Supply::Warp => "warp home",
             Supply::Well => "gravity well",
         }
     }
 
-    pub fn about(self) -> &'static str {
-        match self {
-            Supply::Shield => "survive one shell",
-            Supply::Ammo => "2x shells, 2x as fast",
-            Supply::Repair => "+20 % base health",
-            Supply::Warp => "jump home, cargo stays",
-            Supply::Well => "pulls ships in for 6 s",
-        }
+    /// How commands name it.
+    pub fn key(self) -> String {
+        self.name().replace(' ', "-")
     }
 
     pub fn price(self) -> Purse {
         match self {
-            Supply::Shield => Purse { scrap: 12, crystals: 0 },
-            Supply::Ammo => Purse { scrap: 10, crystals: 0 },
-            Supply::Repair => Purse { scrap: 20, crystals: 0 },
-            Supply::Warp => Purse { scrap: 15, crystals: 0 },
-            Supply::Well => Purse { scrap: 10, crystals: 2 },
+            Supply::Shield => Purse { scrap: 5, crystals: 0 },
+            Supply::RapidFire => Purse { scrap: 4, crystals: 0 },
+            Supply::Repair => Purse { scrap: 8, crystals: 0 },
+            Supply::Warp => Purse { scrap: 6, crystals: 0 },
+            Supply::Well => Purse { scrap: 4, crystals: 1 },
         }
     }
 

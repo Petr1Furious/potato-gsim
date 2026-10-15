@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -62,8 +62,9 @@ pub enum ClientMsg {
     ResyncRequest,
     /// Reliable: buy this (at home, from what is banked).
     Buy(Ware),
-    /// Reliable: use one of the supplies the ship carries.
-    Use(Supply),
+    /// Reliable: use one of the supplies the ship carries (a gravity well is fired with this
+    /// heading and speed, as a shell is).
+    Use { supply: Supply, angle: u16, speed: f32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -204,6 +205,9 @@ pub const REPAIR_HP: u32 = BASE_HP / 5;
 /// spawn inside it, and it is as far as the base pulls ships in full.
 pub const HOME_RADII: f64 = 100.0;
 
+/// How big a base is (m): an Earth, small enough for a ship to circle close in.
+pub const BASE_RADIUS: f64 = 6.4e6;
+
 /// What teams are called (and coloured), from team 1 on.
 pub const TEAM_NAMES: [&str; 8] = ["red", "blue", "green", "gold", "violet", "cyan", "orange", "white"];
 
@@ -220,7 +224,7 @@ pub struct Base {
 }
 
 /// Seconds on a qualifying orbit around a mine for each crystal it gives.
-pub const MINE_SECONDS: f64 = 8.0;
+pub const MINE_SECONDS: f64 = 16.0;
 /// Crystals in a mine when it opens; once they are gone it moves to another body.
 pub const MINE_STOCK: u32 = 3;
 
@@ -291,8 +295,8 @@ pub struct Welcome {
     pub mines: Vec<Mine>,
     /// When crystals next turn up near the centre.
     pub crystals_due: Option<Tick>,
-    /// Gravity wells pulling ships in: (tick dropped, x, y).
-    pub wells: Vec<(Tick, f64, f64)>,
+    /// Gravity wells on their way or pulling: (tick fired, state at `massive.tick`).
+    pub wells: Vec<(Tick, Particle)>,
     pub rules: GameRules,
     pub massive: MassiveSnapshot,
     pub names: Vec<(u32, String)>,
@@ -329,8 +333,9 @@ pub enum Event {
     Mined { tick: Tick, player: PlayerId, slot: u32 },
     /// Crystals turn up near the centre at `due`.
     CrystalsDue { due: Option<Tick> },
-    /// From `tick` on, for `GameRules::well_ticks`, ships are pulled towards this spot.
-    Well { tick: Tick, player: PlayerId, x: f64, y: f64 },
+    /// `player` fired a gravity well at `tick`, from `p`. It flies as a shell does and pulls
+    /// ships in for `GameRules::well_ticks` from `GameRules::well_arm_ticks` on.
+    Well { tick: Tick, player: PlayerId, p: Particle },
     /// `player` jumped home, leaving their cargo behind.
     Warped { tick: Tick, player: PlayerId },
     /// The shield of `player`'s ship took a shell and is gone.

@@ -72,8 +72,10 @@ pub struct GameRules {
     /// (0 = its pull everywhere). Far from the bases ships and bodies then fall alike, and
     /// orbits around bodies there are left alone.
     pub base_reach: f64,
-    /// A gravity well (dropped by a ship) pulls ships for this long, as a body of this mass
-    /// would, but no harder than from this far.
+    /// A gravity well (fired by a ship like a shell) starts pulling this long after it is
+    /// fired, and then pulls ships for this long, as a body of this mass would, but no harder
+    /// than from this far.
+    pub well_arm_ticks: u32,
     pub well_ticks: u32,
     pub well_mass: f64,
     pub well_core: f64,
@@ -127,8 +129,9 @@ impl GameRules {
             death_points: 1,
             target_ticks: secs(90.0),
             base_reach: 0.0,
-            well_ticks: secs(6.0),
-            well_mass: 2.0e25,
+            well_arm_ticks: secs(1.0),
+            well_ticks: secs(10.0),
+            well_mass: 1.2e25,
             well_core: 3.0e7,
         }
     }

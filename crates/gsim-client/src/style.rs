@@ -286,6 +286,12 @@ pub fn well(s: (f32, f32), reach: f32, left: f32, ui: f32) {
     }
 }
 
+/// A gravity well on its way, `ready` (0 to 1) of the way to pulling.
+pub fn well_seed(s: (f32, f32), ready: f32, ui: f32) {
+    disc(s.0, s.1, (2.0 + 2.0 * ready) * ui, alpha(WELL, 0.9));
+    ring(s.0, s.1, (10.0 - 6.0 * ready) * ui, ui, alpha(WELL, 0.25 + 0.5 * ready));
+}
+
 /// A ship jumping away (`age` 0 to 1): a flash, and a ring closing in on it.
 pub fn warp(s: (f32, f32), colour: Color, age: f32, ui: f32) {
     let fade = (1.0 - age) * (1.0 - age);
@@ -687,6 +693,20 @@ pub fn gauge(ui: &mut egui::Ui, label: &str, value: &str, frac: f32, color: Colo
         painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, egui::Color32::from_rgb(6, 10, 18)));
     }
     ui.add_space(3.0);
+}
+
+/// A line of a panel: a caption on the left; on the right a value and, if any, the key that
+/// goes with it.
+pub fn row(ui: &mut egui::Ui, label: &str, value: egui::RichText, key: Option<&str>) {
+    ui.horizontal(|ui| {
+        caption(ui, label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(key) = key {
+                ui.label(egui::RichText::new(key).monospace().color(c32(ACCENT)));
+            }
+            ui.label(value);
+        });
+    });
 }
 
 /// Section header inside a window.

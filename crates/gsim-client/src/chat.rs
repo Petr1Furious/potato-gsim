@@ -16,7 +16,9 @@ const LINGER: f64 = 10.0;
 const FADE: f64 = 2.0;
 const LINES_CLOSED: usize = 6;
 const LINES_OPEN: usize = 14;
-const WIDTH: f32 = 380.0;
+const WIDTH: f32 = 440.0;
+/// The chat's text, against the rest of the interface.
+const TEXT_SCALE: f32 = 1.15;
 /// Rows of the suggestion list shown at once (as in Minecraft's chat).
 const LIST_ROWS: usize = 10;
 /// Chat lines scrolled per wheel notch (one with Shift held).
@@ -54,9 +56,11 @@ pub struct Outcome {
 
 /// The open suggestion list.
 struct List {
-    /// The input the suggestions were computed for, and where the completed word starts.
+    /// The input the suggestions were computed for, and where the completed word starts and
+    /// ends (the word under the cursor: what follows it stays).
     base: String,
     start: usize,
+    end: usize,
     items: Vec<String>,
     selected: usize,
     /// First visible row.
@@ -92,9 +96,13 @@ pub struct ChatBox {
     /// Lines scrolled up from the newest.
     scroll: usize,
     list: Option<List>,
-    /// What the analysis below was computed for.
-    analysed: String,
+    /// What the analysis below was computed for (the input, and the cursor in it).
+    analysed: (String, usize),
     analysis: Analysis,
+    /// Byte offset of the cursor in the input, as of the last frame.
+    cursor: usize,
+    /// Put the cursor here (in chars) next frame.
+    cursor_to: Option<usize>,
     /// Escape hid the suggestions for exactly this input.
     hidden_for: Option<String>,
 }
@@ -111,7 +119,8 @@ impl ChatBox {
         self.list = None;
         self.hidden_for = None;
         // Force a fresh analysis even if the text matches the last one.
-        self.analysed = "\u{0}".to_string();
+        self.analysed = ("\u{0}".to_string(), 0);
+        self.cursor = text.len();
     }
 
     pub fn close(&mut self) {
@@ -156,6 +165,9 @@ impl ChatBox {
             // Closed, it is only text over the world: clicks go through to what is behind.
             .interactable(self.open)
             .show(ctx, |ui| {
+            for font in ui.style_mut().text_styles.values_mut() {
+                font.size *= TEXT_SCALE;
+            }
             let frame = if self.open { style::panel() } else { egui::Frame::NONE.inner_margin(10.0) };
             frame.show(ui, |ui| {
                 ui.set_width(WIDTH);
@@ -179,13 +191,15 @@ impl ChatBox {
         out
     }
 
-    /// Recompute suggestions, hint and colours if the input changed since the last look.
+    /// Recompute suggestions, hint and colours if the input or the cursor moved since the last
+    /// look. Suggestions are for the word under the cursor, from what comes before it.
     fn refresh(&mut self, ctx: &Context) {
-        if self.analysed == self.input {
+        let cursor = self.cursor.min(self.input.len());
+        if self.analysed.0 == self.input && self.analysed.1 == cursor {
             return;
         }
-        self.analysed = self.input.clone();
-        self.analysis = complete::analyze(&self.input, ctx, false);
+        self.analysed = (self.input.clone(), cursor);
+        self.analysis = self.at_cursor(ctx, false);
         // A line recalled from history gets no suggestions until it is edited, as in Minecraft.
         if self.recall.is_some_and(|i| self.history.get(i) == Some(&self.input)) {
             self.list = None;
@@ -201,10 +215,24 @@ impl ChatBox {
         self.list = if self.input == "/" && self.opened_with == "/" { None } else { self.new_list(&self.analysis) };
     }
 
+    /// The analysis of what comes before the cursor (with the error, if any, of the whole line).
+    fn at_cursor(&self, ctx: &Context, forced: bool) -> Analysis {
+        let cursor = self.cursor.min(self.input.len());
+        let mut a = complete::analyze(&self.input[..cursor], ctx, forced);
+        if cursor < self.input.len() {
+            a.error = complete::analyze(&self.input, ctx, false).error;
+        }
+        a
+    }
+
     fn new_list(&self, analysis: &Analysis) -> Option<List> {
+        let cursor = self.cursor.min(self.input.len());
+        // The word under the cursor ends where the next gap begins.
+        let end = cursor + self.input[cursor..].find(char::is_whitespace).unwrap_or(self.input.len() - cursor);
         (!analysis.suggestions.is_empty()).then(|| List {
             base: self.input.clone(),
             start: analysis.start,
+            end,
             items: analysis.suggestions.clone(),
             selected: 0,
             offset: 0,
@@ -213,12 +241,20 @@ impl ChatBox {
         })
     }
 
-    /// Put the selected suggestion into the input (replacing the word being typed).
+    /// Put the selected suggestion into the input (replacing the word under the cursor), and
+    /// the cursor after it.
     fn accept(&mut self) {
         let Some(list) = self.list.as_mut() else { return };
-        self.input = complete::apply(&list.base, list.start, &list.items[list.selected]);
+        let item = &list.items[list.selected];
+        let end = list.end.max(list.start).min(list.base.len());
+        self.input = format!("{}{item}{}", &list.base[..list.start.min(end)], &list.base[end..]);
+        let at = list.start.min(end) + item.len();
         list.applied = Some(self.input.clone());
         list.tab_cycles = true;
+        self.cursor = at;
+        self.cursor_to = Some(self.input[..at].chars().count());
+        // (The analysis follows the input and cursor, which keeps this list while they stay.)
+        self.analysed = (self.input.clone(), at);
     }
 
     fn input_row(&mut self, ui: &mut egui::Ui, complete_ctx: &Context, wheel: f32) -> Option<String> {
@@ -239,8 +275,8 @@ impl ChatBox {
         let id = egui::Id::new("chat-input");
         let font = egui::TextStyle::Body.resolve(ui.style());
         let plain = style::c32(style::TEXT);
-        let spans = self.analysis.spans.clone();
-        let analysed = self.analysed.clone();
+        let spans = complete::analyze(&self.input, complete_ctx, false).spans;
+        let analysed = self.input.clone();
         // Text typed this frame is laid out before the analysis above has seen it; colour it
         // from an analysis of its own, or the line flashes plain for a frame on every key.
         let fresh = |text: &str| complete::analyze(text, complete_ctx, false).spans;
@@ -311,7 +347,7 @@ impl ChatBox {
             }
         } else if tab {
             // Nothing showing: ask for suggestions (this is how names complete in plain chat).
-            let forced = complete::analyze(&self.input, complete_ctx, true);
+            let forced = self.at_cursor(complete_ctx, true);
             self.list = self.new_list(&forced);
             self.hidden_for = None;
         } else if up || down {
@@ -375,7 +411,8 @@ impl ChatBox {
             }
             // Grey preview of what accepting the selected entry would add.
             if list.applied.is_none() {
-                if let Some(rest) = complete::suffix(&list.base, list.start, &list.items[list.selected]).filter(|_| list.base == self.input) {
+                let at_end = self.cursor >= self.input.len();
+                if let Some(rest) = complete::suffix(&list.base, list.start, &list.items[list.selected]).filter(|_| list.base == self.input && at_end) {
                     ui.painter().text(egui::pos2(text_end, text_top), egui::Align2::LEFT_TOP, rest, font.clone(), C_GHOST);
                 }
             }
@@ -407,12 +444,16 @@ impl ChatBox {
             self.scroll = (self.scroll as i64 + steps as i64).max(0) as usize;
         }
 
-        if cursor_to_end {
+        let place = if cursor_to_end { Some(self.input.chars().count()) } else { self.cursor_to.take() };
+        if let Some(at) = place {
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
-                let end = egui::text::CCursor::new(self.input.chars().count());
-                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(at))));
                 state.store(ui.ctx(), id);
             }
+            self.cursor = self.input.char_indices().nth(at).map_or(self.input.len(), |(b, _)| b);
+        } else if let Some(at) = egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range()).map(|r| r.primary.index) {
+            // Where the cursor is now, for the next look at suggestions.
+            self.cursor = self.input.char_indices().nth(at).map_or(self.input.len(), |(b, _)| b);
         }
         if enter {
             let text = self.input.trim().to_string();

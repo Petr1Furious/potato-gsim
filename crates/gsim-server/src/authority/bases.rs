@@ -11,8 +11,6 @@ const BASE_PULL: f64 = 6.0e24;
 /// circling it are not thrown about by passing bodies. (Three times as much hardly clears it
 /// better and halves the bodies left near the centre within three minutes.)
 const BASE_MASS: f64 = -3.0e25;
-/// Earth's: small enough for a ship to circle close in.
-const BASE_RADIUS: f64 = 6.4e6;
 /// Ships feel a base's pull this many base radii out; beyond, it turns into the push bodies
 /// feel (wholly at 1.41 times as far): a ship circling some planet far away is not dragged off
 /// its orbit by bases the planet feels differently. The home zone ends there too;
@@ -132,9 +130,15 @@ impl Authority {
     }
 
     /// The player's ship is within their own standing base's home zone (see
-    /// [`shop::zone_radii`]), where shells cost nothing and cargo is banked.
+    /// [`shop::zone_radii`]), where shells cost nothing.
     pub(super) fn at_home(&self, player: PlayerId) -> bool {
-        let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
+        self.base_alive(player) && self.in_zone(player)
+    }
+
+    /// The player's ship is within their own base's home zone, standing or not: where cargo is
+    /// banked and the shop is open.
+    pub(super) fn in_zone(&self, player: PlayerId) -> bool {
+        let Some(b) = self.base_of(player) else { return false };
         let Some(s) = self.players.get(&player).and_then(|p| p.ship) else { return false };
         let (m, j) = (&self.massive, b.slot as usize);
         let zone = shop::zone_radii(&b.upgrades) * m.radius[j];
@@ -233,16 +237,16 @@ impl Authority {
             self.sieges = sieges;
             self.bases_changed = true;
         }
-        // Which teams are left: those with somebody playing, and those whose players all dropped
-        // out with their base still standing (they may come back for it).
-        if playing && self.bases.len() >= 2 {
+        // Which teams are still in play: those with somebody here playing. When one is left it
+        // has won (and when a lone player is out, that round is over too); the next round
+        // starts after the intermission.
+        if playing && !self.bases.is_empty() {
             let mut left: Vec<TeamId> = self.players.values().filter(|p| !p.spectating && p.team != 0).map(|p| p.team).collect();
-            let away = self.bases.iter().filter(|b| b.hp > 0 && !self.players.values().any(|p| p.team == b.team)).map(|b| b.team);
-            left.extend(away);
             left.sort_unstable();
             left.dedup();
-            if left.len() <= 1 {
-                self.end_round(tick, left.first().copied());
+            let contest = self.bases.len() >= 2;
+            if left.is_empty() || (contest && left.len() == 1) {
+                self.end_round(tick, left.first().copied().filter(|_| contest));
             }
         }
         if ((self.bases_changed || !holds.is_empty()) && tick.is_multiple_of(10)) || tick.is_multiple_of(hz) {

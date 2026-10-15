@@ -416,9 +416,9 @@ impl Session {
         self.out.push(ClientMsg::Buy(ware));
     }
 
-    /// Use a supply the ship carries.
-    pub fn use_supply(&mut self, supply: Supply) {
-        self.out.push(ClientMsg::Use(supply));
+    /// Use a supply the ship carries (a gravity well goes this way, at this speed, as a shell).
+    pub fn use_supply(&mut self, supply: Supply, angle: u16, speed: f32) {
+        self.out.push(ClientMsg::Use { supply, angle, speed });
     }
 
     /// Point at a spot on the map for everyone.

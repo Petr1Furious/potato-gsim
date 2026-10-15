@@ -21,6 +21,8 @@ pub struct Scratch {
     ry: Vec<f64>,
     nx: Vec<f64>,
     ny: Vec<f64>,
+    /// The fixed bodies (bases), by slot.
+    fixed: Vec<usize>,
 }
 
 /// Bodies as a particle meets them: one, or eight side by side.
@@ -40,6 +42,8 @@ struct Met<W: Wide> {
     alive: W,
     /// One over the squared reach of a base, 0 for any other body (see `GameRules::base_reach`).
     fade: W,
+    /// 1 for a base, 0 for any other body.
+    fixed: W,
 }
 
 impl<W: Wide> Met<W> {
@@ -58,6 +62,7 @@ impl<W: Wide> Met<W> {
             radius: W::load(&view.radius[j..]),
             alive: W::flags(&view.alive[j..]),
             fade: W::flags(&view.fixed[j..]) * W::splat(fade),
+            fixed: W::flags(&view.fixed[j..]),
         }
     }
 }
@@ -142,6 +147,9 @@ struct Moment {
     first: bool,
     /// One over the squared reach of a base.
     fade: f64,
+    /// How far inside some base's reach the particle is: 1 within it, down to 0 at 1.41 times
+    /// as far. Other bodies pull it that much less.
+    calm: f64,
 }
 
 /// The particle relative to bodies, their pull on it (to be taken away), and whether it
@@ -180,7 +188,9 @@ fn against<W: Wide>(m: &Moment, b: &Met<W>, r0x: W, r0y: W) -> (W, W, W, W, W::M
     let (one, k) = (W::splat(1.0), W::splat(2.0) - d2 * b.fade);
     let k = W::pick(k.gt(one), one, W::pick(zero.gt(k), zero, k));
     let felt = b.mass + (b.pull - b.mass) * k;
-    let f = W::splat(m.g) * felt * inv * inv * inv;
+    // Near a base, nothing else pulls (fading in as the base's own pull fades out).
+    let keep = b.fixed + (one - b.fixed) * W::splat(1.0 - m.calm);
+    let f = W::splat(m.g) * felt * keep * inv * inv * inv;
     (rx, ry, rx * f, ry * f, W::and(b.alive.gt(zero), hit))
 }
 
@@ -232,7 +242,17 @@ fn accel_and_sweep(
     first: bool,
 ) -> (f64, f64, Option<u32>) {
     let fade = if rules.base_reach > 0.0 { 1.0 / (rules.base_reach * rules.base_reach) } else { 0.0 };
-    let m = Moment { px, py, tau, radius, g: rules.g, eps2: rules.particle_softening * rules.particle_softening, first, fade };
+    // How far inside a base's reach: as for the base's own pull, 1 within it, 0 from 1.41 times as far.
+    let mut calm: f64 = 0.0;
+    for &j in &scratch.fixed {
+        let half_tau = 0.5 * tau;
+        let bx = view.x[j] + tau * (view.vx[j] + view.ax[j] * half_tau);
+        let by = view.y[j] + tau * (view.vy[j] + view.ay[j] * half_tau);
+        let d2 = (px - bx) * (px - bx) + (py - by) * (py - by);
+        let k = 2.0 - d2 * fade;
+        calm = calm.max(k.clamp(0.0, 1.0));
+    }
+    let m = Moment { px, py, tau, radius, g: rules.g, eps2: rules.particle_softening * rules.particle_softening, first, fade, calm };
     let (ax, ay, any) = pulls(&m, view, scratch);
     // Rare: which one, then.
     let hit = if any { (0..view.x.len()).find(|&j| against(&m, &Met::<f64>::at(view, j, m.fade), scratch.rx[j], scratch.ry[j]).4).map(|j| j as u32) } else { None };
@@ -254,6 +274,10 @@ pub fn step_particle(
     let nb = view.x.len();
     for list in [&mut scratch.rx, &mut scratch.ry, &mut scratch.nx, &mut scratch.ny] {
         list.resize(nb, 0.0);
+    }
+    scratch.fixed.clear();
+    if rules.base_reach > 0.0 {
+        scratch.fixed.extend((0..nb).filter(|&j| view.fixed[j] && view.alive[j]));
     }
     let n = substeps(p, view, rules);
     let h = rules.dt / n as f64;

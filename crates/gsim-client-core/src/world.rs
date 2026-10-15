@@ -4,7 +4,7 @@
 use crate::eph::Eph;
 use crate::session::Stats;
 use gsim_core::particle::step_particle;
-use gsim_core::ship::{step_ship, wells_at};
+use gsim_core::ship::step_ship;
 use gsim_core::{math, EphRow, GameRules, InputTimeline, Kit, Magazine, Particle, Scratch, ShipState, Tick};
 use gsim_proto::shop;
 use gsim_proto::*;
@@ -233,8 +233,8 @@ pub struct World {
     pub mines: Vec<Mine>,
     /// When crystals next turn up near the centre.
     pub crystals_due: Option<Tick>,
-    /// Gravity wells: (tick dropped, x, y).
-    pub wells: Vec<(Tick, f64, f64)>,
+    /// Gravity wells on their way or pulling.
+    pub wells: Vec<WellRep>,
     /// (player, team) for every ship on a siege orbit around that team's base.
     pub sieges: Vec<(PlayerId, TeamId)>,
     /// The last team in play, once the round is over.
@@ -305,7 +305,7 @@ impl World {
             bases: w.bases.clone(),
             mines: w.mines.clone(),
             crystals_due: w.crystals_due,
-            wells: w.wells.clone(),
+            wells: w.wells.iter().map(|(fired, p)| WellRep { fired: *fired, start: tick, path: vec![*p], ended: false }).collect(),
             sieges: Vec::new(),
             winner: None,
             alerts: VecDeque::new(),
@@ -370,7 +370,13 @@ impl World {
     /// The player's ship (as far as simulated) is within their own standing base's zone, where
     /// shells cost nothing (the server decides; this is for the controls and the HUD).
     pub fn at_home(&self, player: PlayerId) -> bool {
-        let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
+        self.base_of(player).is_some_and(|b| b.hp > 0) && self.in_zone(player)
+    }
+
+    /// The player's ship is within their own base's home zone, standing or not: where cargo is
+    /// banked and the shop is open.
+    pub fn in_zone(&self, player: PlayerId) -> bool {
+        let Some(b) = self.base_of(player) else { return false };
         let Some(p) = self.players.get(&player) else { return false };
         let Some(ship) = p.ship.as_ref() else { return false };
         let Some(row) = self.eph.get(ship.end()).or_else(|| self.eph.get(self.head.saturating_sub(1))) else { return false };
@@ -597,13 +603,14 @@ impl World {
                 }
                 self.crystals_due = due;
             }
-            Event::Well { tick, player, x, y } => {
-                self.say(tick, format!("{} dropped a gravity well", self.player_name(player)));
-                self.wells.push((tick, x, y));
-                // Every ship feels it from then on.
+            Event::Well { tick, player, p } => {
+                self.say(tick, format!("{} fired a gravity well", self.player_name(player)));
+                self.wells.push(WellRep { fired: tick, start: tick, path: vec![p], ended: false });
+                // Every ship feels it once it is armed.
+                let armed = tick + self.rules.well_arm_ticks as Tick;
                 for p in self.players.values_mut() {
                     if let Some(ship) = p.ship.as_mut() {
-                        ship.mark_dirty(tick);
+                        ship.mark_dirty(armed);
                     }
                 }
             }
@@ -695,12 +702,26 @@ impl World {
         let Some(eph_end) = self.eph.end_tick() else { return };
         let target = target.min(eph_end);
         let (rules, eph, scratch) = (&self.rules, &self.eph, &mut self.scratch);
+        // Wells first, as far ahead as the ephemeris goes: ships need where they are.
+        for w in &mut self.wells {
+            let last = w.fired + (rules.well_arm_ticks + rules.well_ticks) as Tick;
+            while !w.ended && w.start + (w.path.len() as Tick) - 1 < last.min(eph_end) {
+                let t = w.start + w.path.len() as Tick - 1;
+                let Some(row) = eph.get(t) else { break };
+                let mut p = *w.path.last().unwrap();
+                if step_particle(&mut p, (0.0, 0.0), rules.shell_radius, &row.view(), rules, scratch).is_some() {
+                    w.ended = true;
+                } else {
+                    w.path.push(p);
+                }
+            }
+        }
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
             let (timeline, kits, wells) = (&p.timeline, &p.kits, &self.wells);
             let rolled = ship.advance(target, |s, t| {
                 let row = eph.get(t)?;
-                let hit = step_ship(s, timeline.at(t), &wells_at(wells, t, rules), &row.view(), rules, scratch);
+                let hit = step_ship(s, timeline.at(t), &pulling(wells, t, rules), &row.view(), rules, scratch);
                 // What the ship carries or has bought shows from the tick it changed.
                 if let Some(kit) = kits.range(..=t + 1).next_back().map(|k| *k.1).filter(|k| *k != s.kit) {
                     s.refit(kit);
@@ -728,8 +749,8 @@ impl World {
             });
         }
         self.pieces.retain(|_, p| p.track.dies_at.is_none_or(|d| d > target));
-        let gone = self.rules.well_ticks as Tick + HISTORY_TICKS as Tick;
-        self.wells.retain(|w| w.0 + gone > target);
+        let gone = (self.rules.well_arm_ticks + self.rules.well_ticks) as Tick + HISTORY_TICKS as Tick;
+        self.wells.retain(|w| w.fired + gone > target);
         if let Some(t) = self.sudden_death.filter(|t| self.head < *t && *t <= target && self.next_round_tick.is_none()) {
             self.say(t, "Sudden death: every base is wearing down".to_string());
             self.alert(t, "Every base is wearing down".to_string(), false);
@@ -830,4 +851,46 @@ impl World {
 fn capitalised(word: &str) -> String {
     let mut c = word.chars();
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+/// A gravity well: where it is, tick by tick from `start`, as far as worked out.
+pub struct WellRep {
+    pub fired: Tick,
+    pub start: Tick,
+    pub path: Vec<Particle>,
+    /// It hit something, and is gone after the last point.
+    pub ended: bool,
+}
+
+impl WellRep {
+    /// Where it is at `tick`, if it is about then.
+    pub fn at(&self, tick: Tick) -> Option<Particle> {
+        tick.checked_sub(self.start).and_then(|k| self.path.get(k as usize)).copied()
+    }
+}
+
+/// Where the wells that pull at `tick` are.
+fn pulling(wells: &[WellRep], tick: Tick, rules: &GameRules) -> Vec<(f64, f64)> {
+    let arm = rules.well_arm_ticks as Tick;
+    wells
+        .iter()
+        .filter(|w| tick >= w.fired + arm && tick < w.fired + arm + rules.well_ticks as Tick)
+        .filter_map(|w| w.at(tick).map(|p| (p.x, p.y)))
+        .collect()
+}
+
+impl World {
+    /// For predictions: each well that pulls, from the tick it starts to on, where it is (as
+    /// far as worked out).
+    pub fn well_paths(&self) -> Vec<(Tick, Vec<(f64, f64)>)> {
+        let (arm, life) = (self.rules.well_arm_ticks as Tick, self.rules.well_ticks as Tick);
+        self.wells
+            .iter()
+            .map(|w| {
+                let from = w.fired + arm;
+                let points = (from..from + life).map_while(|t| w.at(t).map(|p| (p.x, p.y))).collect();
+                (from, points)
+            })
+            .collect()
+    }
 }

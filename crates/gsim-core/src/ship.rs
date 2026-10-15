@@ -172,9 +172,10 @@ pub fn step_ship(
     step_particle(&mut s.p, thrust, rules.ship_radius, view, rules, scratch)
 }
 
-/// Where the gravity wells dropped at these ticks (tick, x, y) pull at `tick`.
-pub fn wells_at(dropped: &[(Tick, f64, f64)], tick: Tick, rules: &GameRules) -> Vec<(f64, f64)> {
-    dropped.iter().filter(|w| w.0 <= tick && tick < w.0 + rules.well_ticks as Tick).map(|w| (w.1, w.2)).collect()
+/// Where gravity wells pull at `tick`, given where each is from the tick it starts pulling on
+/// (tick, positions tick by tick).
+pub fn wells_at(wells: &[(Tick, Vec<(f64, f64)>)], tick: Tick) -> Vec<(f64, f64)> {
+    wells.iter().filter_map(|(from, at)| tick.checked_sub(*from).and_then(|k| at.get(k as usize)).copied()).collect()
 }
 
 /// "From tick T on, the input is I". The step that integrates tick T uses the latest change

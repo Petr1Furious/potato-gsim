@@ -437,3 +437,22 @@ fn a_base_pulls_ships_within_its_reach_and_pushes_them_as_bodies_beyond() {
     assert!((far + everywhere[2]).abs() < 1.0e-5 * far, "far away a ship feels what bodies feel: {far}");
     assert!(everywhere.iter().all(|k| *k < 0.0));
 }
+
+#[test]
+fn near_a_base_nothing_else_pulls() {
+    let mut r = rules();
+    r.base_reach = 1.0e9;
+    // A base, and a planet a little way out.
+    let mut s = MassiveState::from_bodies(&[body(0.0, 0.0, 0.0, 0.0, -2.0e26, 5.0e7), body(0.0, 2.0e9, 0.0, 0.0, 6.0e24, 6.4e6)]);
+    s.anchor(0, 2.0e26);
+    s.ensure_acc(&r);
+    // The pull towards the planet (up) on a particle at rest at `x`.
+    let up = |x: f64| {
+        let mut p = Particle { x, y: 0.0, vx: 0.0, vy: 0.0 };
+        step_particle(&mut p, (0.0, 0.0), 1.0, &s.view(), &r, &mut Scratch::default());
+        p.vy
+    };
+    let (inside, between, outside) = (up(0.8e9), up(1.2e9), up(1.6e9));
+    assert_eq!(inside, 0.0, "within the reach the planet does not pull");
+    assert!(between > 0.0 && between < outside, "it fades in: {between} vs {outside}");
+}

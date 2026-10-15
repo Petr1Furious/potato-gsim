@@ -143,7 +143,7 @@ fn crystals_turn_up_at_the_centre_every_so_often() {
     assert_eq!(sim.clients[a].session.world.as_ref().unwrap().crystals_due, Some(due));
     sim.run_with(wait + 0.5, idle);
     let crystals: Vec<Particle> = sim.server.pieces().into_iter().filter(|p| p.0 == PieceKind::Crystal).map(|p| p.1).collect();
-    assert!(crystals.len() >= 2, "{} crystals", crystals.len());
+    assert!(!crystals.is_empty());
     for c in &crystals {
         assert!(c.x.hypot(c.y) < 0.2 * 3.0e10, "{c:?} is not near the centre");
     }

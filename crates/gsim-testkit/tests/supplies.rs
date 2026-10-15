@@ -103,7 +103,7 @@ fn a_shield_stops_one_shell() {
 fn ammo_doubles_the_shells_and_the_rate_until_the_ship_is_lost() {
     let (mut sim, a, b, ann, _) = duel(2);
     let rules = sim.server.rules.clone();
-    buy(&mut sim, a, Ware::Supply(Supply::Ammo));
+    buy(&mut sim, a, Ware::Supply(Supply::RapidFire));
     let mag = sim.server.magazine(ann).unwrap();
     assert_eq!((mag.max, mag.cooldown()), (2 * rules.shell_max, rules.shell_cooldown_ticks as u64 / 2));
     sim.run_with(0.5, idle);
@@ -135,7 +135,7 @@ fn repair_mends_part_of_the_base_and_armour_takes_less() {
     let (_, x, y) = base_at(&sim, ann);
     place(&mut sim, bob, Particle { x: x + 2.0e8, y, vx: -20_000.0, vy: 0.0 });
     sim.run_with(4.0, idle);
-    assert_eq!(before - hp(&sim, ann), DAMAGE.1 * 3 / 4, "a ram, through the armour");
+    assert_eq!(before - hp(&sim, ann), DAMAGE.1 * 2 / 3, "a ram, through the armour");
     sim.run_with(0.5, idle);
     assert_eq!(sim.clients[a].session.world.as_ref().unwrap().base_of(ann).unwrap().hp, hp(&sim, ann));
 }
@@ -167,7 +167,7 @@ fn a_warp_jumps_home_and_leaves_the_cargo_behind() {
     let carried = sim.server.purse(ann).unwrap().0.scrap;
     assert!(carried > 0);
     let pieces = sim.server.pieces().len();
-    sim.clients[a].session.use_supply(Supply::Warp);
+    sim.clients[a].session.use_supply(Supply::Warp, 0, 0.0);
     sim.run_with(0.5, idle);
     let (j, x, y) = base_at(&sim, ann);
     let s = sim.server.ship(ann).unwrap().p;
@@ -186,21 +186,26 @@ fn a_gravity_well_pulls_ships_in_for_a_while() {
     let (mut sim, a, b, _, bob) = duel(7);
     let ann = sim.player_id(a).unwrap();
     buy(&mut sim, a, Ware::Supply(Supply::Well));
-    // Both still, 300 Mm apart, far from everything; ann drops a well.
+    // Both still, 300 Mm apart, far from everything; ann fires a well away from bob, slowly.
     place(&mut sim, ann, Particle { x: 2.0e11, y: 0.0, vx: 0.0, vy: 0.0 });
     place(&mut sim, bob, Particle { x: 2.0e11 + 3.0e8, y: 0.0, vx: 0.0, vy: 0.0 });
     sim.run_with(0.2, idle);
-    sim.clients[a].session.use_supply(Supply::Well);
+    sim.clients[a].session.use_supply(Supply::Well, math::dir_to_angle(-1.0, 0.0), 1000.0);
+    // Nothing pulls until it is armed: ann is not swung about by her own well.
+    sim.run_with(0.8, idle);
+    assert!(sim.server.ship(ann).unwrap().p.vx.abs() < 1.0);
+    assert!(sim.server.ship(bob).unwrap().p.vx.abs() < 1.0);
     sim.run_with(3.0, idle);
     let v = sim.server.ship(bob).unwrap().p.vx;
     assert!(v < -100.0, "bob is pulled towards the well: {v} m/s");
-    // Once it is gone (6 s on) nothing pulls there any more.
-    sim.run_with(3.5, idle);
+    agree(&sim);
+    // Once it is gone (11 s on) nothing pulls there any more.
+    sim.run_with(8.0, idle);
     place(&mut sim, bob, Particle { x: 2.0e11 + 3.0e8, y: 0.0, vx: 0.0, vy: 0.0 });
     sim.run_with(1.0, idle);
     let v = sim.server.ship(bob).unwrap().p.vx;
     assert!(v.abs() < 1.0, "{v} m/s after the well is gone");
-    assert!(chat(&sim.clients[b].session).contains(&"ann dropped a gravity well".to_string()));
+    assert!(chat(&sim.clients[b].session).contains(&"ann fired a gravity well".to_string()));
     agree(&sim);
 }
 
@@ -213,18 +218,18 @@ fn a_wider_zone_and_a_shipyard() {
     place(&mut sim, ann, p);
     sim.run_with(0.2, idle);
     assert!(!sim.clients[a].session.world.as_ref().unwrap().at_home(ann));
-    buy(&mut sim, a, Ware::Upgrade(Upgrade::Zone));
+    buy(&mut sim, a, Ware::Upgrade(Upgrade::HomeZone));
     assert!(chat(&sim.clients[a].session).contains(&"The shop is open only at home".to_string()));
-    go_home_and_buy(&mut sim, a, ann, Upgrade::Zone);
+    go_home_and_buy(&mut sim, a, ann, Upgrade::HomeZone);
     let p = orbit_around(&sim, ann, 115.0);
     place(&mut sim, ann, p);
     sim.run_with(0.5, idle);
     assert!(sim.clients[a].session.world.as_ref().unwrap().at_home(ann));
     // A shipyard: the next ship comes sooner.
-    go_home_and_buy(&mut sim, a, ann, Upgrade::Shipyard);
+    go_home_and_buy(&mut sim, a, ann, Upgrade::Respawn);
     sim.clients[a].session.send_chat("/respawn");
-    sim.run_with(0.3 + rules.respawn_ticks as f64 * 0.7 / rules.tick_hz as f64, idle);
-    assert!(sim.server.ship(ann).is_some(), "a ship within 3.5 s");
+    sim.run_with(0.3 + rules.respawn_ticks as f64 * 0.6 / rules.tick_hz as f64, idle);
+    assert!(sim.server.ship(ann).is_some(), "a ship within 3 s");
 }
 
 fn go_home_and_buy(sim: &mut Sim, client: usize, who: PlayerId, u: Upgrade) {
@@ -233,4 +238,30 @@ fn go_home_and_buy(sim: &mut Sim, client: usize, who: PlayerId, u: Upgrade) {
     sim.run_with(0.2, idle);
     buy(sim, client, Ware::Upgrade(u));
     assert!(sim.server.purse(who).unwrap().2.tier(u) >= 1);
+}
+
+#[test]
+fn the_shop_stays_open_at_a_fallen_base_and_give_hands_out_anything() {
+    let (mut sim, a, b, ann, bob) = duel(9);
+    sim.server.state.op("ann");
+    sim.server.hurt_base(ann, bob, BASE_HP);
+    sim.run_with(0.5, idle);
+    let p = orbit_around(&sim, ann, 60.0);
+    place(&mut sim, ann, p);
+    sim.run_with(0.3, idle);
+    buy(&mut sim, a, Ware::Upgrade(Upgrade::Thrust));
+    assert_eq!(sim.server.purse(ann).unwrap().2.tier(Upgrade::Thrust), 1, "bought at the hulk");
+    // /give <player> <item> [<count>]
+    sim.clients[a].session.send_chat("/give bob gravity-well 3");
+    sim.run_with(0.5, idle);
+    sim.clients[a].session.send_chat("/give bob scrap 7");
+    sim.run_with(0.5, idle);
+    sim.clients[a].session.send_chat("/give bob shield");
+    sim.run_with(0.5, idle);
+    assert_eq!(sim.server.items(bob).unwrap().wells, 3);
+    assert_eq!(sim.server.purse(bob).unwrap().1.scrap, 7);
+    assert_eq!(sim.server.shielded(bob), Some(true));
+    let w = sim.clients[b].session.world.as_ref().unwrap();
+    assert_eq!(w.players[&bob].items.wells, 3);
+    assert!(w.players[&bob].shield);
 }

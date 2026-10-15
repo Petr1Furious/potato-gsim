@@ -496,17 +496,28 @@ impl Authority {
                 })
             }
             "give" => {
-                let amount = args.get(1).and_then(|s| s.parse::<u32>().ok()).filter(|n| *n <= 100_000).ok_or("")?;
-                let purse = match args[0].as_str() {
-                    "scrap" => Purse { scrap: amount, crystals: 0 },
-                    "crystals" => Purse { scrap: 0, crystals: amount },
-                    _ => return Err(String::new()),
+                let who = self.select(args.first().ok_or("")?, me)?;
+                let item = args.get(1).ok_or("")?;
+                let count = match args.get(2) {
+                    Some(n) => n.parse::<u32>().ok().filter(|n| (1..=100_000).contains(n)).ok_or("a count from 1 to 100000")?,
+                    None => 1,
                 };
-                let who = self.select_or_me(args.get(2), me)?;
+                let what = match item.as_str() {
+                    "scrap" => Ok(Purse { scrap: count, crystals: 0 }),
+                    "crystals" => Ok(Purse { scrap: 0, crystals: count }),
+                    w => Err(Supply::ALL.into_iter().find(|s| s.key() == w).ok_or(format!("no item called {w:?}"))?),
+                };
                 for id in &who {
-                    self.grant(*id, purse);
+                    match what {
+                        Ok(purse) => self.grant(*id, purse),
+                        Err(supply) => self.grant_supply(*id, supply, count),
+                    }
                 }
-                done(format!("Gave {} {}", self.names_of(&who), purse.describe()))
+                let gave = match what {
+                    Ok(purse) => purse.describe(),
+                    Err(supply) => format!("{count} {}", supply.name()),
+                };
+                done(format!("Gave {} {gave}", self.names_of(&who)))
             }
             "gamemode" => {
                 let spectating = args.first().map(String::as_str) == Some("spectator");

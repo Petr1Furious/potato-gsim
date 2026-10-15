@@ -178,8 +178,8 @@ pub struct Authority {
     mine_due: Vec<Tick>,
     /// When crystals next turn up near the centre.
     crystals_due: Option<Tick>,
-    /// Gravity wells: (tick dropped, x, y).
-    wells: Vec<(Tick, f64, f64)>,
+    /// Gravity wells: (tick fired, where each is now).
+    wells: Vec<(Tick, Particle)>,
     /// From this tick on every base wears down.
     sudden_death: Option<Tick>,
     /// How this round of bases differs from the others.
@@ -346,7 +346,7 @@ impl Authority {
             ClientMsg::Mark { x, y } => self.mark(conn, x, y),
             ClientMsg::Cmds(cmds) => self.commands(conn, cmds),
             ClientMsg::Buy(ware) => self.buy(conn, ware),
-            ClientMsg::Use(supply) => self.use_supply(conn, supply),
+            ClientMsg::Use { supply, angle, speed } => self.use_supply(conn, supply, angle, speed),
             ClientMsg::ResyncRequest => {
                 if let Some(&id) = self.by_conn.get(&conn) {
                     self.stats.resyncs += 1;
@@ -698,9 +698,10 @@ impl Authority {
         self.massive.ensure_acc(&rules);
         let view = self.massive.view();
 
-        // Gravity wells pull ships in for a while.
-        self.wells.retain(|w| w.0 + rules.well_ticks as Tick > t);
-        let wells = gsim_core::ship::wells_at(&self.wells, t, &rules);
+        // Gravity wells pull ships in for a while, once armed.
+        let arm = rules.well_arm_ticks as Tick;
+        self.wells.retain(|w| t < w.0 + arm + rules.well_ticks as Tick);
+        let wells: Vec<(f64, f64)> = self.wells.iter().filter(|w| t >= w.0 + arm).map(|w| (w.1.x, w.1.y)).collect();
         // (victim, killer, body)
         let mut deaths: Vec<(PlayerId, Option<PlayerId>, Option<u32>)> = Vec::new();
         // Ship segments over this tick, for the proximity fuses.
@@ -760,6 +761,10 @@ impl Authority {
         let lost: Vec<PlayerId> = deaths.iter().map(|d| d.0).collect();
         segs.retain(|s| !lost.contains(&s.0));
         let picked = scrap::step_pieces(&mut self.pieces, &segs, &view, &rules, &mut self.scratch, 4.0 * self.world_r);
+
+        // Wells fly on as shells do (and are gone if they hit something).
+        let scratch = &mut self.scratch;
+        self.wells.retain_mut(|w| step_particle(&mut w.1, (0.0, 0.0), rules.shell_radius, &view, &rules, scratch).is_none());
 
         let merges = self.massive.step(&rules);
         let next = t + 1;

@@ -351,7 +351,7 @@ fn a_round_of_bases_ends_in_sudden_death_not_on_a_clock() {
     sim.server.grant(ann, gsim_proto::Purse { scrap: 100, crystals: 0 });
     sim.clients[a].session.buy(gsim_proto::Ware::Supply(gsim_proto::Supply::Repair));
     sim.run_with(0.5, idle);
-    assert!(chat(&sim.clients[a].session).contains(&"No more repair for now".to_string()));
+    assert!(chat(&sim.clients[a].session).contains(&"No more base repair for now".to_string()));
     in_sync(&sim);
 }
 
@@ -395,4 +395,34 @@ fn each_round_rolls_its_scrap_mines_and_twist() {
     assert_eq!(sim.server.magazine(ann).unwrap().cooldown(), plain.shell_cooldown_ticks as u64 / 2);
     in_sync(&sim);
     assert!(sim.ships_agree().is_ok());
+}
+
+#[test]
+fn the_round_ends_when_one_player_is_left_or_a_lone_one_is_out() {
+    // bob leaves: ann is the last one in play, and the next round comes 10 s later.
+    let mut sim = Sim::new(open_space(), 13);
+    sim.server.set_rounds(0, 600, None);
+    sim.server.fix_roll(Roll { scrap: 100, mines: 0, twist: Twist::Plain, teams: 1 });
+    sim.server.set_mode(GameMode::Bases);
+    let a = sim.add_client("ann", LINK);
+    let b = sim.add_client("bob", LINK);
+    sim.run_with(1.5, idle);
+    let round = sim.server.round();
+    sim.disconnect(b);
+    sim.run_with(1.0, idle);
+    let w = sim.clients[a].session.world.as_ref().unwrap();
+    assert_eq!(w.winner, Some(sim.server.team(sim.player_id(a).unwrap()).unwrap()));
+    sim.run_with(10.0, idle);
+    assert_eq!(sim.server.round(), round + 1);
+
+    // Alone: once ann's base is down and her ship lost, the round is over.
+    let ann = sim.player_id(a).unwrap();
+    sim.server.state.op("ann");
+    sim.server.hurt_base(ann, ann, BASE_HP);
+    sim.clients[a].session.send_chat("/kill ann");
+    sim.run_with(1.0, idle);
+    assert!(sim.clients[a].session.world.as_ref().unwrap().next_round_tick.is_some(), "the round is over");
+    sim.run_with(10.0, idle);
+    assert_eq!(sim.server.round(), round + 2);
+    assert!(sim.server.ship(ann).is_some(), "and ann plays the next one");
 }
