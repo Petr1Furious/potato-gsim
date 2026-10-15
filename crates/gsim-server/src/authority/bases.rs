@@ -71,7 +71,7 @@ impl Authority {
         }
     }
 
-    fn base_of(&self, player: PlayerId) -> Option<&BaseState> {
+    pub(super) fn base_of(&self, player: PlayerId) -> Option<&BaseState> {
         self.bases.iter().find(|b| b.owner == player)
     }
 
@@ -81,13 +81,14 @@ impl Authority {
         self.base_of(player).is_some_and(|b| b.hp > 0)
     }
 
-    /// The player's ship is within their own standing base's home zone (see [`HOME_RADII`]),
-    /// where shells cost nothing.
+    /// The player's ship is within their own standing base's home zone (see
+    /// [`shop::zone_radii`]), where shells cost nothing and cargo is banked.
     pub(super) fn at_home(&self, player: PlayerId) -> bool {
         let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
-        let Some(s) = self.players.get(&player).and_then(|p| p.ship) else { return false };
+        let Some(p) = self.players.get(&player) else { return false };
+        let Some(s) = p.ship else { return false };
         let (m, j) = (&self.massive, b.slot as usize);
-        let zone = HOME_RADII * m.radius[j];
+        let zone = shop::zone_radii(&p.upgrades) * m.radius[j];
         (s.p.x - m.x[j]).powi(2) + (s.p.y - m.y[j]).powi(2) <= zone * zone
     }
 
@@ -112,8 +113,15 @@ impl Authority {
     }
 
     /// `by` hurts the base on `slot` (their own too: shells and rams do not tell friend from
-    /// foe), if it still stands.
+    /// foe), if it still stands, as much as its armour lets them.
     pub(super) fn damage_base(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
+        let owner = self.bases.iter().find(|b| b.slot == slot).map(|b| b.owner);
+        let amount = owner.and_then(|o| self.players.get(&o)).map_or(amount, |p| shop::armoured(amount, &p.upgrades));
+        self.hurt(tick, slot, by, amount);
+    }
+
+    /// `amount` off the base on `slot`, if it still stands.
+    fn hurt(&mut self, tick: Tick, slot: u32, by: PlayerId, amount: u32) {
         let Some(b) = self.bases.iter_mut().find(|b| b.slot == slot && b.hp > 0) else { return };
         b.hp = b.hp.saturating_sub(amount);
         let (owner, left) = (b.owner, b.hp);
@@ -138,7 +146,7 @@ impl Authority {
     /// and everyone hears how the bases stand.
     pub(super) fn tend_bases(&mut self, tick: Tick, merges: &[MergeEvent], playing: bool) {
         let rules = self.rules.clone();
-        let holds = self.tend_specials(tick, merges, playing);
+        let holds = self.tend_mines(tick, merges, playing);
         self.tend_scrap(tick, playing);
         let mut sieges = Vec::new();
         if playing {
@@ -153,12 +161,14 @@ impl Authority {
                 }
             }
         }
-        // Spread evenly over the ticks of a second, in whole points.
+        // Spread evenly over the ticks of a second, in whole points (as much a second as the
+        // armour lets through).
         let hz = rules.tick_hz.max(1) as Tick;
-        let per_tick = (SIEGE_PER_SECOND as Tick * (tick % hz + 1) / hz - SIEGE_PER_SECOND as Tick * (tick % hz) / hz) as u32;
         for (by, owner) in sieges.clone() {
+            let rate = self.players.get(&owner).map_or(SIEGE_PER_SECOND, |p| shop::armoured(SIEGE_PER_SECOND, &p.upgrades)) as Tick;
+            let per_tick = (rate * (tick % hz + 1) / hz - rate * (tick % hz) / hz) as u32;
             if let Some(slot) = self.base_of(owner).map(|b| b.slot) {
-                self.damage_base(tick, slot, by, per_tick);
+                self.hurt(tick, slot, by, per_tick);
             }
         }
         if sieges != self.sieges {

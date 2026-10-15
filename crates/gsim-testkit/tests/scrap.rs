@@ -4,7 +4,7 @@
 use gsim_client_core::{Controls, Session};
 use gsim_core::{Body, Kit, Particle, ShipState};
 use gsim_proto::shop::{self, Upgrade};
-use gsim_proto::{GameMode, PieceKind, PlayerId, Purse};
+use gsim_proto::{GameMode, PieceKind, PlayerId, Purse, Ware};
 use gsim_server::scenario::Scenario;
 use gsim_testkit::*;
 
@@ -159,7 +159,7 @@ fn the_shop_sells_the_next_tier_at_home_only() {
     sim.server.grant(ann, Purse { scrap: 40, crystals: 0 });
     // Away from home: no.
     place(&mut sim, ann, Particle { x: 0.0, y: 2.0e11, vx: 0.0, vy: 0.0 });
-    sim.clients[a].session.buy(Upgrade::Engine);
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Engine));
     sim.run_with(0.5, idle);
     assert!(chat(&sim.clients[a].session).contains(&"The shop is open only at home".to_string()));
     assert_eq!(sim.server.purse(ann).unwrap().2.tier(Upgrade::Engine), 0);
@@ -168,7 +168,7 @@ fn the_shop_sells_the_next_tier_at_home_only() {
     sim.run_with(0.5, idle);
     let fuel = sim.server.ship(ann).unwrap().fuel;
     for u in [Upgrade::Engine, Upgrade::Engine, Upgrade::Tank] {
-        sim.clients[a].session.buy(u);
+        sim.clients[a].session.buy(Ware::Upgrade(u));
     }
     sim.run_with(0.5, idle);
     let (_, bank, ups) = sim.server.purse(ann).unwrap();
@@ -178,15 +178,15 @@ fn the_shop_sells_the_next_tier_at_home_only() {
     assert_eq!(ship.kit.burn, Kit::of(&rules).burn * 160 / 100);
     // A bigger tank comes filled.
     sim.server.grant(ann, Purse { scrap: 5, crystals: 0 });
-    sim.clients[a].session.buy(Upgrade::Tank);
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Tank));
     sim.run_with(0.5, idle);
     let ship = sim.server.ship(ann).unwrap();
     assert_eq!(ship.kit.tank, rules.fuel_max_mmps * 130 / 100);
     assert!(ship.fuel >= fuel + rules.fuel_max_mmps * 3 / 10 - 1000, "{} from {fuel}", ship.fuel);
     // More shells, and faster ones.
     sim.server.grant(ann, Purse { scrap: 20, crystals: 0 });
-    sim.clients[a].session.buy(Upgrade::Magazine);
-    sim.clients[a].session.buy(Upgrade::Guns);
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Magazine));
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Guns));
     sim.run_with(0.5, idle);
     assert_eq!(sim.server.magazine(ann).unwrap().max, rules.shell_max * 3 / 2);
     for i in [a, b] {
@@ -206,8 +206,8 @@ fn a_lost_ship_spills_its_cargo_and_drops_a_tier_of_everything() {
     sim.server.grant(ann, Purse { scrap: 35, crystals: 0 });
     go_home(&mut sim, ann);
     sim.run_with(0.5, idle);
-    sim.clients[a].session.buy(Upgrade::Engine);
-    sim.clients[a].session.buy(Upgrade::Engine);
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Engine));
+    sim.clients[a].session.buy(Ware::Upgrade(Upgrade::Engine));
     sim.run_with(0.5, idle);
     take_scrap(&mut sim, ann);
     take_scrap(&mut sim, ann);

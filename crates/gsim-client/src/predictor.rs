@@ -10,7 +10,7 @@
 use gsim_client_core::eph::EphReader;
 use gsim_core::particle::step_particle;
 use gsim_core::predict::Path;
-use gsim_core::ship::step_ship;
+use gsim_core::ship::{step_ship, wells_at};
 use gsim_core::{GameRules, InputTimeline, Particle, Scratch, ShipInput, ShipState, Tick};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -22,6 +22,8 @@ pub struct Job {
     pub ship: ShipState,
     pub start: Tick,
     pub timeline: InputTimeline,
+    /// Gravity wells: (tick dropped, x, y).
+    pub wells: Vec<(Tick, f64, f64)>,
     pub ticks: u32,
     pub show_ship: bool,
     /// Also predict with the scheduled thrust kept on, until it has spent `burn_mmps`.
@@ -113,6 +115,7 @@ fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
 /// The coasting path worked out last time, tick by tick from `start`.
 pub struct Coast {
     reader: EphReader,
+    wells: Vec<(Tick, f64, f64)>,
     start: Tick,
     states: Vec<ShipState>,
     impact: Option<u32>,
@@ -127,7 +130,7 @@ fn late(until: f64) -> bool {
 /// ship is on it (to the bit: the prediction is what then happens). `None` if `until` came
 /// first: the next call goes on from there.
 fn coast(job: &Job, kept: &mut Option<Coast>, until: f64) -> Option<Path> {
-    let on = kept.as_ref().filter(|k| k.reader.same(&job.reader)).and_then(|k| {
+    let on = kept.as_ref().filter(|k| k.reader.same(&job.reader) && k.wells == job.wells).and_then(|k| {
         let at = job.start.checked_sub(k.start)? as usize;
         (k.states.get(at) == Some(&job.ship)).then_some(at)
     });
@@ -137,7 +140,7 @@ fn coast(job: &Job, kept: &mut Option<Coast>, until: f64) -> Option<Path> {
             k.start = job.start;
             kept.insert(k)
         }
-        _ => kept.insert(Coast { reader: job.reader.clone(), start: job.start, states: vec![job.ship], impact: None }),
+        _ => kept.insert(Coast { reader: job.reader.clone(), wells: job.wells.clone(), start: job.start, states: vec![job.ship], impact: None }),
     };
     let mut scratch = Scratch::default();
     while k.impact.is_none() && k.states.len() <= job.ticks as usize {
@@ -146,7 +149,8 @@ fn coast(job: &Job, kept: &mut Option<Coast>, until: f64) -> Option<Path> {
         }
         let Some(row) = job.reader.get(k.start + k.states.len() as Tick - 1) else { break };
         let mut s = *k.states.last().unwrap();
-        k.impact = step_ship(&mut s, ShipInput::default(), &row.view(), &job.rules, &mut scratch);
+        let wells = wells_at(&job.wells, k.start + k.states.len() as Tick - 1, &job.rules);
+        k.impact = step_ship(&mut s, ShipInput::default(), &wells, &row.view(), &job.rules, &mut scratch);
         k.states.push(s);
     }
     Some(Path { start_tick: k.start, points: k.states.iter().map(|s| (s.p.x, s.p.y)).collect(), impact: k.impact })
@@ -221,7 +225,7 @@ impl Doing {
             let whole = !job.held
                 || self.held.go(job, job.ticks, until, |s, tick, row| {
                     let input = if s.fuel > burning_until { job.timeline.at(tick) } else { ShipInput::default() };
-                    let hit = step_ship(s, input, &row.view(), &job.rules, &mut scratch);
+                    let hit = step_ship(s, input, &wells_at(&job.wells, tick, &job.rules), &row.view(), &job.rules, &mut scratch);
                     ((s.p.x, s.p.y), hit)
                 });
             if !whole {
@@ -379,6 +383,7 @@ mod tests {
             reader,
             rules,
             ship: ShipState::default(),
+            wells: Vec::new(),
             start: 0,
             timeline: InputTimeline::new(),
             ticks: 40,

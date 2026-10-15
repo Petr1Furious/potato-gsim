@@ -103,20 +103,26 @@ leaves and comes back while their base stands gets it back. `R` selects the near
 base, the top-left panel shows your base and the siege orbit, and the board shows each
 base's health and how many bases each player has destroyed (KO).
 
-Special bodies near the centre give something to whoever holds a qualifying orbit around them
-for 4 s: **ammo** gives twice the shells, fired and coming back twice as fast, until the ship
-is lost; **repair** gives the base back 20 % of its health; a **shield** (drawn around the
-ship) lets the ship survive one shell. Each gives once, and another of the same kind appears
-on another body 20 s later. There is one of each kind for every two players.
-Operators can name them in commands (`/orbit ammo`).
-
 Clouds of **scrap** float around the centre. A ship takes a piece by passing within 80 Mm of
 it, carries it, and banks it on coming home (into its zone). Every piece carried makes the ship
-5 % heavier, so the same burn gives less delta-v: a full hold is slow and easy to catch. A ship
-that is lost spills its cargo where it was. At home (or waiting there for a ship), `B` opens
-the shop: three tiers each of engine (thrust), tank (delta-v), magazine (shells), reload and
-guns (shell speed), for 10, 25 and 50 scrap (the last tier also takes crystals). A lost ship
-loses one tier of each.
+5 % heavier (a crystal 15 %), so the same burn gives less delta-v: a full hold is slow and easy
+to catch. A ship that is lost spills its cargo where it was.
+
+**Crystals** come from **mines**: planets near the centre (one, and one more for every two
+players) that give a crystal to a ship holding a qualifying orbit around them, every 8 s while
+it stays, until their three are gone; then the mine opens on another body 20 s later. A few
+crystals also turn up at the centre a minute into the round and every 90 s after (announced
+10 s ahead). Operators can name the first mine in commands (`/orbit mine`).
+
+At home (or waiting there for a ship), `B` opens the shop. Ship upgrades, three tiers each:
+engine (thrust), tank (delta-v), magazine (shells), reload and guns (shell speed), for 10, 25
+and 50 scrap (the last also takes 3 crystals); a lost ship loses one tier of each. Base
+upgrades, kept for the round: armour (damage down to 45 %), zone (out to 1120 Mm) and
+shipyard (a new ship in down to 1.5 s), for 15, 35 and 60 scrap (and 3 crystals). Supplies:
+a shield (drawn around the ship; it survives one shell), ammo (twice the shells, fired and
+coming back twice as fast, until the ship is lost), repair (+20 % base health), and two to
+carry along: warp home (`Q`: a jump back home, leaving the cargo behind) and a gravity well
+(`E`: pulls every ship near where it was dropped in for 6 s).
 
 A round lasts 10 minutes; then the scores are shown and a freshly generated world starts.
 An empty server pauses: the next round begins when the first player joins.
@@ -195,7 +201,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
-| B, 1 - 5 | Shop (bases, at home), buy |
+| B, 1 - 8, Q, E | Shop (bases, at home), buy upgrades; warp home, drop a gravity well |
 | Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 

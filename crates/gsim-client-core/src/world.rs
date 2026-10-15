@@ -4,7 +4,7 @@
 use crate::eph::Eph;
 use crate::session::Stats;
 use gsim_core::particle::step_particle;
-use gsim_core::ship::step_ship;
+use gsim_core::ship::{step_ship, wells_at};
 use gsim_core::{math, EphRow, GameRules, InputTimeline, Kit, Magazine, Particle, Scratch, ShipState, Tick};
 use gsim_proto::shop;
 use gsim_proto::*;
@@ -146,6 +146,7 @@ pub struct PlayerRep {
     pub cargo: Purse,
     pub bank: Purse,
     pub upgrades: Upgrades,
+    pub items: Items,
     /// The ship's engine and tank from each of these ticks on.
     pub kits: BTreeMap<Tick, Kit>,
 }
@@ -170,8 +171,10 @@ pub enum EffectKind {
     Captured,
     /// A base went down here.
     BaseDestroyed,
-    /// Somebody took what a special body gives.
-    Gift(SpecialKind),
+    /// Somebody took a crystal from a mine.
+    Mined,
+    /// A ship jumped home from here.
+    Warped,
     /// A ship's shield took a shell.
     ShieldBroken,
     /// Somebody took a piece of scrap or a crystal.
@@ -221,7 +224,11 @@ pub struct World {
     /// Every base, with its health as last heard.
     pub bases: Vec<Base>,
     /// The bodies that give something to whoever holds an orbit around them.
-    pub specials: Vec<Special>,
+    pub mines: Vec<Mine>,
+    /// When crystals next turn up near the centre.
+    pub crystals_due: Option<Tick>,
+    /// Gravity wells: (tick dropped, x, y).
+    pub wells: Vec<(Tick, f64, f64)>,
     /// (player, base owner) for every ship on a siege orbit.
     pub sieges: Vec<(PlayerId, PlayerId)>,
     /// The last player in play, once the round is over.
@@ -255,6 +262,7 @@ impl World {
                     cargo: p.cargo,
                     bank: p.bank,
                     upgrades: p.upgrades,
+                    items: p.items,
                     kits: BTreeMap::new(),
                 };
                 (p.id, rep)
@@ -286,7 +294,9 @@ impl World {
             objectives: w.objectives.clone(),
             holds: BTreeMap::new(),
             bases: w.bases.clone(),
-            specials: w.specials.clone(),
+            mines: w.mines.clone(),
+            crystals_due: w.crystals_due,
+            wells: w.wells.clone(),
             sieges: Vec::new(),
             winner: None,
             alerts: VecDeque::new(),
@@ -317,10 +327,11 @@ impl World {
     /// shells cost nothing (the server decides; this is for the controls and the HUD).
     pub fn at_home(&self, player: PlayerId) -> bool {
         let Some(b) = self.base_of(player).filter(|b| b.hp > 0) else { return false };
-        let Some(ship) = self.players.get(&player).and_then(|p| p.ship.as_ref()) else { return false };
+        let Some(p) = self.players.get(&player) else { return false };
+        let Some(ship) = p.ship.as_ref() else { return false };
         let Some(row) = self.eph.get(ship.end()).or_else(|| self.eph.get(self.head.saturating_sub(1))) else { return false };
         let (j, s) = (b.slot as usize, ship.last().p);
-        let zone = HOME_RADII * row.props.radius[j];
+        let zone = shop::zone_radii(&p.upgrades) * row.props.radius[j];
         j < row.x.len() && (s.x - row.x[j]).powi(2) + (s.y - row.y[j]).powi(2) <= zone * zone
     }
 
@@ -372,6 +383,7 @@ impl World {
                     cargo: Purse::default(),
                     bank: Purse::default(),
                     upgrades: Upgrades::default(),
+                    items: Items::default(),
                     kits: BTreeMap::new(),
                 });
             }
@@ -517,53 +529,42 @@ impl World {
                     p.captures += 1;
                 }
             }
-            Event::Specials { specials, .. } => {
-                self.specials = specials;
-                let slots: Vec<u32> = self.specials.iter().map(|s| s.slot).collect();
+            Event::Mines { mines, .. } => {
+                self.mines = mines;
+                let slots: Vec<u32> = self.mines.iter().map(|s| s.slot).collect();
                 self.holds.retain(|_, hold| slots.contains(&hold.0));
             }
-            Event::Gift { tick, player, kind, slot } => {
-                let name = self.player_name(player).to_string();
-                let text = match kind {
-                    SpecialKind::Ammo => format!("{name} took ammo"),
-                    SpecialKind::Repair => format!("{name} repaired their base"),
-                    SpecialKind::Shield => format!("{name} took a shield"),
-                };
-                self.say(tick, text);
+            Event::Mined { tick, player, slot } => {
                 if player == self.my_id {
-                    let text = match kind {
-                        SpecialKind::Ammo => "You took ammo",
-                        SpecialKind::Repair => "Your base is repaired",
-                        SpecialKind::Shield => "You took a shield",
-                    };
-                    self.alert(tick, text.to_string(), true);
-                } else if self.holds.get(&self.my_id).is_some_and(|h| h.0 == slot) {
-                    self.alert(tick, format!("{name} took the {} first", kind.name()), false);
+                    self.alert(tick, "+1 crystal".to_string(), true);
                 }
                 if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| (slot as usize) < r.x.len()) {
                     let j = slot as usize;
                     let at = Particle { x: row.x[j], y: row.y[j], vx: row.vx[j], vy: row.vy[j] };
-                    self.effects.push_back(Effect { tick, at, kind: EffectKind::Gift(kind) });
+                    self.effects.push_back(Effect { tick, at, kind: EffectKind::Mined });
                 }
-                self.specials.retain(|s| s.slot != slot);
-                self.holds.retain(|_, hold| hold.0 != slot);
-                match kind {
-                    SpecialKind::Ammo => {
-                        if let Some(p) = self.players.get_mut(&player) {
-                            p.quick = true;
-                            p.magazine = shop::magazine(tick, &self.rules, &p.upgrades, true);
-                        }
+            }
+            Event::CrystalsDue { due } => {
+                if self.crystals_due.is_some_and(|d| d <= self.head) {
+                    self.say(self.head, "Crystals turned up near the centre".to_string());
+                    self.alert(self.head, "Crystals at the centre".to_string(), true);
+                }
+                self.crystals_due = due;
+            }
+            Event::Well { tick, player, x, y } => {
+                self.say(tick, format!("{} dropped a gravity well", self.player_name(player)));
+                self.wells.push((tick, x, y));
+                // Every ship feels it from then on.
+                for p in self.players.values_mut() {
+                    if let Some(ship) = p.ship.as_mut() {
+                        ship.mark_dirty(tick);
                     }
-                    SpecialKind::Shield => {
-                        if let Some(p) = self.players.get_mut(&player) {
-                            p.shield = true;
-                        }
-                    }
-                    SpecialKind::Repair => {
-                        if let Some(b) = self.bases.iter_mut().find(|b| b.owner == player && b.hp > 0) {
-                            b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
-                        }
-                    }
+                }
+            }
+            Event::Warped { tick, player } => {
+                self.say(tick, format!("{} jumped home", self.player_name(player)));
+                if let Some(at) = self.players.get(&player).and_then(|p| p.ship.as_ref()).map(|s| s.at(tick).unwrap_or(s.last()).p) {
+                    self.effects.push_back(Effect { tick, at, kind: EffectKind::Warped });
                 }
             }
             Event::ShieldSpent { tick, player } => {
@@ -630,7 +631,7 @@ impl World {
                     }
                 }
             }
-            Event::Loadout { tick, player, cargo, bank, upgrades, magazine } => self.loadout(tick, player, cargo, bank, upgrades, magazine),
+            Event::Loadout { tick, player, loadout } => self.loadout(tick, player, loadout),
             Event::Hash { .. } => {} // handled by the session
         }
     }
@@ -650,10 +651,10 @@ impl World {
         let (rules, eph, scratch) = (&self.rules, &self.eph, &mut self.scratch);
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
-            let (timeline, kits) = (&p.timeline, &p.kits);
+            let (timeline, kits, wells) = (&p.timeline, &p.kits, &self.wells);
             let rolled = ship.advance(target, |s, t| {
                 let row = eph.get(t)?;
-                let hit = step_ship(s, timeline.at(t), &row.view(), rules, scratch);
+                let hit = step_ship(s, timeline.at(t), &wells_at(wells, t, rules), &row.view(), rules, scratch);
                 // What the ship carries or has bought shows from the tick it changed.
                 if let Some(kit) = kits.range(..=t + 1).next_back().map(|k| *k.1).filter(|k| *k != s.kit) {
                     s.refit(kit);
@@ -681,6 +682,8 @@ impl World {
             });
         }
         self.pieces.retain(|_, p| p.track.dies_at.is_none_or(|d| d > target));
+        let gone = self.rules.well_ticks as Tick + HISTORY_TICKS as Tick;
+        self.wells.retain(|w| w.0 + gone > target);
         if target > self.head {
             self.head = target;
         }
@@ -735,21 +738,21 @@ impl PlayerRep {
 impl World {
     /// What a player carries, has banked and has bought, from `tick` on; their ship's engine
     /// and tank follow.
-    fn loadout(&mut self, tick: Tick, player: PlayerId, cargo: Purse, bank: Purse, upgrades: Upgrades, magazine: Magazine) {
+    fn loadout(&mut self, tick: Tick, player: PlayerId, new: Loadout) {
         let Some(p) = self.players.get_mut(&player) else { return };
-        let (emptied, bought) = (!p.cargo.is_empty() && cargo.is_empty(), p.upgrades.0.iter().zip(upgrades.0).any(|(a, b)| b > *a));
+        let emptied = !p.cargo.is_empty() && new.cargo.is_empty();
+        let raised = Upgrade::SHIP.into_iter().chain(Upgrade::BASE).find(|u| new.upgrades.tier(*u) > p.upgrades.tier(*u));
         let news = if player != self.my_id {
             None
-        } else if bought {
-            let up = Upgrade::ALL.into_iter().find(|u| upgrades.tier(*u) > p.upgrades.tier(*u));
-            up.map(|u| (format!("{} {}", capitalised(u.name()), "I".repeat(upgrades.tier(u) as usize)), true))
+        } else if let Some(u) = raised {
+            Some((format!("{} {}", capitalised(u.name()), "I".repeat(new.upgrades.tier(u) as usize)), true))
         } else if emptied {
-            Some(if bank != p.bank { (format!("Banked {}", p.cargo.describe()), true) } else { (format!("Lost {}", p.cargo.describe()), false) })
+            Some(if new.bank != p.bank { (format!("Banked {}", p.cargo.describe()), true) } else { (format!("Lost {}", p.cargo.describe()), false) })
         } else {
             None
         };
-        (p.cargo, p.bank, p.upgrades, p.magazine) = (cargo, bank, upgrades, magazine);
-        let kit = shop::kit(&self.rules, &upgrades, &cargo);
+        (p.cargo, p.bank, p.upgrades, p.items, p.magazine, p.shield, p.quick) = (new.cargo, new.bank, new.upgrades, new.items, new.magazine, new.shield, new.quick);
+        let kit = shop::kit(&self.rules, &new.upgrades, &new.cargo);
         p.kits.insert(tick, kit);
         // (Only the one in force at the oldest tick still kept, and those after it.)
         let oldest = self.head.saturating_sub(HISTORY_TICKS as Tick);

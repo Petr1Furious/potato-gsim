@@ -94,7 +94,7 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "target", help: "make a body a target", op: true, params: &[req("body", Arg::Body)] },
     Command {
         name: "reelect",
-        help: "move a target or a special (@t, ammo, repair, shield or a body) to another body",
+        help: "move a target or a mine (@t, mine or a body) to another body",
         op: true,
         params: &[req("body", Arg::Body)],
     },

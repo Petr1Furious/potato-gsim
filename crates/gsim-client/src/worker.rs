@@ -51,6 +51,7 @@ struct Asked {
     burn_mmps: i64,
     shell: Option<Particle>,
     ref_slot: Option<u32>,
+    wells: Vec<(Tick, f64, f64)>,
 }
 
 /// From the page. `world` numbers the worlds, so that what belongs to an earlier one is
@@ -198,6 +199,7 @@ pub fn predict(job: &Job) {
         burn_mmps: job.burn_mmps,
         shell: job.shell,
         ref_slot: job.ref_slot,
+        wells: job.wells.clone(),
     };
     send(&ToWorker::Predict { world, asked });
 }
@@ -308,6 +310,7 @@ pub extern "C" fn gsim_worker_predict() {
             burn_mmps: asked.burn_mmps,
             shell: asked.shell,
             ref_slot: asked.ref_slot,
+            wells: asked.wells,
         };
         Doing::new(job).go(&mut w.kept, f64::INFINITY)
     });

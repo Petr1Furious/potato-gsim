@@ -485,14 +485,15 @@ fn gallery(ui: f32) {
         }
         y += 40.0 * ui;
     }
-    // Special bodies, with and without a hold under way.
+    // Mines, full and nearly spent, with and without a hold under way; a gravity well.
     y += 50.0 * ui;
-    for (col, (kind, held)) in gsim_proto::SpecialKind::ALL.iter().flat_map(|k| [(*k, 0.0), (*k, 0.6)]).enumerate() {
-        let x = w / 7.0 * (col as f32 + 1.0);
+    for (col, (left, held)) in [(3, 0.0), (3, 0.6), (1, 0.3), (0, 0.9)].into_iter().enumerate() {
+        let x = w / 6.0 * (col as f32 + 1.0);
         let r = if col % 2 == 0 { 8.0 } else { 20.0 } * ui;
         style::body((x, y), r, 6.0e24, 3 + col as u32, 1.0, ui, style::NO_LIGHT);
-        style::special((x, y), r, kind, held, ui);
+        style::mine((x, y), r, left, held, ui);
     }
+    style::well((w / 6.0 * 5.0, y), 40.0 * ui, 0.7, ui);
     // Ships with a shield, and one breaking.
     y += 70.0 * ui;
     for (k, colour) in [[230u8, 80, 230], [90, 200, 255], [255, 255, 255]].into_iter().enumerate() {

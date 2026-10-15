@@ -194,8 +194,8 @@ impl Session {
                         b.owner = bases.iter().find(|new| new.slot == b.slot).map_or(b.owner, |new| new.owner);
                     }
                     w.sieges = sieges;
-                    let specials: Vec<u32> = w.specials.iter().map(|s| s.slot).collect();
-                    w.holds = holds.into_iter().filter(|h| specials.contains(&h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
+                    let mines: Vec<u32> = w.mines.iter().map(|s| s.slot).collect();
+                    w.holds = holds.into_iter().filter(|h| mines.contains(&h.1)).map(|(player, slot, held)| (player, (slot, held))).collect();
                     let me = w.my_id;
                     for (_, by) in hits.into_iter().filter(|h| h.0 == me && h.1 != me) {
                         let text = format!("{} is hitting your base", w.player_name(by));
@@ -386,9 +386,14 @@ impl Session {
         self.out.push(ClientMsg::Color(color));
     }
 
-    /// Buy the next tier of an upgrade (at home).
-    pub fn buy(&mut self, upgrade: Upgrade) {
-        self.out.push(ClientMsg::Buy(upgrade));
+    /// Buy something in the shop (at home).
+    pub fn buy(&mut self, ware: Ware) {
+        self.out.push(ClientMsg::Buy(ware));
+    }
+
+    /// Use a supply the ship carries.
+    pub fn use_supply(&mut self, supply: Supply) {
+        self.out.push(ClientMsg::Use(supply));
     }
 
     /// Point at a spot on the map for everyone.

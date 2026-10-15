@@ -16,7 +16,7 @@ mod bases;
 mod commands;
 mod interest;
 mod scrap;
-mod specials;
+mod mines;
 
 use interest::Trouble;
 
@@ -71,6 +71,7 @@ struct Player {
     cargo: Purse,
     bank: Purse,
     upgrades: Upgrades,
+    items: Items,
     /// Who `/r` answers.
     reply_to: Option<PlayerId>,
     /// (start tick, messages) of the current chat rate-limit window.
@@ -168,9 +169,13 @@ pub struct Authority {
     bases_changed: bool,
     /// (base owner, by whom) for every base hurt since the last report.
     base_hits: Vec<(PlayerId, PlayerId)>,
-    specials: Vec<Special>,
-    /// Kinds of special coming back, and when.
-    special_due: Vec<(SpecialKind, Tick)>,
+    mines: Vec<Mine>,
+    /// When mines that ran out open again.
+    mine_due: Vec<Tick>,
+    /// When crystals next turn up near the centre.
+    crystals_due: Option<Tick>,
+    /// Gravity wells: (tick dropped, x, y).
+    wells: Vec<(Tick, f64, f64)>,
     /// Scrap and crystals floating free, and when the next cloud of scrap may turn up.
     pieces: Vec<scrap::Piece>,
     /// Where scrap turns up (apart from `rng`, so that it does not change the rest).
@@ -201,8 +206,10 @@ impl Authority {
             sieges: Vec::new(),
             bases_changed: false,
             base_hits: Vec::new(),
-            specials: Vec::new(),
-            special_due: Vec::new(),
+            mines: Vec::new(),
+            mine_due: Vec::new(),
+            crystals_due: None,
+            wells: Vec::new(),
             pieces: Vec::new(),
             next_piece_id: 1,
             cloud_due: 0,
@@ -317,7 +324,8 @@ impl Authority {
             ClientMsg::Chat { text } => self.chat(conn, text),
             ClientMsg::Mark { x, y } => self.mark(conn, x, y),
             ClientMsg::Cmds(cmds) => self.commands(conn, cmds),
-            ClientMsg::Buy(upgrade) => self.buy(conn, upgrade),
+            ClientMsg::Buy(ware) => self.buy(conn, ware),
+            ClientMsg::Use(supply) => self.use_supply(conn, supply),
             ClientMsg::ResyncRequest => {
                 if let Some(&id) = self.by_conn.get(&conn) {
                     self.stats.resyncs += 1;
@@ -422,6 +430,7 @@ impl Authority {
                 cargo: Purse::default(),
                 bank: Purse::default(),
                 upgrades: Upgrades::default(),
+                items: Items::default(),
                 reply_to: None,
                 chat_window: (0, 0),
                 last_mark: 0,
@@ -445,7 +454,9 @@ impl Authority {
             your_id,
             mode: self.mode,
             bases: self.base_list(),
-            specials: self.specials.clone(),
+            mines: self.mines.clone(),
+            crystals_due: self.crystals_due,
+            wells: self.wells.clone(),
             preset: self.preset.clone(),
             round: self.round,
             round_end_tick: self.round_end_tick,
@@ -477,6 +488,7 @@ impl Authority {
                         cargo: p.cargo,
                         bank: p.bank,
                         upgrades: p.upgrades,
+                        items: p.items,
                     }
                 })
                 .collect(),
@@ -618,8 +630,9 @@ impl Authority {
             let state = ShipState::with_kit(at, shop::kit(&rules, &p.upgrades, &Purse::default()));
             p.ship = Some(state);
             p.respawn_tick = None;
-            (p.cargo, p.quick) = (Purse::default(), false);
-            p.magazine = shop::magazine(t, &rules, &p.upgrades, false);
+            // (Ammo bought while waiting for it is in it.)
+            p.cargo = Purse::default();
+            p.magazine = shop::magazine(t, &rules, &p.upgrades, p.quick);
             self.event(Event::ShipSpawn { tick: t, player: id, state });
         }
 
@@ -660,6 +673,9 @@ impl Authority {
         self.massive.ensure_acc(&rules);
         let view = self.massive.view();
 
+        // Gravity wells pull ships in for a while.
+        self.wells.retain(|w| w.0 + rules.well_ticks as Tick > t);
+        let wells = gsim_core::ship::wells_at(&self.wells, t, &rules);
         // (victim, killer, body)
         let mut deaths: Vec<(PlayerId, Option<PlayerId>, Option<u32>)> = Vec::new();
         // Ship segments over this tick, for the proximity fuses.
@@ -667,7 +683,7 @@ impl Authority {
         for p in self.players.values_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
             let before = (ship.p.x, ship.p.y);
-            match step_ship(ship, p.timeline.at(t), &view, &rules, &mut self.scratch) {
+            match step_ship(ship, p.timeline.at(t), &wells, &view, &rules, &mut self.scratch) {
                 Some(body) => deaths.push((p.id, None, Some(body))),
                 None => segs.push((p.id, before, (ship.p.x, ship.p.y))),
             }
@@ -746,7 +762,7 @@ impl Authority {
             }
         }
         for (victim, killer, body) in deaths {
-            let respawn_tick = next + rules.respawn_ticks as Tick;
+            let respawn_tick = next + self.players.get(&victim).map_or(rules.respawn_ticks, |p| shop::respawn_ticks(&rules, &p.upgrades)) as Tick;
             self.spill(next, victim);
             if let Some(p) = self.players.get_mut(&victim) {
                 p.ship = None;
@@ -1085,8 +1101,9 @@ impl Authority {
         }
         self.lay_bases(&mut sc);
         self.base_hits.clear();
-        self.specials.clear();
-        self.special_due.clear();
+        self.mines.clear();
+        self.mine_due.clear();
+        self.wells.clear();
         self.sieges.clear();
         self.massive = MassiveState::from_bodies(&sc.bodies);
         let world_r = sc.extent().max(sc.spawn_r.1);
@@ -1112,7 +1129,7 @@ impl Authority {
             p.captures = 0;
             p.hold = None;
             p.shield = false;
-            (p.quick, p.cargo, p.bank, p.upgrades) = (false, Purse::default(), Purse::default(), Upgrades::default());
+            (p.quick, p.cargo, p.bank, p.upgrades, p.items) = (false, Purse::default(), Purse::default(), Upgrades::default(), Items::default());
             p.respawn_tick = (!p.spectating).then_some(tick);
             p.fires.clear();
         }

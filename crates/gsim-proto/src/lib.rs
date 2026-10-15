@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -20,7 +20,7 @@ pub mod command;
 pub mod identity;
 pub mod shop;
 pub use identity::Identity;
-pub use shop::{PieceKind, Purse, Upgrade, Upgrades};
+pub use shop::{Items, PieceKind, Purse, Supply, Upgrade, Upgrades, Ware};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CmdKind {
@@ -58,8 +58,10 @@ pub enum ClientMsg {
     Mark { x: f64, y: f64 },
     /// Reliable: my massive-tier hash disagreed, send a fresh snapshot.
     ResyncRequest,
-    /// Reliable: buy the next tier of this upgrade (at home, from what is banked).
-    Buy(Upgrade),
+    /// Reliable: buy this (at home, from what is banked).
+    Buy(Ware),
+    /// Reliable: use one of the supplies the ship carries.
+    Use(Supply),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,6 +87,7 @@ pub struct PlayerInfo {
     pub cargo: Purse,
     pub bank: Purse,
     pub upgrades: Upgrades,
+    pub items: Items,
 }
 
 /// What a round is about.
@@ -128,37 +131,17 @@ pub struct Base {
     pub hp: u32,
 }
 
-/// What holding an orbit around a special body gives, once; then it moves to another body.
+/// Seconds on a qualifying orbit around a mine for each crystal it gives.
+pub const MINE_SECONDS: f64 = 8.0;
+/// Crystals in a mine when it opens; once they are gone it moves to another body.
+pub const MINE_STOCK: u32 = 3;
+
+/// A body that gives crystals to whoever holds an orbit around it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpecialKind {
-    /// Twice the shells, fired twice as often, until the ship is lost.
-    Ammo,
-    /// A fifth of the base's health back (see [`REPAIR_HP`]).
-    Repair,
-    /// The ship survives one shell.
-    Shield,
-}
-
-impl SpecialKind {
-    pub const ALL: [SpecialKind; 3] = [SpecialKind::Ammo, SpecialKind::Repair, SpecialKind::Shield];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            SpecialKind::Ammo => "ammo",
-            SpecialKind::Repair => "repair",
-            SpecialKind::Shield => "shield",
-        }
-    }
-}
-
-/// Seconds on a qualifying orbit around a special body to take what it gives.
-pub const SPECIAL_HOLD_SECONDS: f64 = 4.0;
-
-/// A body that gives something to whoever holds an orbit around it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Special {
-    pub kind: SpecialKind,
+pub struct Mine {
     pub slot: u32,
+    /// Crystals still in it.
+    pub left: u32,
 }
 
 /// A body to orbit for points.
@@ -167,6 +150,20 @@ pub struct Objective {
     pub slot: u32,
     /// Ticks before it moves on to another body (see `GameRules::target_ticks`).
     pub left: u32,
+}
+
+/// Everything a player has, besides their ship: what it carries, what is banked at home,
+/// what has been bought, and its guns and shield.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Loadout {
+    pub cargo: Purse,
+    pub bank: Purse,
+    pub upgrades: Upgrades,
+    pub items: Items,
+    pub magazine: Magazine,
+    pub shield: bool,
+    /// Twice the shells, fired twice as fast (from ammo, until the ship is lost).
+    pub quick: bool,
 }
 
 /// A piece of scrap or a crystal, floating free.
@@ -199,7 +196,11 @@ pub struct Welcome {
     /// The bodies to orbit for points.
     pub objectives: Vec<Objective>,
     pub bases: Vec<Base>,
-    pub specials: Vec<Special>,
+    pub mines: Vec<Mine>,
+    /// When crystals next turn up near the centre.
+    pub crystals_due: Option<Tick>,
+    /// Gravity wells pulling ships in: (tick dropped, x, y).
+    pub wells: Vec<(Tick, f64, f64)>,
     pub rules: GameRules,
     pub massive: MassiveSnapshot,
     pub names: Vec<(u32, String)>,
@@ -230,10 +231,16 @@ pub enum Event {
     Objectives { tick: Tick, objectives: Vec<Objective> },
     /// `player` held an orbit around `target` long enough.
     Captured { tick: Tick, player: PlayerId, target: u32 },
-    /// The special bodies are now these.
-    Specials { tick: Tick, specials: Vec<Special> },
-    /// `player` held an orbit around the special on `slot` long enough and got what it gives.
-    Gift { tick: Tick, player: PlayerId, kind: SpecialKind, slot: u32 },
+    /// The mines are now these.
+    Mines { tick: Tick, mines: Vec<Mine> },
+    /// `player` held an orbit around the mine on `slot` long enough for a crystal.
+    Mined { tick: Tick, player: PlayerId, slot: u32 },
+    /// Crystals turn up near the centre at `due`.
+    CrystalsDue { due: Option<Tick> },
+    /// From `tick` on, for `GameRules::well_ticks`, ships are pulled towards this spot.
+    Well { tick: Tick, player: PlayerId, x: f64, y: f64 },
+    /// `player` jumped home, leaving their cargo behind.
+    Warped { tick: Tick, player: PlayerId },
     /// The shield of `player`'s ship took a shell and is gone.
     ShieldSpent { tick: Tick, player: PlayerId },
     /// `by` brought the base of `owner` down to 0 hp.
@@ -246,7 +253,7 @@ pub enum Event {
     PieceGone { tick: Tick, id: PieceId, by: Option<PlayerId> },
     /// From `tick` on the player carries `cargo`, has `bank` at home and these upgrades and
     /// shells (the ship's engine and tank follow from them, see [`shop::kit`]).
-    Loadout { tick: Tick, player: PlayerId, cargo: Purse, bank: Purse, upgrades: Upgrades, magazine: Magazine },
+    Loadout { tick: Tick, player: PlayerId, loadout: Loadout },
     /// Massive-tier hash at the start of `tick`.
     Hash { tick: Tick, hash: u64 },
 }

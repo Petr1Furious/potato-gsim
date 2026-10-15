@@ -42,7 +42,7 @@ pub fn compute() -> u64 {
     for t in 0..1000u32 {
         state.ensure_acc(&rules);
         let input = ShipInput { angle: (t.wrapping_mul(2654435761) >> 16) as u16, thrust: (t % 101) as u8 };
-        step_ship(&mut ship, input, &state.view(), &rules, &mut scratch);
+        step_ship(&mut ship, input, &[], &state.view(), &rules, &mut scratch);
         state.step(&rules);
     }
     let mut h = Xxh3::new();

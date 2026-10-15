@@ -1,4 +1,4 @@
-//! Bodies of interest (targets, and specials in the bases mode) that stop being worth flying
+//! Bodies of interest (targets, and mines in the bases mode) that stop being worth flying
 //! to: one that drifts far from the centre of the world or races away from it, and one swung
 //! around by a much heavier neighbour, which leaves no room for an orbit around it.
 
@@ -28,10 +28,10 @@ pub(super) enum Trouble {
 
 impl Authority {
     /// How far from the centre a body of interest may be: targets up to half again as far as
-    /// the world reached when it was made, specials (which start near the centre) within half
+    /// the world reached when it was made, mines (which start near the centre) within half
     /// of that.
-    pub(super) fn interest_limit(&self, special: bool) -> f64 {
-        if special { 0.5 * self.world_r } else { 1.5 * self.world_r }
+    pub(super) fn interest_limit(&self, mine: bool) -> f64 {
+        if mine { 0.5 * self.world_r } else { 1.5 * self.world_r }
     }
 
     pub(super) fn distance_from_centre(&self, frame: &SystemFrame, j: usize) -> f64 {
@@ -40,13 +40,13 @@ impl Authority {
     }
 
     /// Whether the body on `slot` should stop being of interest, and why.
-    pub(super) fn trouble(&self, frame: &SystemFrame, slot: u32, special: bool) -> Option<Trouble> {
+    pub(super) fn trouble(&self, frame: &SystemFrame, slot: u32, mine: bool) -> Option<Trouble> {
         let j = slot as usize;
         if let Some(heavy) = self.swung_by(j) {
             return Some(Trouble::Swung(heavy));
         }
         // A body somebody is on the way to stays, or they would arrive at nothing.
-        let away = self.distance_from_centre(frame, j) > self.interest_limit(special) || self.racing_away(frame, j);
+        let away = self.distance_from_centre(frame, j) > self.interest_limit(mine) || self.racing_away(frame, j);
         (away && !self.sought(j)).then_some(Trouble::Far)
     }
 
@@ -62,7 +62,7 @@ impl Authority {
     /// Where a body of interest goes when the one swinging it around cannot take it over: the
     /// fit body nearest to it in place and in motion together, so that whoever was on the way
     /// still is, more or less.
-    pub(super) fn most_alike(&self, j: usize, avoid: &[u32], special: bool) -> Option<u32> {
+    pub(super) fn most_alike(&self, j: usize, avoid: &[u32], mine: bool) -> Option<u32> {
         let frame = SystemFrame::of(&self.massive.kinematics());
         let m = &self.massive;
         let weight = ALIKE_SECONDS * self.rules.time_scale();
@@ -72,7 +72,7 @@ impl Authority {
             d + weight * dv
         };
         (0..m.len())
-            .filter(|&k| k != j && !avoid.contains(&(k as u32)) && self.fit_for_interest(&frame, k, special))
+            .filter(|&k| k != j && !avoid.contains(&(k as u32)) && self.fit_for_interest(&frame, k, mine))
             .min_by(|a, b| unlike(*a).total_cmp(&unlike(*b)).then(a.cmp(b)))
             .map(|k| k as u32)
     }
@@ -115,13 +115,13 @@ impl Authority {
 
     /// Fit to become a body of interest: there, positive, no base, near enough to the centre
     /// (with room to drift), not racing away and not swung around by anything; and no star,
-    /// for a special.
-    pub(super) fn fit_for_interest(&self, frame: &SystemFrame, j: usize, special: bool) -> bool {
+    /// for a mine.
+    pub(super) fn fit_for_interest(&self, frame: &SystemFrame, j: usize, mine: bool) -> bool {
         let m = &self.massive;
-        m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && !(special && m.mass[j] >= 1.0e29) && self.distance_from_centre(frame, j) < 0.7 * self.interest_limit(special) && !self.racing_away(frame, j) && self.swung_by(j).is_none()
+        m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && !(mine && m.mass[j] >= 1.0e29) && self.distance_from_centre(frame, j) < 0.7 * self.interest_limit(mine) && !self.racing_away(frame, j) && self.swung_by(j).is_none()
     }
 
-    /// Move a target or a special somewhere else at once (an operator's call).
+    /// Move a target or a mine somewhere else at once (an operator's call).
     pub(super) fn reelect(&mut self, slot: u32) -> Result<u32, String> {
         let tick = self.tick();
         if let Some(k) = self.objectives.iter().position(|o| o.slot == slot) {
@@ -132,15 +132,15 @@ impl Authority {
             self.event(Event::Objectives { tick, objectives });
             return Ok(new);
         }
-        if let Some(k) = self.specials.iter().position(|s| s.slot == slot) {
-            let new = self.choose_special(&[slot]).ok_or("there is no other body to choose")?;
-            self.specials[k].slot = new;
+        if let Some(k) = self.mines.iter().position(|s| s.slot == slot) {
+            let new = self.choose_mine(&[slot]).ok_or("there is no other body to choose")?;
+            self.mines[k].slot = new;
             self.forget_holds(slot);
-            let specials = self.specials.clone();
-            self.event(Event::Specials { tick, specials });
+            let mines = self.mines.clone();
+            self.event(Event::Mines { tick, mines });
             return Ok(new);
         }
-        Err("that body is neither a target nor a special".into())
+        Err("that body is neither a target nor a mine".into())
     }
 
     pub(super) fn forget_holds(&mut self, slot: u32) {

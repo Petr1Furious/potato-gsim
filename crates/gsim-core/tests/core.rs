@@ -240,21 +240,21 @@ fn fuel_burns_and_regenerates_in_integers() {
     let mut ship = ShipState::new(Particle { x: 1.0e10, y: 0.0, vx: 0.0, vy: 0.0 }, &r);
     let mut scratch = Scratch::default();
     let full = ShipInput { angle: 0, thrust: 100 };
-    step_ship(&mut ship, full, &s.view(), &r, &mut scratch);
+    step_ship(&mut ship, full, &[], &s.view(), &r, &mut scratch);
     assert_eq!(ship.fuel, r.fuel_max_mmps - r.burn_per_tick_mmps);
     let dv = r.burn_per_tick_mmps as f64 / 1000.0;
     assert!((ship.p.vx - dv).abs() < 0.05 * dv, "vx {} vs {}", ship.p.vx, dv);
     // Burn dry: never negative, thrust stops.
     while ship.fuel > 0 {
-        step_ship(&mut ship, full, &s.view(), &r, &mut scratch);
+        step_ship(&mut ship, full, &[], &s.view(), &r, &mut scratch);
     }
     assert_eq!(ship.fuel, 0);
     let idle = ShipInput::default();
     while ship.idle_ticks < r.regen_delay_ticks - 1 {
-        step_ship(&mut ship, idle, &s.view(), &r, &mut scratch);
+        step_ship(&mut ship, idle, &[], &s.view(), &r, &mut scratch);
         assert_eq!(ship.fuel, 0);
     }
-    step_ship(&mut ship, idle, &s.view(), &r, &mut scratch);
+    step_ship(&mut ship, idle, &[], &s.view(), &r, &mut scratch);
     assert_eq!(ship.fuel, r.regen_per_tick_mmps);
 }
 
@@ -297,7 +297,7 @@ fn prediction_is_bit_identical_to_what_then_happens() {
     let mut flown = vec![(ship.p.x, ship.p.y)];
     for t in 0..200u64 {
         let row: Arc<EphRow> = ring.get(t).unwrap();
-        let hit = step_ship(&mut ship, timeline.at(t), &row.view(), &r, &mut scratch);
+        let hit = step_ship(&mut ship, timeline.at(t), &[], &row.view(), &r, &mut scratch);
         flown.push((ship.p.x, ship.p.y));
         if hit.is_some() {
             break;
@@ -326,7 +326,7 @@ fn results_do_not_depend_on_the_vector_width() {
         for t in 0..150u32 {
             s.ensure_acc(&r);
             let input = ShipInput { angle: (t * 431) as u16, thrust: (t % 60) as u8 };
-            crashed = crashed.or(step_ship(&mut ship, input, &s.view(), &r, &mut scratch).map(|slot| (t, slot)));
+            crashed = crashed.or(step_ship(&mut ship, input, &[], &s.view(), &r, &mut scratch).map(|slot| (t, slot)));
             s.step(&r);
         }
         seen.push((s.hash(), ship.p.x.to_bits(), ship.p.y.to_bits(), ship.p.vx.to_bits(), ship.p.vy.to_bits(), crashed));
@@ -407,7 +407,7 @@ fn a_base_stays_put_pushes_bodies_and_pulls_ships() {
     fresh.anchor(0, 2.0e27);
     fresh.ensure_acc(&r);
     let mut ship = ShipState::new(Particle { x: 5.0e8, y: 0.0, vx: 0.0, vy: 0.0 }, &r);
-    step_ship(&mut ship, ShipInput::default(), &fresh.view(), &r, &mut Scratch::default());
+    step_ship(&mut ship, ShipInput::default(), &[], &fresh.view(), &r, &mut Scratch::default());
     assert!(ship.p.vx < 0.0, "a ship is pulled towards a base, not pushed");
 }
 

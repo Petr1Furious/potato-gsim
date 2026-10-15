@@ -15,8 +15,8 @@ use gsim_client_core::world::World;
 use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
-use gsim_proto::shop::{Upgrade, PICKUP_RADIUS, TIERS};
-use gsim_proto::{GameMode, Objective, PieceKind, PlayerId, Purse, Upgrades, BASE_HP, HOME_RADII, SPECIAL_HOLD_SECONDS};
+use gsim_proto::shop::{self, Upgrade, PICKUP_RADIUS, TIERS};
+use gsim_proto::{GameMode, Items, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, MINE_SECONDS};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -201,6 +201,8 @@ const SLACK: f64 = 0.0015;
 const DESTRUCT_HOLD: f64 = 1.5;
 /// How long news for the player stays under the clock (s).
 const ALERT_SECONDS: f64 = 4.0;
+/// Keys that buy upgrades in the shop: those for the ship, then those for the base.
+const SHOP_KEYS: [KeyCode; 8] = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5, KeyCode::Key6, KeyCode::Key7, KeyCode::Key8];
 
 impl Game {
     /// `server`: host or host:port (in a browser, nothing: the server the page came from).
@@ -356,12 +358,18 @@ impl Game {
                 shop_asked = self.shop_open;
             }
             if self.shop_open {
-                let keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5];
-                for (key, upgrade) in keys.into_iter().zip(Upgrade::ALL) {
+                for (key, upgrade) in SHOP_KEYS.into_iter().zip(Upgrade::SHIP.into_iter().chain(Upgrade::BASE)) {
                     if is_key_pressed(key) {
-                        self.net.session.buy(upgrade);
+                        self.net.session.buy(Ware::Upgrade(upgrade));
                     }
                 }
+            }
+            // The supplies the ship carries.
+            if is_key_pressed(KeyCode::Q) {
+                self.net.session.use_supply(Supply::Warp);
+            }
+            if is_key_pressed(KeyCode::E) {
+                self.net.session.use_supply(Supply::Well);
             }
             if is_key_pressed(KeyCode::M) {
                 settings.mouse_aim = !settings.mouse_aim;
@@ -519,8 +527,8 @@ impl Game {
             enemy_bases.sort_by(|a, b| far(a).total_cmp(&far(b)));
         }
         let picks: Vec<u32> = if bases {
-            // Enemy bases and special bodies, nearest first.
-            let mut picks: Vec<u32> = enemy_bases.iter().copied().chain(world.specials.iter().map(|s| s.slot).filter(|s| alive(*s))).collect();
+            // Enemy bases and mines, nearest first.
+            let mut picks: Vec<u32> = enemy_bases.iter().copied().chain(world.mines.iter().map(|s| s.slot).filter(|s| alive(*s))).collect();
             if let Some(ship) = own {
                 let far = |slot: &u32| {
                     let b = body(*slot);
@@ -860,7 +868,8 @@ impl Game {
             // Around one's own base: the home zone, where shells cost nothing (brighter while
             // inside it), drawn even when the base itself is off screen. Around the others:
             // where a siege orbit has to stay.
-            let home = (HOME_RADII * radius / view.mpp) as f32;
+            let zone_radii = owner.map_or(gsim_proto::HOME_RADII, |p| shop::zone_radii(&p.upgrades));
+            let home = (zone_radii * radius / view.mpp) as f32;
             let outer = (world.rules.orbit_max_apo_radii * radius / view.mpp) as f32;
             if b.hp > 0 && mine && home > 14.0 * ui {
                 let lit = world.at_home(world.my_id);
@@ -868,7 +877,7 @@ impl Game {
                     style::zone(s, home, colour, lit, ui);
                 } else {
                     // Zoomed far in: worked out in the world, where the numbers are exact.
-                    let zone = HOME_RADII * radius;
+                    let zone = zone_radii * radius;
                     let (dx, dy) = (view.cx - at.x, view.cy - at.y);
                     let d = (dx * dx + dy * dy).sqrt().max(1.0);
                     let half = 0.5 * ((screen_width() as f64).powi(2) + (screen_height() as f64).powi(2)).sqrt() * view.mpp;
@@ -924,15 +933,15 @@ impl Game {
             }
         }
 
-        // --- special bodies ---------------------------------------------------------------------
-        let hold_goal_special = (SPECIAL_HOLD_SECONDS * world.rules.tick_hz as f64) as f32;
-        for sp in world.specials.iter().filter(|sp| alive(sp.slot) && world.next_round_tick.is_none()) {
+        // --- mines ------------------------------------------------------------------------------
+        let mine_every = (MINE_SECONDS * world.rules.tick_hz as f64) as u32;
+        for sp in world.mines.iter().filter(|sp| alive(sp.slot) && world.next_round_tick.is_none()) {
             let j = sp.slot as usize;
             let at = body(sp.slot);
             let s = view.to_screen(at.x, at.y);
             let radius = row.props.radius[j];
-            let colour = style::special_colour(sp.kind);
-            let name = sp.kind.name().to_uppercase();
+            let colour = style::piece_colour(PieceKind::Crystal);
+            let name = "MINE".to_string();
             if !view.on_screen(s, 0.0) {
                 let at_edge = edge_arrow(s, colour, ui);
                 let mut lines = vec![name];
@@ -949,9 +958,9 @@ impl Game {
                 style::ring(s.0, s.1, outer.min(1.0e5), ui, style::alpha(colour, 0.3));
                 style::ring(s.0, s.1, inner.min(1.0e5), ui, style::alpha(colour, 0.3));
             }
-            let held = world.holds.get(&world.my_id).filter(|h| h.0 == sp.slot).map_or(0.0, |h| h.1 as f32 / hold_goal_special);
+            let held = world.holds.get(&world.my_id).filter(|h| h.0 == sp.slot).map_or(0.0, |h| (h.1 % mine_every.max(1)) as f32 / mine_every.max(1) as f32);
             let r_px = (radius / view.mpp) as f32;
-            style::special(s, r_px, sp.kind, held, ui);
+            style::mine(s, r_px, sp.left, held, ui);
             labels.push(name, s.0, s.1 - r_px.min(4000.0) - 26.0 * ui, LABEL * ui, colour, Rank::Target);
         }
 
@@ -986,6 +995,17 @@ impl Game {
             }
             style::piece(s, piece.kind, spin * (0.7 + (id % 5) as f32 * 0.3) + *id as f32, ui);
         }
+        // Gravity wells.
+        let well_ticks = world.rules.well_ticks as f64;
+        // Drawn out to where it pulls as hard as the engine pushes.
+        let thrust = world.rules.burn_per_tick_mmps as f64 * 1.0e-3 / world.rules.dt;
+        let well_reach = (world.rules.g * world.rules.well_mass / thrust).sqrt();
+        for (at, x, y) in &world.wells {
+            let left = 1.0 - (tick_f - *at as f64) / well_ticks;
+            if (0.0..=1.0).contains(&left) {
+                style::well(view.to_screen(*x, *y), (well_reach / view.mpp) as f32, left as f32, ui);
+            }
+        }
         for e in &world.effects {
             let age = (tick_f - e.tick as f64) / world.rules.tick_hz as f64;
             if !(0.0..1.5).contains(&age) {
@@ -1007,9 +1027,10 @@ impl Game {
                     }
                     style::disc(s.0, s.1, 26.0 * ui, style::alpha(style::GOLD, 0.35 * (1.0 - (age as f32 / 0.4).min(1.0))));
                 }
-                EffectKind::Gift(kind) => {
-                    // Rings bursting outwards in the colour of what was taken.
-                    let c = style::special_colour(kind);
+                EffectKind::Warped => style::warp(s, style::ACCENT, (age as f32 / 0.6).min(1.0), ui),
+                EffectKind::Mined => {
+                    // Rings bursting outwards in the crystals' colour.
+                    let c = style::piece_colour(PieceKind::Crystal);
                     for delay in [0.0f32, 0.15, 0.3] {
                         let t = (age as f32 - delay) / 1.1;
                         if (0.0..1.0).contains(&t) {
@@ -1056,6 +1077,7 @@ impl Game {
                         reader: world.eph.reader(),
                         rules: world.rules.clone(),
                         ship: *track.last(),
+                        wells: world.wells.clone(),
                         start: track.end(),
                         timeline: me.timeline.clone(),
                         ticks: self.lookahead_ticks,
@@ -1319,27 +1341,29 @@ impl Game {
             (name, colour, health(b), state.map(|o| (o, row.props.radius[j])), on)
         });
         let out = spectating && bases && world.base_of(world.my_id).is_some_and(|b| b.hp == 0);
-        // The special body one is holding an orbit around, and how far along.
-        let taking = world.holds.get(&world.my_id).and_then(|h| {
-            let sp = world.specials.iter().find(|s| s.slot == h.0)?;
-            Some((sp.kind, h.1 as f32 / hold_goal_special))
-        });
+        // The mine one is holding an orbit around, and how far along to the next crystal.
+        let mining = world.holds.get(&world.my_id).filter(|h| world.mines.iter().any(|m| m.slot == h.0)).map(|h| (h.1 % mine_every.max(1)) as f32 / mine_every.max(1) as f32);
+        // Crystals turning up soon.
+        let crystals_in = world.crystals_due.map(|t| (t as f64 - tick_f) / world.rules.tick_hz as f64).filter(|s| (0.0..10.0).contains(s) && bases && world.next_round_tick.is_none());
         let winner = world.winner.map(|w| world.player_name(w).to_string());
         // Under the clock: what is going on around us right now, as gauges (what, how far, colour),
         // then what just happened to us (fading out after a few seconds).
-        let mut happening: Vec<(String, f32, Color)> = Vec::new();
+        let mut happening: Vec<(String, Option<String>, f32, Color)> = Vec::new();
         if let (false, Some(h)) = (besiegers.is_empty(), home) {
             let who: Vec<String> = besiegers.iter().map(|b| b.0.to_uppercase()).collect();
-            happening.push((format!("UNDER SIEGE · {}", who.join(", ")), h, style::EMBER));
+            happening.push((format!("UNDER SIEGE · {}", who.join(", ")), None, h, style::EMBER));
         }
         if let Some((name, colour, h, _, true)) = &siege {
-            happening.push((format!("SIEGE · {name}"), *h, *colour));
+            happening.push((format!("SIEGE · {name}"), None, *h, *colour));
         }
-        if let Some((kind, frac)) = taking {
-            happening.push((format!("TAKING {}", kind.name().to_uppercase()), frac, style::special_colour(kind)));
+        if let Some(frac) = mining {
+            happening.push(("MINING".to_string(), None, frac, style::piece_colour(PieceKind::Crystal)));
+        }
+        if let Some(left) = crystals_in {
+            happening.push(("CRYSTALS AT THE CENTRE".to_string(), Some(format!("in {left:.0} s")), 1.0 - left as f32 / 10.0, style::piece_colour(PieceKind::Crystal)));
         }
         if let (Some(name), true) = (&target_name, my_hold > 0.0) {
-            happening.push((format!("CAPTURING {}", name.to_uppercase()), my_hold, style::GOLD));
+            happening.push((format!("CAPTURING {}", name.to_uppercase()), None, my_hold, style::GOLD));
         }
         let hz = world.rules.tick_hz as f64;
         let alerts: Vec<(String, Color, f32)> = world
@@ -1391,7 +1415,8 @@ impl Game {
         let thrust_share = kit.map_or(1.0, |k| k.push as f32 / k.burn.max(1) as f32);
         let (cargo, bank, upgrades) = me.map_or(Default::default(), |m| (m.cargo, m.bank, m.upgrades));
         let shop_open = self.shop_open;
-        let mut bought: Option<Upgrade> = None;
+        let mut bought: Option<Ware> = None;
+        let (items, shielded) = me.map_or((Items::default(), false), |m| (m.items, m.shield));
         let thrust_pct = self.thrust_pct;
         // The ruler replaces a "metres per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
@@ -1434,11 +1459,12 @@ impl Game {
                     if let Some(s) = &status {
                         ui.label(RichText::new(s).color(gold));
                     }
-                    for (what, frac, colour) in &happening {
+                    for (what, value, frac, colour) in &happening {
                         ui.add_space(4.0);
                         ui.allocate_ui(egui::vec2(280.0, 0.0), |ui| {
                             ui.set_width(280.0);
-                            style::gauge(ui, what, &format!("{:.0} %", frac.min(1.0) * 100.0), *frac, *colour);
+                            let value = value.clone().unwrap_or_else(|| format!("{:.0} %", frac.min(1.0) * 100.0));
+                            style::gauge(ui, what, &value, *frac, *colour);
                         });
                     }
                     for (text, colour, fade) in &alerts {
@@ -1602,6 +1628,17 @@ impl Game {
                                 let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
                                 style::gauge(ui, "HOLD", &what, thrust_share, style::piece_colour(PieceKind::Scrap));
                             }
+                            if items.warps > 0 || items.wells > 0 {
+                                // Supplies carried, and the keys that use them.
+                                ui.horizontal(|ui| {
+                                    for (n, key, what) in [(items.warps, "Q", "warp home"), (items.wells, "E", "gravity well")] {
+                                        if n > 0 {
+                                            style::key_hint(ui, key);
+                                            ui.label(RichText::new(format!("{what} {n}")).color(gold));
+                                        }
+                                    }
+                                });
+                            }
                         }
                         None if spectating => {
                             style::caption(ui, if out { "OUT · WATCHING" } else { "WATCHING" });
@@ -1617,14 +1654,15 @@ impl Game {
                     if bases && playing {
                         ui.horizontal(|ui| {
                             style::caption(ui, "BANK");
-                            ui.label(RichText::new(bank.describe()).color(style::c32(style::piece_colour(PieceKind::Scrap))));
-                            if can_shop {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new("shop").color(dim));
-                                    style::key_hint(ui, "B");
-                                });
-                            }
+                            ui.label(RichText::new(format!("{} scrap", bank.scrap)).color(style::c32(style::piece_colour(PieceKind::Scrap))));
+                            ui.label(RichText::new(format!("{} crystals", bank.crystals)).color(style::c32(style::piece_colour(PieceKind::Crystal))));
                         });
+                        if can_shop {
+                            ui.horizontal(|ui| {
+                                style::key_hint(ui, "B");
+                                ui.label(RichText::new("shop").color(dim));
+                            });
+                        }
                     }
                 });
             });
@@ -1656,7 +1694,7 @@ impl Game {
             }
 
             if shop_open {
-                bought = shop(ctx, &bank, &upgrades);
+                bought = shop(ctx, &bank, &upgrades, &items, shielded);
             }
 
             chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
@@ -1688,8 +1726,8 @@ impl Game {
         if let Some(text) = chat_out.send {
             self.net.session.send_chat(&text);
         }
-        if let Some(upgrade) = bought {
-            self.net.session.buy(upgrade);
+        if let Some(ware) = bought {
+            self.net.session.buy(ware);
         }
         match chat_out.clicked {
             Some(Mention::Body(slot)) => {
@@ -1987,24 +2025,32 @@ impl Game {
     }
 }
 
-/// The shop, at home: the next tier of each upgrade, for what is banked. Returns the one
-/// bought, if any.
-fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades) -> Option<Upgrade> {
+/// The shop, at home: the next tier of each upgrade, and supplies, for what is banked.
+/// Returns what was bought, if anything.
+fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades, items: &Items, shield: bool) -> Option<Ware> {
     use egui::RichText;
     let mut bought = None;
-    let (dim, gold, scrap) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::piece_colour(PieceKind::Scrap)));
+    let (dim, gold, text) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::TEXT));
+    let (scrap, crystal) = (style::c32(style::piece_colour(PieceKind::Scrap)), style::c32(style::piece_colour(PieceKind::Crystal)));
+    let price_button = |ui: &mut egui::Ui, price: Purse, can: bool| {
+        let label = RichText::new(price.describe()).color(if price.crystals > 0 { crystal } else { scrap });
+        ui.add_enabled(can && bank.covers(price), egui::Button::new(label)).clicked()
+    };
     egui::Window::new("SHOP").collapsible(false).resizable(false).anchor(egui::Align2::LEFT_CENTER, [10.0, 0.0]).show(ctx, |ui| {
         ui.horizontal(|ui| {
             style::caption(ui, "BANK");
-            ui.label(RichText::new(bank.describe()).color(scrap).strong());
+            ui.label(RichText::new(format!("{} scrap", bank.scrap)).color(scrap).strong());
+            ui.label(RichText::new(format!("{} crystals", bank.crystals)).color(crystal).strong());
         });
-        style::section(ui, "SHIP");
-        egui::Grid::new("shop").num_columns(6).spacing([12.0, 6.0]).show(ui, |ui| {
-            for head in ["", "", "", "NOW", "NEXT", ""] {
-                style::caption(ui, head);
-            }
-            ui.end_row();
-            for (k, u) in Upgrade::ALL.into_iter().enumerate() {
+        egui::Grid::new("shop").num_columns(7).spacing([10.0, 5.0]).show(ui, |ui| {
+            let ups = Upgrade::SHIP.into_iter().chain(Upgrade::BASE);
+            for (k, u) in ups.enumerate() {
+                if k == 0 || k == Upgrade::SHIP.len() {
+                    for head in ["", if k == 0 { "SHIP" } else { "BASE" }, "", "NOW", "NEXT", ""] {
+                        style::caption(ui, head);
+                    }
+                    ui.end_row();
+                }
                 let (tier, tiers) = (upgrades.tier(u), u.tiers());
                 style::key_hint(ui, &(k + 1).to_string());
                 ui.label(RichText::new(u.name().to_uppercase()).strong());
@@ -2020,10 +2066,9 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades) -> Option<Upgrad
                 }
                 ui.label(RichText::new(tiers[tier as usize]).color(dim));
                 if tier < TIERS {
-                    let price = u.price(tier + 1);
-                    ui.label(RichText::new(tiers[tier as usize + 1]).color(style::c32(style::TEXT)));
-                    if ui.add_enabled(bank.covers(price), egui::Button::new(price.describe())).clicked() {
-                        bought = Some(u);
+                    ui.label(RichText::new(tiers[tier as usize + 1]).color(text));
+                    if price_button(ui, u.price(tier + 1), true) {
+                        bought = Some(Ware::Upgrade(u));
                     }
                 } else {
                     ui.label("");
@@ -2032,8 +2077,30 @@ fn shop(ctx: &egui::Context, bank: &Purse, upgrades: &Upgrades) -> Option<Upgrad
                 ui.end_row();
             }
         });
+        egui::Grid::new("supplies").num_columns(4).spacing([10.0, 5.0]).show(ui, |ui| {
+            style::caption(ui, "SUPPLIES");
+            ui.end_row();
+            for s in Supply::ALL {
+                ui.label(RichText::new(s.name().to_uppercase()).strong());
+                let have = match s {
+                    Supply::Shield if shield => "on".to_string(),
+                    _ if s.carried() => format!("{} / {}", items.count(s), shop::CARRY),
+                    _ => String::new(),
+                };
+                ui.label(RichText::new(have).color(gold));
+                ui.label(RichText::new(s.about()).color(dim));
+                let can = match s {
+                    Supply::Shield => !shield,
+                    _ => !s.carried() || items.count(s) < shop::CARRY,
+                };
+                if price_button(ui, s.price(), can) {
+                    bought = Some(Ware::Supply(s));
+                }
+                ui.end_row();
+            }
+        });
         ui.add_space(4.0);
-        ui.label(RichText::new("A lost ship loses one tier of each.").small().color(dim));
+        ui.label(RichText::new("A lost ship loses one tier of each ship upgrade.").small().color(dim));
     });
     bought
 }

@@ -132,11 +132,13 @@ impl Magazine {
     }
 }
 
-/// Advance a ship one tick under `input`. Fuel bookkeeping is pure integer arithmetic.
-/// Returns the slot of the body the ship crashed into, if any.
+/// Advance a ship one tick under `input`, pulled towards `wells` (where gravity wells are)
+/// besides the bodies. Fuel bookkeeping is pure integer arithmetic. Returns the slot of the
+/// body the ship crashed into, if any.
 pub fn step_ship(
     s: &mut ShipState,
     input: ShipInput,
+    wells: &[(f64, f64)],
     view: &MassiveView,
     rules: &GameRules,
     scratch: &mut Scratch,
@@ -159,7 +161,20 @@ pub fn step_ship(
             s.fuel = (s.fuel + rules.regen_per_tick_mmps).min(kit.tank);
         }
     }
+    // A well pulls as hard as a body would, but no harder than from `well_core` away (as the
+    // thrust does, evenly over the tick).
+    for (x, y) in wells {
+        let (dx, dy) = (x - s.p.x, y - s.p.y);
+        let r2 = dx * dx + dy * dy + rules.well_core * rules.well_core;
+        let k = rules.g * rules.well_mass / (r2 * r2.sqrt());
+        thrust = (thrust.0 + k * dx, thrust.1 + k * dy);
+    }
     step_particle(&mut s.p, thrust, rules.ship_radius, view, rules, scratch)
+}
+
+/// Where the gravity wells dropped at these ticks (tick, x, y) pull at `tick`.
+pub fn wells_at(dropped: &[(Tick, f64, f64)], tick: Tick, rules: &GameRules) -> Vec<(f64, f64)> {
+    dropped.iter().filter(|w| w.0 <= tick && tick < w.0 + rules.well_ticks as Tick).map(|w| (w.1, w.2)).collect()
 }
 
 /// "From tick T on, the input is I". The step that integrates tick T uses the latest change

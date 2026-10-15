@@ -16,6 +16,11 @@ const FIELD: (f64, f64) = (0.08, 0.55);
 /// How far apart the pieces of a cloud start, and how fast they drift apart (m, m/s).
 const CLOUD_SPREAD: f64 = 6.0e7;
 const CLOUD_DRIFT: f64 = 15.0;
+/// Crystals turn up this far from the centre (as for scrap), first this long into a round and
+/// then every so often (s).
+const CRYSTAL_FIELD: (f64, f64) = (0.0, 0.15);
+const CRYSTALS_FIRST_SECONDS: f64 = 60.0;
+const CRYSTALS_EVERY_SECONDS: f64 = 90.0;
 /// How fast what a lost ship carried flies apart (m/s).
 const SPILL_DRIFT: f64 = 40.0;
 /// The most pieces a lost ship spills.
@@ -75,16 +80,22 @@ impl Authority {
         }
     }
 
-    /// The ship is lost: what it carried floats away, and every upgrade drops a tier.
+    /// The ship is lost: what it carried floats away, and every upgrade for it drops a tier.
     pub(super) fn spill(&mut self, tick: Tick, player: PlayerId) {
         let Some(p) = self.players.get_mut(&player) else { return };
-        let (cargo, ship) = (std::mem::take(&mut p.cargo), p.ship);
         let had = p.upgrades;
-        p.upgrades.lower_all();
+        p.upgrades.lower_ship();
         p.quick = false;
-        if cargo.is_empty() && had == p.upgrades {
-            return;
+        let changed = had != p.upgrades;
+        if self.drop_cargo(tick, player) || changed {
+            self.loadout(tick, player);
         }
+    }
+
+    /// What the ship carries floats away from where it is. False if it carried nothing.
+    fn drop_cargo(&mut self, tick: Tick, player: PlayerId) -> bool {
+        let Some(p) = self.players.get_mut(&player) else { return false };
+        let (cargo, ship) = (std::mem::take(&mut p.cargo), p.ship);
         if let Some(ship) = ship {
             let kinds = std::iter::repeat_n(PieceKind::Crystal, cargo.crystals as usize).chain(std::iter::repeat_n(PieceKind::Scrap, cargo.scrap as usize));
             let spilled: Vec<(PieceKind, Particle)> = kinds
@@ -93,7 +104,7 @@ impl Authority {
                 .collect();
             self.add_pieces(tick, spilled);
         }
-        self.loadout(tick, player);
+        !cargo.is_empty()
     }
 
     /// Somewhere near `p`, drifting away from it.
@@ -116,13 +127,14 @@ impl Authority {
         }
     }
 
-    /// A cloud of scrap somewhere around the centre, clear of bodies and of the bases, going
-    /// round with everything else. `None` if no clear spot turned up.
-    fn cloud(&mut self) -> Option<Vec<(PieceKind, Particle)>> {
+    /// A cloud of `n` pieces somewhere `field` (a share of how far out the bases are) from the
+    /// centre, clear of bodies and of the bases, going round with everything else. `None` if
+    /// no clear spot turned up.
+    fn cloud(&mut self, kind: PieceKind, n: usize, field: (f64, f64)) -> Option<Vec<(PieceKind, Particle)>> {
         let ring = self.spawn_r.1;
         let (cx, cy, cvx, cvy) = self.barycentre();
         for _ in 0..32 {
-            let (a, r) = (self.scrap_rng.angle(), ring * self.scrap_rng.range(FIELD.0, FIELD.1));
+            let (a, r) = (self.scrap_rng.angle(), ring * self.scrap_rng.range(field.0, field.1));
             let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
             let m = &self.massive;
             let clear = (0..m.len()).filter(|&j| m.alive[j]).all(|j| {
@@ -133,21 +145,30 @@ impl Authority {
                 continue;
             }
             let centre = self.circular_at(x, y, (cx, cy, cvx, cvy));
-            return Some((0..CLOUD).map(|_| (PieceKind::Scrap, self.scatter(centre, CLOUD_SPREAD, CLOUD_DRIFT))).collect());
+            return Some((0..n).map(|_| (kind, self.scatter(centre, CLOUD_SPREAD, CLOUD_DRIFT))).collect());
         }
         None
     }
 
-    /// Once a tick in a round of bases: more scrap while there is too little, and whatever
-    /// a ship brings home goes into the bank.
+    /// Once a tick in a round of bases: more scrap while there is too little, crystals every
+    /// so often, and whatever a ship brings home goes into the bank.
     pub(super) fn tend_scrap(&mut self, tick: Tick, playing: bool) {
+        let hz = self.rules.tick_hz as f64;
         if playing && tick >= self.cloud_due {
-            self.cloud_due = tick + (CLOUD_EVERY_SECONDS * self.rules.tick_hz as f64) as Tick;
+            self.cloud_due = tick + (CLOUD_EVERY_SECONDS * hz) as Tick;
             if self.scrap_count() < self.scrap_wanted() {
-                if let Some(cloud) = self.cloud() {
+                if let Some(cloud) = self.cloud(PieceKind::Scrap, CLOUD, FIELD) {
                     self.add_pieces(tick, cloud);
                 }
             }
+        }
+        if playing && self.crystals_due.is_some_and(|due| tick >= due) {
+            let n = 2 + self.players.values().filter(|p| !p.spectating).count() / 3;
+            if let Some(cloud) = self.cloud(PieceKind::Crystal, n, CRYSTAL_FIELD) {
+                self.add_pieces(tick, cloud);
+            }
+            self.crystals_due = Some(tick + (CRYSTALS_EVERY_SECONDS * hz) as Tick);
+            self.event(Event::CrystalsDue { due: self.crystals_due });
         }
         let home: Vec<PlayerId> = self.players.values().filter(|p| !p.cargo.is_empty()).map(|p| p.id).filter(|id| self.at_home(*id)).collect();
         for id in home {
@@ -166,15 +187,16 @@ impl Authority {
         SCRAP_PER_PLAYER * self.players.values().filter(|p| !p.spectating).count().max(2)
     }
 
-    /// A new round of bases starts with all its scrap.
+    /// A new round of bases starts with all its scrap, and crystals a while later.
     pub(super) fn sow_scrap(&mut self) {
         self.pieces.clear();
+        self.crystals_due = None;
         if self.mode != GameMode::Bases {
             return;
         }
         let tick = self.tick();
         for _ in 0..self.scrap_wanted().div_ceil(CLOUD) {
-            let Some(cloud) = self.cloud() else { break };
+            let Some(cloud) = self.cloud(PieceKind::Scrap, CLOUD, FIELD) else { break };
             for (kind, p) in cloud {
                 let id = self.next_piece_id;
                 self.next_piece_id += 1;
@@ -182,6 +204,7 @@ impl Authority {
             }
         }
         self.cloud_due = tick;
+        self.crystals_due = Some(tick + (CRYSTALS_FIRST_SECONDS * self.rules.tick_hz as f64) as Tick);
     }
 
     /// The ship's engine and tank follow what it carries and what has been bought; everyone
@@ -192,36 +215,91 @@ impl Authority {
         if let Some(ship) = p.ship.as_mut() {
             ship.refit(shop::kit(&rules, &p.upgrades, &p.cargo));
         }
-        let (cargo, bank, upgrades, magazine) = (p.cargo, p.bank, p.upgrades, p.magazine);
-        self.event(Event::Loadout { tick, player, cargo, bank, upgrades, magazine });
+        let loadout = Loadout { cargo: p.cargo, bank: p.bank, upgrades: p.upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick };
+        self.event(Event::Loadout { tick, player, loadout });
     }
 
-    /// The next tier of an upgrade, from what is banked: only at home (or waiting there for
-    /// a ship).
-    pub(super) fn buy(&mut self, conn: ConnId, upgrade: Upgrade) {
+    /// Something from the shop, for what is banked: only at home (or waiting there for a ship).
+    pub(super) fn buy(&mut self, conn: ConnId, ware: Ware) {
         let Some(&id) = self.by_conn.get(&conn) else { return };
         let (tick, rules) = (self.tick(), self.rules.clone());
         let home = self.at_home(id) || self.players.get(&id).is_some_and(|p| p.ship.is_none() && p.respawn_tick.is_some() && self.base_alive(id));
+        let hp = self.base_of(id).map_or(0, |b| b.hp);
         let Some(p) = self.players.get_mut(&id) else { return };
-        let tier = p.upgrades.tier(upgrade) + 1;
+        let (name, price, full) = match ware {
+            Ware::Upgrade(u) => {
+                let tier = p.upgrades.tier(u) + 1;
+                (u.name(), u.price(tier.min(shop::TIERS)), tier > shop::TIERS)
+            }
+            Ware::Supply(s) => {
+                let full = match s {
+                    Supply::Shield => p.shield,
+                    Supply::Repair => hp >= BASE_HP,
+                    _ => p.items.count(s) >= shop::CARRY,
+                };
+                (s.name(), s.price(), full)
+            }
+        };
         let refusal = if self.mode != GameMode::Bases || p.spectating {
             Some("Nothing to buy now".to_string())
         } else if !home {
             Some("The shop is open only at home".to_string())
-        } else if tier > shop::TIERS {
-            Some(format!("The {} is as good as it gets", upgrade.name()))
-        } else if !p.bank.covers(upgrade.price(tier)) {
-            Some(format!("The {} costs {}", upgrade.name(), upgrade.price(tier).describe()))
+        } else if full {
+            Some(format!("No more {name} for now"))
+        } else if !p.bank.covers(price) {
+            Some(format!("The {name} costs {}", price.describe()))
         } else {
             None
         };
         if let Some(text) = refusal {
             return self.send(Target::One(conn), ServerMsg::Chat(ChatLine { kind: ChatKind::Error, from: None, text }));
         }
-        p.bank.take(upgrade.price(tier));
-        p.upgrades.raise(upgrade);
-        p.magazine = p.magazine.refit(tick, shop::magazine(tick, &rules, &p.upgrades, p.quick), &rules);
+        p.bank.take(price);
+        match ware {
+            Ware::Upgrade(u) => p.upgrades.raise(u),
+            Ware::Supply(Supply::Shield) => p.shield = true,
+            Ware::Supply(Supply::Ammo) => p.quick = true,
+            Ware::Supply(Supply::Repair) => {
+                if let Some(b) = self.bases.iter_mut().find(|b| b.owner == id && b.hp > 0) {
+                    b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
+                    self.bases_changed = true;
+                }
+            }
+            Ware::Supply(s) => *p.items.slot(s).unwrap() += 1,
+        }
+        // (A new magazine for more shells, and ammo fills it.)
+        let fresh = shop::magazine(tick, &rules, &p.upgrades, p.quick);
+        p.magazine = if ware == Ware::Supply(Supply::Ammo) { fresh } else { p.magazine.refit(tick, fresh, &rules) };
         self.loadout(tick, id);
+    }
+
+    /// One of the supplies the ship carries: a jump home, or a gravity well where it is.
+    pub(super) fn use_supply(&mut self, conn: ConnId, supply: Supply) {
+        let Some(&id) = self.by_conn.get(&conn) else { return };
+        let tick = self.tick();
+        let home = self.base_spawn(id);
+        let Some(p) = self.players.get_mut(&id).filter(|p| p.ship.is_some() && !p.spectating) else { return };
+        let Some(count) = p.items.slot(supply).filter(|n| **n > 0) else { return };
+        let ship = p.ship.unwrap();
+        match supply {
+            Supply::Warp => {
+                let Some(at) = home else { return };
+                *count -= 1;
+                // The cargo stays behind.
+                self.drop_cargo(tick, id);
+                self.loadout(tick, id);
+                let kit = self.players[&id].ship.map_or(ship.kit, |s| s.kit);
+                self.place_ship(id, ShipState { p: at, kit, ..ship });
+                self.event(Event::Warped { tick, player: id });
+            }
+            Supply::Well => {
+                *count -= 1;
+                self.wells.push((tick, ship.p.x, ship.p.y));
+                self.event(Event::Well { tick, player: id, x: ship.p.x, y: ship.p.y });
+                self.loadout(tick, id);
+            }
+            _ => {}
+        }
     }
 
     /// Test and operator hook: put scrap and crystals in a player's bank.
@@ -238,8 +316,17 @@ impl Authority {
         self.players.get(&player).map(|p| (p.cargo, p.bank, p.upgrades))
     }
 
+    pub fn items(&self, player: PlayerId) -> Option<Items> {
+        self.players.get(&player).map(|p| p.items)
+    }
+
     /// Every piece floating free: (kind, where).
     pub fn pieces(&self) -> Vec<(PieceKind, Particle)> {
         self.pieces.iter().map(|p| (p.kind, p.p)).collect()
+    }
+
+    /// When crystals next turn up.
+    pub fn crystals_due(&self) -> Option<Tick> {
+        self.crystals_due
     }
 }

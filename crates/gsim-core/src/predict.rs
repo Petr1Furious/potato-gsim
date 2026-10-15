@@ -32,7 +32,7 @@ pub fn predict_ship(
         let t = start_tick + k;
         let Some(row) = row_at(t) else { break };
         let input = input_at(t, &s);
-        let hit = step_ship(&mut s, input, &row.view(), rules, &mut scratch);
+        let hit = step_ship(&mut s, input, &[], &row.view(), rules, &mut scratch);
         path.points.push((s.p.x, s.p.y));
         if hit.is_some() {
             path.impact = hit;

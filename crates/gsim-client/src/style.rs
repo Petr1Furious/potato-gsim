@@ -212,60 +212,70 @@ pub fn base(s: (f32, f32), r: f32, colour: Color, health: f32, besieged: bool, s
     }
 }
 
-pub fn special_colour(kind: gsim_proto::SpecialKind) -> Color {
-    match kind {
-        gsim_proto::SpecialKind::Ammo => Color::new(1.0, 0.56, 0.22, 1.0),
-        gsim_proto::SpecialKind::Repair => GOOD,
-        gsim_proto::SpecialKind::Shield => Color::new(0.62, 0.72, 1.0, 1.0),
-    }
-}
+/// A shield's colour.
+pub const SHIELD: Color = Color::new(0.62, 0.72, 1.0, 1.0);
+/// A gravity well's.
+pub const WELL: Color = Color::new(0.78, 0.45, 1.0, 1.0);
 
-/// The mark around a special body (radius `r` on screen): a breathing halo in the colour of
-/// its kind and an emblem turning around it, with `held` (0 to 1) of the hold as an arc.
-/// Ammo: three warheads circling it. Repair: a slowly turning gear. Shield: a hexagon.
-pub fn special(s: (f32, f32), r: f32, kind: gsim_proto::SpecialKind, held: f32, ui: f32) {
-    use gsim_proto::SpecialKind;
+/// The mark around a crystal mine (radius `r` on screen): a breathing halo in the crystals'
+/// colour, the crystals still in it circling it (dim once taken), and `held` (0 to 1) of the
+/// way to the next one as an arc.
+pub fn mine(s: (f32, f32), r: f32, left: u32, held: f32, ui: f32) {
     use std::f32::consts::{FRAC_PI_2, TAU};
     let time = get_time() as f32;
-    let c = special_colour(kind);
+    let c = piece_colour(gsim_proto::PieceKind::Crystal);
     let ring = r.min(4000.0) + 9.0 * ui;
     let pulse = 0.75 + 0.25 * (time * 2.2).sin();
     for k in 1..=4 {
         self::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, alpha(c, 0.14 * pulse / k as f32));
     }
-    match kind {
-        SpecialKind::Ammo => {
-            self::ring(s.0, s.1, ring, 1.5 * ui, alpha(c, 0.8));
-            for k in 0..3 {
-                let a = time * 1.4 + k as f32 * TAU / 3.0;
-                let (cos, sin) = (a.cos(), a.sin());
-                let at = |out: f32, side: f32| vec2(s.0 + cos * (ring + out) - sin * side, s.1 + sin * (ring + out) + cos * side);
-                draw_triangle(at(9.0 * ui, 0.0), at(1.0 * ui, 4.0 * ui), at(1.0 * ui, -4.0 * ui), c);
-            }
-        }
-        SpecialKind::Repair => {
-            self::ring(s.0, s.1, ring, 2.0 * ui, alpha(c, 0.9));
-            let teeth = 12;
-            for k in 0..teeth {
-                let a = time * 0.4 + k as f32 * TAU / teeth as f32;
-                let (cos, sin) = (a.cos(), a.sin());
-                draw_line(s.0 + cos * ring, s.1 + sin * ring, s.0 + cos * (ring + 5.0 * ui), s.1 + sin * (ring + 5.0 * ui), 3.5 * ui, alpha(c, 0.9));
-            }
-        }
-        SpecialKind::Shield => {
-            for (k, out) in [(0.0f32, 0.0f32), (1.0, 4.0)] {
-                let turn = time * 0.3 * (1.0 - 2.0 * k);
-                let r6 = ring + out * ui;
-                for side in 0..6 {
-                    let (a, b) = (turn + side as f32 * TAU / 6.0, turn + (side + 1) as f32 * TAU / 6.0);
-                    draw_line(s.0 + r6 * a.cos(), s.1 + r6 * a.sin(), s.0 + r6 * b.cos(), s.1 + r6 * b.sin(), (2.0 - k) * ui, alpha(c, 0.9 - 0.4 * k));
-                }
-            }
+    self::ring(s.0, s.1, ring, 1.5 * ui, alpha(c, 0.7));
+    let stock = gsim_proto::MINE_STOCK;
+    for k in 0..stock {
+        let a = time * 0.5 + k as f32 * TAU / stock as f32;
+        let at = (s.0 + a.cos() * (ring + 7.0 * ui), s.1 + a.sin() * (ring + 7.0 * ui));
+        if k < left {
+            piece(at, gsim_proto::PieceKind::Crystal, time + k as f32 * 2.1, ui);
+        } else {
+            disc(at.0, at.1, 2.0 * ui, alpha(c, 0.25));
         }
     }
     if held > 0.0 {
-        arc(s.0, s.1, ring + 9.0 * ui, -FRAC_PI_2, -FRAC_PI_2 + TAU * held.min(1.0), 3.0 * ui, c);
+        arc(s.0, s.1, ring + 15.0 * ui, -FRAC_PI_2, -FRAC_PI_2 + TAU * held.min(1.0), 3.0 * ui, c);
     }
+}
+
+/// A gravity well: spiral arms winding in, turning, `left` (1 to 0) of its time to go.
+/// `reach`: how far out (on screen) it pulls as hard as an engine pushes.
+pub fn well(s: (f32, f32), reach: f32, left: f32, ui: f32) {
+    use std::f32::consts::TAU;
+    let time = get_time() as f32;
+    let fade = left.clamp(0.0, 1.0).sqrt();
+    let outer = reach.clamp(24.0 * ui, 2000.0);
+    disc(s.0, s.1, outer, alpha(WELL, 0.05 * fade));
+    ring(s.0, s.1, outer, 1.0 * ui, alpha(WELL, 0.3 * fade));
+    disc(s.0, s.1, outer * 0.35, alpha(WELL, 0.10 * fade));
+    disc(s.0, s.1, 4.0 * ui, alpha(WHITE, 0.9 * fade));
+    for arm in 0..4 {
+        let mut prev: Option<(f32, f32)> = None;
+        for k in 0..=24 {
+            let t = k as f32 / 24.0;
+            let a = arm as f32 * TAU / 4.0 + time * 2.5 + 3.0 * t;
+            let rr = outer * (1.0 - t) + 4.0 * ui * t;
+            let p = (s.0 + rr * a.cos(), s.1 + rr * a.sin());
+            if let Some(q) = prev {
+                draw_line(q.0, q.1, p.0, p.1, (1.0 + 1.5 * t) * ui, alpha(WELL, fade * (0.15 + 0.7 * t)));
+            }
+            prev = Some(p);
+        }
+    }
+}
+
+/// A ship jumping away (`age` 0 to 1): a flash, and a ring closing in on it.
+pub fn warp(s: (f32, f32), colour: Color, age: f32, ui: f32) {
+    let fade = (1.0 - age) * (1.0 - age);
+    ring(s.0, s.1, (40.0 * (1.0 - age) + 3.0) * ui, 2.0 * ui, alpha(colour, fade));
+    disc(s.0, s.1, 10.0 * ui * (1.0 - age), alpha(WHITE, 0.7 * fade));
 }
 
 /// A zone around `s` of radius `r` (screen pixels): a faint tint with a rim, brighter when
@@ -305,7 +315,7 @@ pub fn zone_edge(p: (f32, f32), inward: (f32, f32), colour: Color, lit: bool, ui
 /// it, breathing slowly. `seed` keeps neighbouring ships out of step.
 pub fn ship_shield(s: (f32, f32), seed: u32, ui: f32) {
     use std::f32::consts::PI;
-    let c = special_colour(gsim_proto::SpecialKind::Shield);
+    let c = SHIELD;
     let time = get_time() as f32 + seed as f32 * 0.7;
     let r = (16.0 + 0.8 * (time * 2.0).sin()) * ui;
     disc(s.0, s.1, r, alpha(c, 0.06));
@@ -319,7 +329,7 @@ pub fn ship_shield(s: (f32, f32), seed: u32, ui: f32) {
 /// A shield breaking: its pieces flying apart and fading (`age` 0 to 1).
 pub fn shield_break(s: (f32, f32), age: f32, ui: f32) {
     use std::f32::consts::TAU;
-    let c = special_colour(gsim_proto::SpecialKind::Shield);
+    let c = SHIELD;
     let r = (16.0 + 30.0 * age) * ui;
     for k in 0..8 {
         let a = k as f32 * TAU / 8.0 + 0.3 * age;

@@ -154,14 +154,14 @@ impl Authority {
         }
     }
 
-    /// A live body: a scenario name, `B<slot>`, a bare slot number, or `@t` (the objective).
+    /// A live body: a scenario name, `B<slot>`, a bare slot number, `@t` (the objective) or
+    /// `mine` (the first mine).
     fn find_body(&self, word: &str) -> Result<u32, String> {
         let w = word.to_lowercase();
-        let special = self.specials.iter().find(|s| s.kind.name() == w).map(|s| s.slot);
         let slot = if w == "@t" {
             self.objectives.first().map(|o| o.slot)
-        } else if special.is_some() {
-            special
+        } else if w == "mine" {
+            self.mines.first().map(|m| m.slot)
         } else if let Some((slot, _)) = self.names.iter().find(|(_, n)| n.to_lowercase() == w) {
             Some(*slot)
         } else {
@@ -186,7 +186,7 @@ impl Authority {
     fn destroy(&mut self, id: PlayerId) -> Result<(), String> {
         self.ship_of(id)?;
         let tick = self.tick();
-        let respawn_tick = tick + self.rules.respawn_ticks as Tick;
+        let respawn_tick = tick + self.players.get(&id).map_or(self.rules.respawn_ticks, |p| gsim_proto::shop::respawn_ticks(&self.rules, &p.upgrades)) as Tick;
         let playing = self.next_round_tick.is_none();
         self.spill(tick, id);
         if let Some(p) = self.players.get_mut(&id) {
