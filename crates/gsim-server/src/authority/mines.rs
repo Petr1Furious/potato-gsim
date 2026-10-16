@@ -1,6 +1,6 @@
-//! Crystal mines, in the bases mode: ordinary bodies near the center that give a crystal to
-//! whoever holds an orbit around them for a while (the same orbit as for a target), and another
-//! for every while longer, until the mine runs out and moves on to another body.
+//! Mines, in the bases mode: ordinary bodies near the center that give a piece to whoever holds
+//! an orbit around them for a while (the same orbit as for a target), and another for every while
+//! longer. A crystal mine runs out and moves on to another body; a scrap mine never runs out.
 
 use super::*;
 
@@ -8,10 +8,14 @@ use super::*;
 const COMEBACK_SECONDS: f64 = 20.0;
 
 impl Authority {
-    /// How many mines there should be: one, another for every two players, and maybe one more
-    /// (as the round rolled).
-    fn mines_wanted(&self) -> usize {
-        1 + self.players.values().filter(|p| !p.spectating).count() / 2 + self.roll.mines as usize
+    /// How many mines of a kind there should be: of crystals one, another for every two players,
+    /// and maybe one more (as the round rolled); of scrap one, and another for every three.
+    fn mines_wanted(&self, kind: PieceKind) -> usize {
+        let playing = self.players.values().filter(|p| !p.spectating).count();
+        match kind {
+            PieceKind::Crystal => 1 + playing / 2 + self.roll.mines as usize,
+            _ => 1 + playing / 3,
+        }
     }
 
     /// A body for a new mine: a planet among the few closest to the center that is fit for it
@@ -50,8 +54,8 @@ impl Authority {
             // Gone, swallowed by a base, or merged with another mine.
             let lost = slot == u32::MAX || !self.massive.alive[slot as usize] || self.massive.fixed[slot as usize] || self.mines[..k].iter().any(|s| s.slot == slot);
             if lost {
-                self.mines.remove(k);
-                self.mine_due.push(comeback);
+                let kind = self.mines.remove(k).kind;
+                self.mine_due.push((kind, comeback));
                 continue;
             }
             self.mines[k].slot = slot;
@@ -73,7 +77,7 @@ impl Authority {
                         let taken: Vec<u32> = self.mines.iter().map(|s| s.slot).collect();
                         self.most_alike(slot as usize, &taken, true)
                     }
-                    Some(Trouble::Far) => self.choose_mine(&[slot]),
+                    Some(Trouble::Far | Trouble::Paired) => self.choose_mine(&[slot]),
                 };
                 if let Some(new) = new {
                     self.mines[k].slot = new;
@@ -82,10 +86,11 @@ impl Authority {
             }
         }
 
-        // Every so long on the orbit, a crystal (while the mine has any).
+        // Every so long on the orbit, a piece (while a crystal mine has any).
         let mut mined: Vec<(PlayerId, u32)> = Vec::new();
         if playing {
-            let every = (MINE_SECONDS * rules.tick_hz as f64) as u32;
+            let mines = self.mines.clone();
+            let every = |slot: u32| mines.iter().find(|m| m.slot == slot).map_or(u32::MAX, |m| (mine_seconds(m.kind) * rules.tick_hz as f64) as u32);
             let bodies: Vec<(u32, Particle, f64, f64)> = {
                 let m = &self.massive;
                 self.mines.iter().map(|s| s.slot as usize).map(|j| (j as u32, Particle { x: m.x[j], y: m.y[j], vx: m.vx[j], vy: m.vy[j] }, m.pull[j], m.radius[j])).collect()
@@ -97,20 +102,23 @@ impl Authority {
                 };
                 let on = p.hold.map(|h| h.0).filter(|slot| around(*slot)).or_else(|| bodies.iter().map(|b| b.0).find(|slot| around(*slot)));
                 p.hold = on.map(|slot| (slot, p.hold.filter(|h| h.0 == slot).map_or(1, |h| h.1 + 1)));
-                if let Some((slot, _)) = p.hold.filter(|h| h.1.is_multiple_of(every.max(1))) {
+                if let Some((slot, _)) = p.hold.filter(|h| h.1.is_multiple_of(every(h.0).max(1))) {
                     mined.push((p.id, slot));
                 }
             }
         }
         for (player, slot) in mined {
-            let Some(k) = self.mines.iter().position(|m| m.slot == slot && m.left > 0) else { continue };
-            self.mines[k].left -= 1;
-            if self.mines[k].left == 0 {
-                self.mines.remove(k);
-                self.mine_due.push(comeback);
+            let Some(k) = self.mines.iter().position(|m| m.slot == slot && (m.left > 0 || m.kind == PieceKind::Scrap)) else { continue };
+            let kind = self.mines[k].kind;
+            if kind == PieceKind::Crystal {
+                self.mines[k].left -= 1;
+                if self.mines[k].left == 0 {
+                    self.mines.remove(k);
+                    self.mine_due.push((kind, comeback));
+                }
             }
             if let Some(p) = self.players.get_mut(&player) {
-                p.cargo.add(Purse { scrap: 0, crystals: 1 });
+                p.cargo.add(Purse::one(kind));
             }
             self.event(Event::Mined { tick, player, slot });
             self.loadout(tick, player);
@@ -122,21 +130,24 @@ impl Authority {
 
         // As many as wanted: the ones coming back first, then new ones at once.
         if playing {
-            let wanted = self.mines_wanted();
-            while self.mines.len() < wanted {
-                let waiting = self.mine_due.len();
-                let due = self.mine_due.iter().position(|d| *d <= tick);
-                if waiting + self.mines.len() >= wanted && due.is_none() {
-                    break;
+            for kind in [PieceKind::Crystal, PieceKind::Scrap] {
+                let wanted = self.mines_wanted(kind);
+                let have = |a: &Authority| a.mines.iter().filter(|m| m.kind == kind).count();
+                while have(self) < wanted {
+                    let waiting = self.mine_due.iter().filter(|d| d.0 == kind).count();
+                    let due = self.mine_due.iter().position(|d| d.0 == kind && d.1 <= tick);
+                    if waiting + have(self) >= wanted && due.is_none() {
+                        break;
+                    }
+                    let Some(slot) = self.choose_mine(&[]) else { break };
+                    if let Some(i) = due {
+                        self.mine_due.remove(i);
+                    }
+                    self.mines.push(Mine { slot, kind, left: MINE_STOCK });
                 }
-                let Some(slot) = self.choose_mine(&[]) else { break };
-                if let Some(i) = due {
-                    self.mine_due.remove(i);
-                }
-                self.mines.push(Mine { slot, left: MINE_STOCK });
             }
             // Whatever is due beyond what is wanted is not coming back.
-            self.mine_due.retain(|d| *d > tick);
+            self.mine_due.retain(|d| d.1 > tick);
         }
         if self.mines != before {
             let mines = self.mines.clone();

@@ -50,7 +50,7 @@ struct Asked {
     held: bool,
     burn_mmps: i64,
     shell: Option<Particle>,
-    ref_slot: Option<u32>,
+    reference: Option<crate::predictor::Reference>,
     wells: Vec<(Tick, Vec<(f64, f64)>)>,
 }
 
@@ -60,7 +60,7 @@ struct Asked {
 enum ToWorker {
     World { world: u32, snapshot: Box<MassiveSnapshot>, rules: Box<GameRules> },
     Want { world: u32, upto: Tick, keep: Tick },
-    Predict { world: u32, asked: Asked },
+    Predict { world: u32, asked: Box<Asked> },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -198,10 +198,10 @@ pub fn predict(job: &Job) {
         held: job.held,
         burn_mmps: job.burn_mmps,
         shell: job.shell,
-        ref_slot: job.ref_slot,
+        reference: job.reference,
         wells: job.wells.clone(),
     };
-    send(&ToWorker::Predict { world, asked });
+    send(&ToWorker::Predict { world, asked: Box::new(asked) });
 }
 
 /// An answer for each prediction that has come back: `None` for one that was not made, or
@@ -281,7 +281,7 @@ pub extern "C" fn gsim_worker_message() {
             }
             Some(ToWorker::Predict { world, asked }) => {
                 // Only the newest is made: the page would only throw the others away.
-                let superseded = ASKED.with(|pending| pending.borrow_mut().replace((world, asked))).is_some();
+                let superseded = ASKED.with(|pending| pending.borrow_mut().replace((world, *asked))).is_some();
                 if superseded {
                     post(&FromWorker::Skipped);
                 }
@@ -309,7 +309,7 @@ pub extern "C" fn gsim_worker_predict() {
             held: asked.held,
             burn_mmps: asked.burn_mmps,
             shell: asked.shell,
-            ref_slot: asked.ref_slot,
+            reference: asked.reference,
             wells: asked.wells,
         };
         Doing::new(job).go(&mut w.kept, f64::INFINITY)

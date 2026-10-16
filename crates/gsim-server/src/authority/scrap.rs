@@ -106,12 +106,13 @@ impl Authority {
         }
     }
 
-    /// The ship is lost (crashed into `body`, if it did): what it carried floats away, and
-    /// rapid fire is over.
+    /// The ship is lost (crashed into `body`, if it did): what it carried floats away, and what
+    /// lasts as long as the ship is over.
     pub(super) fn spill(&mut self, tick: Tick, player: PlayerId, body: Option<u32>) {
         let Some(p) = self.players.get_mut(&player) else { return };
-        p.magnet_until = 0;
-        let changed = std::mem::take(&mut p.quick);
+        // Rapid fire, a magnet and a target lock go with the ship.
+        let changed = p.quick || p.lock || p.magnet_until > 0;
+        (p.quick, p.magnet_until, p.lock) = (false, 0, false);
         if self.drop_cargo(tick, player, body) || changed {
             self.loadout(tick, player);
         }
@@ -310,7 +311,7 @@ impl Authority {
         if let Some(ship) = p.ship.as_mut() {
             ship.refit(shop::kit(&rules, &p.upgrades, &p.cargo));
         }
-        let loadout = Loadout { cargo: p.cargo, bank, upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick, magnet_until: p.magnet_until };
+        let loadout = Loadout { cargo: p.cargo, bank, upgrades, items: p.items, magazine: p.magazine, shield: p.shield, quick: p.quick, magnet_until: p.magnet_until, lock: p.lock };
         self.event(Event::Loadout { tick, player, loadout });
     }
 
@@ -351,6 +352,7 @@ impl Authority {
             Ware::Supply(s) => {
                 let full = match s {
                     Supply::Shield => p.shield,
+                    Supply::Lock => p.lock,
                     Supply::Repair => hp >= BASE_HP || sudden_death,
                     _ => p.items.count(s) >= shop::CARRY,
                 };
@@ -376,6 +378,7 @@ impl Authority {
             Ware::Upgrade(_) => {}
             Ware::Supply(Supply::Shield) => p.shield = true,
             Ware::Supply(Supply::RapidFire) => p.quick = true,
+            Ware::Supply(Supply::Lock) => p.lock = true,
             Ware::Supply(Supply::Repair) => {}
             Ware::Supply(s) => *p.items.slot(s).unwrap() += 1,
         }
@@ -492,6 +495,7 @@ impl Authority {
         let (tick, rules) = (self.tick(), self.rules.clone());
         let Some(p) = self.players.get_mut(&player) else { return };
         match supply {
+            Supply::Lock => p.lock = true,
             Supply::Shield => p.shield = true,
             Supply::RapidFire => {
                 p.quick = true;

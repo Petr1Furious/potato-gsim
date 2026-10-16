@@ -8,6 +8,12 @@ use super::*;
 /// the tides of a heavier neighbor) is smaller than this many of its radii, no qualifying
 /// orbit around it lasts.
 const HILL_RADII: f64 = 20.0;
+/// A neighbor this many times as heavy swings a body around; one between `PAIR_MASS` and that
+/// makes a pair with it, around either of which orbits have room only within `PAIR_ROOM` of the
+/// gap between them.
+const SWUNG_MASS: f64 = 2.0;
+const PAIR_MASS: f64 = 0.3;
+const PAIR_ROOM: f64 = 0.4;
 /// Within 30° of straight at a body.
 const AIM_COS: f64 = 0.866;
 /// A body leaving the center faster than this share of a ship's whole delta-v is not worth
@@ -24,6 +30,8 @@ pub(super) enum Trouble {
     Far,
     /// Swung around by this much heavier body.
     Swung(u32),
+    /// In a tight pair with a body of much the same mass: no orbit around either lasts.
+    Paired,
 }
 
 impl Authority {
@@ -44,6 +52,9 @@ impl Authority {
         let j = slot as usize;
         if let Some(heavy) = self.swung_by(j) {
             return Some(Trouble::Swung(heavy));
+        }
+        if self.paired(j) {
+            return Some(Trouble::Paired);
         }
         // A body somebody is on the way to stays, or they would arrive at nothing.
         let away = self.distance_from_center(frame, j) > self.interest_limit(mine) || self.racing_away(frame, j);
@@ -77,15 +88,15 @@ impl Authority {
             .map(|k| k as u32)
     }
 
-    /// The much heavier body that leaves `j` no room for an orbit (the tightest squeeze, if
-    /// several do). Bases are left out: ships feel them only up close.
+    /// The much heavier body (twice as heavy or more) that leaves `j` no room for an orbit (the
+    /// tightest squeeze, if several do). Bases are left out: ships feel them only up close.
     pub(super) fn swung_by(&self, j: usize) -> Option<u32> {
         let m = &self.massive;
         if !(m.alive[j] && m.mass[j] > 0.0) {
             return None;
         }
         let mut best: Option<(u32, f64)> = None;
-        for k in (0..m.len()).filter(|&k| k != j && m.alive[k] && !m.fixed[k] && m.mass[k] > m.mass[j]) {
+        for k in (0..m.len()).filter(|&k| k != j && m.alive[k] && !m.fixed[k] && m.mass[k] > SWUNG_MASS * m.mass[j]) {
             let d = ((m.x[k] - m.x[j]).powi(2) + (m.y[k] - m.y[j]).powi(2)).sqrt();
             let hill = d * (m.mass[j] / (3.0 * m.mass[k])).cbrt();
             if hill < HILL_RADII * m.radius[j] && best.is_none_or(|b| hill < b.1) {
@@ -93,6 +104,21 @@ impl Authority {
             }
         }
         best.map(|b| b.0)
+    }
+
+    /// `j` is in a tight pair with a body of much the same mass (from 30 % of its own to twice it):
+    /// the room for an orbit around either is then only a fraction of the gap between them, and
+    /// no qualifying orbit lasts once that is too small.
+    pub(super) fn paired(&self, j: usize) -> bool {
+        let m = &self.massive;
+        if !(m.alive[j] && m.mass[j] > 0.0) {
+            return false;
+        }
+        (0..m.len()).filter(|&k| k != j && m.alive[k] && !m.fixed[k]).any(|k| {
+            let ratio = m.mass[k] / m.mass[j];
+            let d = ((m.x[k] - m.x[j]).powi(2) + (m.y[k] - m.y[j]).powi(2)).sqrt();
+            (PAIR_MASS..=SWUNG_MASS).contains(&ratio) && PAIR_ROOM * d < HILL_RADII * m.radius[j]
+        })
     }
 
     /// Somebody is on the way to `j`: flying straight at it, thrusting towards it, or already
@@ -118,7 +144,7 @@ impl Authority {
     /// for a mine.
     pub(super) fn fit_for_interest(&self, frame: &SystemFrame, j: usize, mine: bool) -> bool {
         let m = &self.massive;
-        m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && !(mine && m.mass[j] >= 1.0e29) && self.distance_from_center(frame, j) < 0.7 * self.interest_limit(mine) && !self.racing_away(frame, j) && self.swung_by(j).is_none()
+        m.alive[j] && !m.fixed[j] && m.mass[j] > 0.0 && !(mine && m.mass[j] >= 1.0e29) && self.distance_from_center(frame, j) < 0.7 * self.interest_limit(mine) && !self.racing_away(frame, j) && self.swung_by(j).is_none() && !self.paired(j)
     }
 
     /// Move a target or a mine somewhere else at once (an operator's call).

@@ -456,3 +456,19 @@ fn near_a_base_nothing_else_pulls() {
     assert_eq!(inside, 0.0, "within the reach the planet does not pull");
     assert!(between > 0.0 && between < outside, "it fades in: {between} vs {outside}");
 }
+
+#[test]
+fn a_bigger_tank_fills_as_fast_in_a_share_of_it() {
+    let r = rules();
+    let mut s = MassiveState::from_bodies(&[body(0.0, 0.0, 0.0, 0.0, 1.0e20, 1.0e3)]);
+    s.ensure_acc(&r);
+    let refill = |tank: i64| {
+        let mut ship = ShipState::with_kit(Particle { x: 1.0e12, y: 0.0, vx: 0.0, vy: 0.0 }, gsim_core::Kit { tank, ..gsim_core::Kit::of(&r) });
+        ship.fuel = 0;
+        ship.idle_ticks = r.regen_delay_ticks;
+        step_ship(&mut ship, ShipInput::default(), &[], &s.view(), &r, &mut Scratch::default());
+        ship.fuel
+    };
+    assert_eq!(refill(r.fuel_max_mmps), r.regen_per_tick_mmps);
+    assert_eq!(refill(3 * r.fuel_max_mmps), 3 * r.regen_per_tick_mmps);
+}

@@ -110,9 +110,12 @@ to catch. Pieces that drift far beyond the bases with no ship within 3 Gm fade a
 seconds. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
 round what it hit.
 
-**Crystals** come from **mines**: planets near the center (one, and one more for every two
-players) that give a crystal to a ship holding a qualifying orbit around them, every 16 s while
-it stays, until their three are gone; then the mine opens on another body 20 s later. A crystal
+**Mines** are planets near the center that give a piece to a ship holding a qualifying orbit
+around them while it stays: crystal mines (one, and one more for every two players) a crystal
+every 16 s until their three are gone, when the mine opens on another body 20 s later; scrap
+mines (one, and one more for every three players) a scrap every 3 s, without end. A mine (or a
+target) that drifts far out, is swung around by a much heavier body, or ends up in a tight pair
+with a body of much its mass moves to another body. A crystal
 or two also turn up at the center a minute into the round and every 90 s after (announced
 10 s ahead). Operators can name the first mine in commands (`/orbit mine`).
 
@@ -124,7 +127,9 @@ upgrades, three tiers each, kept when the ship is lost: thrust (up to x3), delta
 60 km/s), shells (up to 50), fire rate (up to x3) and shell speed (up to 24 km/s), for 4, 8 and
 16 scrap (the last also takes 4 crystals). Base upgrades, shared by its team: armor (up to x3),
 home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
-Supplies: a shield (drawn around the ship; it survives one shell), rapid fire (twice the
+Supplies: a target lock (other ships can be clicked to select them, for the predicted path and
+the shell preview with its closest approach, until the ship is lost), a shield (drawn around
+the ship; it survives one shell), rapid fire (twice the
 shells, fired and coming back twice as fast, until the ship is lost), base repair (+20 %), and
 five to carry along, used with the keys 1 to 5 while the shop is closed: warp home (1 or `Q`: a
 jump back home, leaving the cargo behind), a gravity well (2 or `E`: fired towards the cursor
@@ -216,7 +221,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Shift / Ctrl, X / Z | Throttle up / down, 0 % / 100 % |
 | Space | Fire a shell towards the cursor (further cursor = faster shell) |
 | Wheel, drag | Zoom about the cursor, pan |
-| Click | Select a body: prediction and trails are then drawn relative to it |
+| Click | Select a body, a piece of scrap, a crystal or a crate (or, with a target lock, another ship): prediction is then drawn relative to it |
 | F | Camera: with the selected body, or your ship while nothing is selected (the default), or automatic: with the selection, moving and zooming by itself to keep the ship, its predicted path up to the closest approach and the selected body on screen (it holds still under thrust, and leaves a view set by hand alone for a few seconds) |
 | R | Select the nearest target (with bases: enemy base), then the next one |
 | P, O, N | Ship trajectory prediction, shell trajectory preview, body names |

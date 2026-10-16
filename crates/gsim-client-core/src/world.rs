@@ -146,6 +146,8 @@ pub struct PlayerRep {
     pub magnet_until: Tick,
     /// Delta-v added (an afterburner), by the tick it shows from.
     pub boosts: BTreeMap<Tick, i64>,
+    /// Other ships can be selected (a target lock), until the ship is lost.
+    pub lock: bool,
     /// The ship survives one shell.
     pub shield: bool,
     /// Fires and reloads twice as fast, with twice the shells (from ammo, until the ship is lost).
@@ -277,6 +279,7 @@ impl World {
                     stunned: p.stunned,
                     magnet_until: 0,
                     boosts: BTreeMap::new(),
+                    lock: false,
                     shield: p.shield,
                     quick: false,
                     cargo: p.cargo,
@@ -445,6 +448,7 @@ impl World {
                     stunned: (0, 0),
                     magnet_until: 0,
                     boosts: BTreeMap::new(),
+                    lock: false,
                     shield: false,
                     quick: false,
                     cargo: Purse::default(),
@@ -597,7 +601,9 @@ impl World {
                 self.holds.retain(|_, hold| slots.contains(&hold.0));
             }
             Event::Mined { tick, player, slot } => {
-                if player == self.my_id {
+                // (A scrap mine gives too often for news each time.)
+                let crystal = self.mines.iter().any(|m| m.slot == slot && m.kind == PieceKind::Crystal);
+                if player == self.my_id && crystal {
                     self.alert(tick, "+1 crystal".to_string(), true);
                 }
                 if let Some(row) = self.eph.get(tick).or_else(|| self.eph.get(self.head.saturating_sub(1))).filter(|r| (slot as usize) < r.x.len()) {
@@ -868,7 +874,7 @@ impl World {
             let gained = Supply::CARRIED.into_iter().find(|s| new.items.count(*s) > p.items.count(*s)).filter(|_| new.bank == p.bank);
             gained.map(|s| (format!("+1 {}", s.name()), true))
         };
-        (p.cargo, p.bank, p.upgrades, p.items, p.magazine, p.shield, p.quick, p.magnet_until) = (new.cargo, new.bank, new.upgrades, new.items, new.magazine, new.shield, new.quick, new.magnet_until);
+        (p.cargo, p.bank, p.upgrades, p.items, p.magazine, p.shield, p.quick, p.magnet_until, p.lock) = (new.cargo, new.bank, new.upgrades, new.items, new.magazine, new.shield, new.quick, new.magnet_until, new.lock);
         let kit = shop::kit(&self.rules, &new.upgrades, &new.cargo);
         p.kits.insert(tick, kit);
         // (Only the one in force at the oldest tick still kept, and those after it.)

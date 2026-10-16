@@ -232,25 +232,26 @@ pub const SHIELD: Color = Color::new(0.62, 0.72, 1.0, 1.0);
 /// A gravity well's.
 pub const WELL: Color = Color::new(0.78, 0.45, 1.0, 1.0);
 
-/// The mark around a crystal mine (radius `r` on screen): a breathing halo in the crystals'
-/// color, the crystals still in it circling it (dim once taken), and `held` (0 to 1) of the
-/// way to the next one as an arc.
-pub fn mine(s: (f32, f32), r: f32, left: u32, held: f32, ui: f32) {
+/// The mark around a mine (radius `r` on screen): a breathing halo in the color of what it gives,
+/// pieces of it circling it (for a crystal mine those still in it, dim once taken; a scrap mine
+/// never runs out), and `held` (0 to 1) of the way to the next one as an arc.
+pub fn mine(s: (f32, f32), r: f32, kind: gsim_proto::PieceKind, left: u32, held: f32, ui: f32) {
     use std::f32::consts::{FRAC_PI_2, TAU};
     let time = get_time() as f32;
-    let c = piece_color(gsim_proto::PieceKind::Crystal);
+    let c = piece_color(kind);
     let ring = r.min(4000.0) + 9.0 * ui;
     let pulse = 0.75 + 0.25 * (time * 2.2).sin();
     for k in 1..=4 {
         self::ring(s.0, s.1, ring + 2.0 * k as f32 * ui, 2.5 * ui, alpha(c, 0.14 * pulse / k as f32));
     }
     self::ring(s.0, s.1, ring, 1.5 * ui, alpha(c, 0.7));
-    let stock = gsim_proto::MINE_STOCK;
+    let scrap = kind == gsim_proto::PieceKind::Scrap;
+    let stock = if scrap { 5 } else { gsim_proto::MINE_STOCK };
     for k in 0..stock {
         let a = time * 0.5 + k as f32 * TAU / stock as f32;
         let at = (s.0 + a.cos() * (ring + 7.0 * ui), s.1 + a.sin() * (ring + 7.0 * ui));
-        if k < left {
-            piece(at, gsim_proto::PieceKind::Crystal, time + k as f32 * 2.1, 1.0, ui);
+        if scrap || k < left {
+            piece(at, kind, time + k as f32 * 2.1, 1.0, ui);
         } else {
             disc(at.0, at.1, 2.0 * ui, alpha(c, 0.25));
         }

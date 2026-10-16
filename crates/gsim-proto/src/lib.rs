@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -223,16 +223,19 @@ pub struct Base {
     pub hp: u32,
 }
 
-/// Seconds on a qualifying orbit around a mine for each crystal it gives.
-pub const MINE_SECONDS: f64 = 16.0;
+/// Seconds on a qualifying orbit around a mine for each piece it gives.
+pub fn mine_seconds(kind: PieceKind) -> f64 {
+    if kind == PieceKind::Scrap { 3.0 } else { 16.0 }
+}
 /// Crystals in a mine when it opens; once they are gone it moves to another body.
 pub const MINE_STOCK: u32 = 3;
 
-/// A body that gives crystals to whoever holds an orbit around it.
+/// A body that gives scrap or crystals to whoever holds an orbit around it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mine {
     pub slot: u32,
-    /// Crystals still in it.
+    pub kind: PieceKind,
+    /// Crystals still in it (a scrap mine never runs out).
     pub left: u32,
 }
 
@@ -258,6 +261,8 @@ pub struct Loadout {
     pub quick: bool,
     /// Until this tick the ship takes pieces from much further away (a scrap magnet).
     pub magnet_until: Tick,
+    /// Other ships can be selected (a target lock), until the ship is lost.
+    pub lock: bool,
 }
 
 /// A piece of scrap or a crystal, floating free.

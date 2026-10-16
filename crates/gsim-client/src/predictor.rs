@@ -31,14 +31,41 @@ pub struct Job {
     pub burn_mmps: i64,
     /// Muzzle state of a shell fired now, if a preview is wanted.
     pub shell: Option<Particle>,
-    /// Draw everything relative to this body.
-    pub ref_slot: Option<u32>,
+    /// Draw everything relative to this.
+    pub reference: Option<Reference>,
 }
 
-/// Paths as offsets from the reference body at each point's own tick (absolute if none).
+/// Which thing paths are drawn relative to: a body, a piece or a ship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RefKey {
+    Body(u32),
+    Piece(u32),
+    Ship(u32),
+}
+
+/// What paths are drawn relative to, and (for anything but a body, whose path the ephemeris
+/// has) how it moves from the job's start: a piece falls as a shell does, a ship coasts.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Reference {
+    Body(u32),
+    Piece(u32, Particle),
+    Ship(u32, ShipState),
+}
+
+impl Reference {
+    pub fn key(&self) -> RefKey {
+        match *self {
+            Reference::Body(s) => RefKey::Body(s),
+            Reference::Piece(id, _) => RefKey::Piece(id),
+            Reference::Ship(id, _) => RefKey::Ship(id),
+        }
+    }
+}
+
+/// Paths as offsets from the reference at each point's own tick (absolute if none).
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Paths {
-    pub ref_slot: Option<u32>,
+    pub reference: Option<RefKey>,
     pub coast: Vec<(f64, f64)>,
     pub coast_impact: bool,
     pub held: Vec<(f64, f64)>,
@@ -50,6 +77,8 @@ pub struct Paths {
     /// After `farthest` the path really does come back: at least half way to where it was
     /// nearest before. A path that merely wavers on its way out does not.
     pub returns: bool,
+    /// Index into `shell` and distance of the shell's closest approach to the reference.
+    pub shell_closest: Option<(usize, f64)>,
     pub compute_ms: f64,
 }
 
@@ -76,8 +105,18 @@ pub struct Predictor {
     pub made: u64,
 }
 
-fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
-    let Some(mut slot) = job.ref_slot.map(|s| s as usize) else { return path.points.clone() };
+/// `path` as seen from the reference: a body (from the ephemeris), or something whose path
+/// `moving` is (tick by tick from the same start; it stays where it ends).
+fn relative(job: &Job, path: &Path, moving: Option<&[(f64, f64)]>) -> Vec<(f64, f64)> {
+    if let Some(at) = moving {
+        let last = at.last().copied().unwrap_or_default();
+        return path.points.iter().enumerate().map(|(i, p)| {
+            let r = at.get((path.start_tick + i as Tick).saturating_sub(job.start) as usize).copied().unwrap_or(last);
+            (p.0 - r.0, p.1 - r.1)
+        }).collect();
+    }
+    let Some(Reference::Body(slot)) = job.reference else { return path.points.clone() };
+    let mut slot = slot as usize;
     let mut last = (0.0, 0.0);
     // False once the reference has been annihilated or removed: it then stays where it was.
     let mut exists = true;
@@ -110,6 +149,11 @@ fn relative(job: &Job, path: &Path) -> Vec<(f64, f64)> {
             (p.0 - last.0, p.1 - last.1)
         })
         .collect()
+}
+
+/// The first point at which the distances `d` stop falling: the next close approach.
+fn next_closest(d: &[f64]) -> Option<(usize, f64)> {
+    (1..d.len().saturating_sub(1)).find(|&i| d[i] <= d[i - 1] && d[i] < d[i + 1]).map(|i| (i, d[i]))
 }
 
 /// The coasting path worked out last time, tick by tick from `start`.
@@ -194,6 +238,9 @@ pub struct Doing {
     coast: Option<Path>,
     held: Walk<ShipState>,
     shell: Option<Walk<Particle>>,
+    /// The reference, when it is a piece or a ship: where it goes.
+    piece: Option<Walk<Particle>>,
+    other: Option<Walk<ShipState>>,
     /// Milliseconds worked on it so far.
     spent: f64,
 }
@@ -202,7 +249,13 @@ impl Doing {
     pub fn new(job: Job) -> Self {
         let held = Walk::new(job.ship, job.start, (job.ship.p.x, job.ship.p.y));
         let shell = job.shell.map(|p| Walk::new(p, job.start, (p.x, p.y)));
-        Self { job, coast: None, held, shell, spent: 0.0 }
+        let (mut piece, mut other) = (None, None);
+        match job.reference {
+            Some(Reference::Piece(_, p)) => piece = Some(Walk::new(p, job.start, (p.x, p.y))),
+            Some(Reference::Ship(_, s)) => other = Some(Walk::new(s, job.start, (s.p.x, s.p.y))),
+            _ => {}
+        }
+        Self { job, coast: None, held, shell, piece, other, spent: 0.0 }
     }
 
     /// Work on it until `until` (seconds on [`crate::fmt::now`]): the paths, once whole.
@@ -242,15 +295,35 @@ impl Doing {
                 return None;
             }
         }
-        let mut out = Paths { ref_slot: job.ref_slot, ..Default::default() };
+        // A piece or a ship as the reference: where it goes, as far as the paths do.
+        if let Some(piece) = &mut self.piece {
+            let whole = piece.go(job, job.ticks, until, |p, _, row| {
+                let hit = step_particle(p, (0.0, 0.0), job.rules.shell_radius, &row.view(), &job.rules, &mut scratch);
+                ((p.x, p.y), hit)
+            });
+            if !whole {
+                return None;
+            }
+        }
+        if let Some(other) = &mut self.other {
+            let whole = other.go(job, job.ticks, until, |s, tick, row| {
+                let hit = step_ship(s, ShipInput::default(), &wells_at(&job.wells, tick), &row.view(), &job.rules, &mut scratch);
+                ((s.p.x, s.p.y), hit)
+            });
+            if !whole {
+                return None;
+            }
+        }
+        let moving = self.piece.as_ref().map(|w| &w.path.points[..]).or(self.other.as_ref().map(|w| &w.path.points[..]));
+        let mut out = Paths { reference: job.reference.map(|r| r.key()), ..Default::default() };
         if let Some(coast) = &self.coast {
             out.coast_impact = coast.impact.is_some();
-            out.coast = relative(job, coast);
-            if job.ref_slot.is_some() {
+            out.coast = relative(job, coast, moving);
+            if job.reference.is_some() {
                 // The next close approach, not the lowest point anywhere in the window: on a
                 // repeating orbit later passes are about as close and would win by a hair.
                 let d: Vec<f64> = out.coast.iter().map(|q| (q.0 * q.0 + q.1 * q.1).sqrt()).collect();
-                out.closest = (1..d.len().saturating_sub(1)).find(|&i| d[i] <= d[i - 1] && d[i] < d[i + 1]).map(|i| (i, d[i]));
+                out.closest = next_closest(&d);
                 out.farthest = (1..d.len().saturating_sub(1)).find(|&i| d[i] >= d[i - 1] && d[i] > d[i + 1]).map(|i| (i, d[i]));
                 out.returns = out.farthest.is_some_and(|(i, far)| {
                     let near = d[..i].iter().copied().fold(f64::MAX, f64::min);
@@ -258,11 +331,16 @@ impl Doing {
                 });
             }
             if job.held {
-                out.held = relative(job, &self.held.path);
+                out.held = relative(job, &self.held.path, moving);
             }
         }
         if let Some(shell) = &self.shell {
-            out.shell = relative(job, &shell.path);
+            out.shell = relative(job, &shell.path, moving);
+            if job.reference.is_some() {
+                // How near the shell comes to what it is aimed at.
+                let d: Vec<f64> = out.shell.iter().map(|q| (q.0 * q.0 + q.1 * q.1).sqrt()).collect();
+                out.shell_closest = next_closest(&d);
+            }
         }
         Some(out)
     }
@@ -391,9 +469,9 @@ mod tests {
             held: false,
             burn_mmps: 0,
             shell: None,
-            ref_slot: Some(0),
+            reference: Some(Reference::Body(0)),
         };
-        let rel = relative(&job, &path);
+        let rel = relative(&job, &path, None);
         // Before the fix the dead slot read as the origin, a jump of ~1e11 m at the merge.
         for pair in rel.windows(2) {
             let jump = ((pair[1].0 - pair[0].0).powi(2) + (pair[1].1 - pair[0].1).powi(2)).sqrt();

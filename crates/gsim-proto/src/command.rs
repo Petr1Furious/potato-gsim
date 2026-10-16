@@ -128,7 +128,7 @@ pub const COMMANDS: &[Command] = &[
         op: true,
         params: &[
             req("player", Arg::Player),
-            req("item", Arg::Word(&["scrap", "crystals", "shield", "rapid-fire", "base-repair", "warp-home", "gravity-well"])),
+            req("item", Arg::Word(&["scrap", "crystals", "shield", "rapid-fire", "base-repair", "target-lock", "warp-home", "gravity-well", "emp", "scrap-magnet", "afterburner"])),
             opt("count", Arg::Number),
         ],
     },

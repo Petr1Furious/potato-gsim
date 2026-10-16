@@ -491,7 +491,7 @@ fn gallery(ui: f32) {
         let x = w / 6.0 * (col as f32 + 1.0);
         let r = if col % 2 == 0 { 8.0 } else { 20.0 } * ui;
         style::body((x, y), r, 6.0e24, 3 + col as u32, 1.0, ui, style::NO_LIGHT);
-        style::mine((x, y), r, left, held, ui);
+        style::mine((x, y), r, if col == 3 { gsim_proto::PieceKind::Scrap } else { gsim_proto::PieceKind::Crystal }, left, held, ui);
     }
     style::well((w / 6.0 * 5.0, y), 40.0 * ui, 0.7, ui);
     // Ships with a shield, and one breaking.

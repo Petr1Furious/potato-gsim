@@ -158,7 +158,9 @@ pub fn step_ship(
     } else {
         s.idle_ticks = s.idle_ticks.saturating_add(1);
         if s.idle_ticks >= rules.regen_delay_ticks && s.fuel < kit.tank {
-            s.fuel = (s.fuel + rules.regen_per_tick_mmps).min(kit.tank);
+            // A bigger tank fills as fast, in a share of it a second.
+            let regen = rules.regen_per_tick_mmps * kit.tank / rules.fuel_max_mmps.max(1);
+            s.fuel = (s.fuel + regen).min(kit.tank);
         }
     }
     // A well pulls as hard as a body would, but no harder than from `well_core` away (as the

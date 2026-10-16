@@ -68,6 +68,8 @@ struct Player {
     stunned: (Tick, Tick),
     /// Until this tick it takes pieces from much further away (a scrap magnet).
     magnet_until: Tick,
+    /// It can pick other ships out (a target lock), until it is lost.
+    lock: bool,
     /// Only until the next round (out of this one, or joined while it was on).
     benched: bool,
     /// The ship survives one shell.
@@ -181,8 +183,8 @@ pub struct Authority {
     /// (base owner, by whom) for every base hurt since the last report.
     base_hits: Vec<(PlayerId, PlayerId)>,
     mines: Vec<Mine>,
-    /// When mines that ran out open again.
-    mine_due: Vec<Tick>,
+    /// When mines that ran out (or were lost) open again, and of what kind.
+    mine_due: Vec<(PieceKind, Tick)>,
     /// When crystals next turn up near the center.
     crystals_due: Option<Tick>,
     /// When the next supply crate turns up.
@@ -475,6 +477,7 @@ impl Authority {
                 team: reclaimed.map_or(0, |r| r.0),
                 stunned: (0, 0),
                 magnet_until: 0,
+                lock: false,
                 benched: watch,
                 shield: false,
                 quick: false,

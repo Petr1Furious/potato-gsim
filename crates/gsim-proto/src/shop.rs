@@ -246,13 +246,15 @@ pub enum Supply {
     Magnet,
     /// Carried: more delta-v, beyond a full tank.
     Afterburner,
+    /// Other ships can be selected, to fly to and aim at, until the ship is lost.
+    Lock,
 }
 
 /// The most of each carried supply a player can have.
 pub const CARRY: u8 = 2;
 
 impl Supply {
-    pub const ALL: [Supply; 8] = [Supply::Shield, Supply::RapidFire, Supply::Repair, Supply::Warp, Supply::Well, Supply::Emp, Supply::Magnet, Supply::Afterburner];
+    pub const ALL: [Supply; 9] = [Supply::Shield, Supply::RapidFire, Supply::Repair, Supply::Lock, Supply::Warp, Supply::Well, Supply::Emp, Supply::Magnet, Supply::Afterburner];
     /// Those carried, in the order of the keys that use them (1 to 5).
     pub const CARRIED: [Supply; 5] = [Supply::Warp, Supply::Well, Supply::Emp, Supply::Magnet, Supply::Afterburner];
 
@@ -266,6 +268,7 @@ impl Supply {
             Supply::Emp => "EMP",
             Supply::Magnet => "scrap magnet",
             Supply::Afterburner => "afterburner",
+            Supply::Lock => "target lock",
         }
     }
 
@@ -284,6 +287,7 @@ impl Supply {
             Supply::Emp => Purse { scrap: 6, crystals: 1 },
             Supply::Magnet => Purse { scrap: 3, crystals: 0 },
             Supply::Afterburner => Purse { scrap: 5, crystals: 0 },
+            Supply::Lock => Purse { scrap: 12, crystals: 3 },
         }
     }
 

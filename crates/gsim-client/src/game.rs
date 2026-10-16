@@ -5,7 +5,7 @@ use crate::chat::{self, ChatBox, Mention};
 use crate::density::{ColorMode, Density, Flash};
 use crate::fmt;
 use crate::style::{self, Rank};
-use crate::predictor::{Job, Predictor};
+use crate::predictor::{Job, Predictor, RefKey, Reference};
 use crate::settings::{Camera, Settings};
 use egui_macroquad::egui;
 use gsim_client_core::complete::Context;
@@ -16,7 +16,7 @@ use gsim_client_core::{Controls, EffectKind, SessionConfig};
 use gsim_core::objective::orbit_status;
 use gsim_core::{math, EphRow, Particle, SystemFrame, Tick};
 use gsim_proto::shop::{self, Upgrade, PICKUP_RADIUS, TIERS};
-use gsim_proto::{GameMode, Items, TeamId, Twist, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, MINE_SECONDS};
+use gsim_proto::{GameMode, Items, TeamId, Twist, Objective, PieceKind, PlayerId, Purse, Supply, Upgrades, Ware, BASE_HP, mine_seconds};
 #[cfg(not(target_arch = "wasm32"))]
 use gsim_server::net::{build_authority, run, ServerOptions};
 use macroquad::prelude::*;
@@ -109,6 +109,8 @@ enum Target {
     /// Another player'"'"'s ship (picked by clicking their name in chat).
     Player(PlayerId),
     Body(u32),
+    /// A piece or another ship that was picked.
+    Picked(RefKey),
     Free,
 }
 
@@ -157,6 +159,8 @@ pub struct Game {
     last_target: Target,
     last_target_pos: (f64, f64),
     selected: Option<u32>,
+    /// A piece or (with a target lock) another ship picked instead of a body, to fly to or aim at.
+    picked: Option<RefKey>,
     heading: f64,
     thrust_pct: f32,
     menu_open: bool,
@@ -238,6 +242,7 @@ impl Game {
             watch: None,
             last_target: Target::Free,
             last_target_pos: (0.0, 0.0),
+            picked: None,
             selected: None,
             heading: 0.0,
             thrust_pct: 100.0,
@@ -485,6 +490,7 @@ impl Game {
             // A new world: nothing chosen or drawn in the old one means anything in it.
             self.round = Some(world.round);
             self.selected = None;
+            self.picked = None;
             self.watch = None;
             self.frames.clear();
             self.last_frame_tick = 0;
@@ -512,6 +518,20 @@ impl Game {
                 .flatten()
                 .filter(|s| alive(*s));
         }
+        // A piece taken or gone, or a ship gone or no longer locked on to, is picked no more.
+        let locked = world.me().is_some_and(|m| m.lock);
+        self.picked = self.picked.filter(|k| match *k {
+            RefKey::Piece(id) => world.pieces.contains_key(&id),
+            RefKey::Ship(id) => locked && world.ship_at(id, tick_f).is_some(),
+            RefKey::Body(_) => false,
+        });
+        // What predictions, the camera and the selection box go by: the pick, else the body.
+        let reference: Option<RefKey> = self.picked.or(self.selected.map(RefKey::Body));
+        let at_ref = |k: RefKey| match k {
+            RefKey::Body(s) => Some(body(s)),
+            RefKey::Piece(id) => world.piece_at(id, tick_f),
+            RefKey::Ship(id) => world.ship_at(id, tick_f),
+        };
         let own = world.ship_at(world.my_id, tick_f);
         // Watching: no ship of one's own, and the camera goes from one player to the next.
         let spectating = world.me().is_some_and(|m| m.spectating);
@@ -574,6 +594,7 @@ impl Game {
             let text = match picks.get(after % picks.len().max(1)) {
                 Some(&slot) => {
                     self.selected = Some(slot);
+                    self.picked = None;
                     self.watch = None;
                     format!("Selected {}", world.body_name(slot))
                 }
@@ -600,6 +621,7 @@ impl Game {
         }
         let target = match (own, self.selected) {
             _ if watched.is_some() => Target::Player(watched.unwrap().0),
+            _ if self.picked.is_some() => Target::Picked(self.picked.unwrap()),
             (_, Some(s)) => Target::Body(s),
             (Some(_), _) => Target::Ship,
             _ => Target::Free,
@@ -611,6 +633,7 @@ impl Game {
                 let b = body(s);
                 (b.x, b.y)
             }
+            Target::Picked(k) => at_ref(k).map_or(self.last_target_pos, |p| (p.x, p.y)),
             Target::Free => self.last_target_pos,
         };
         if !self.view_ready {
@@ -699,12 +722,12 @@ impl Game {
                 // Everything to keep in sight, measured from what the camera stays with.
                 let mut seen = Bounds::default();
                 seen.add(ship.x - target_pos.0, ship.y - target_pos.1, 0.0);
-                let center = self.selected.map(|s| (body(s), row.props.radius[s as usize]));
+                let center = reference.and_then(|k| Some((at_ref(k)?, if let RefKey::Body(s) = k { row.props.radius[s as usize] } else { 0.0 })));
                 if let Some((b, radius)) = center {
                     seen.add(b.x - target_pos.0, b.y - target_pos.1, radius);
                 }
                 let paths = &self.predictor.latest;
-                let framed = (self.selected, self.round);
+                let framed = (reference, self.round);
                 let fresh = self.auto.framed != Some(framed);
                 // The predicted path is looked at only now and then: it shifts with every touch
                 // of the engine, and the view should not.
@@ -713,7 +736,7 @@ impl Game {
                 // Paths are kept as seen from the selected body (or in the world, without one).
                 let from = center.map_or((0.0, 0.0), |(b, _)| (b.x, b.y));
                 let shift = (from.0 - target_pos.0, from.1 - target_pos.1);
-                if paths.ref_slot != self.selected {
+                if paths.reference != reference {
                     self.auto.path = None;
                 } else if thrusting && !fresh {
                     // Whatever the burn makes of the path is looked at shortly after it ends.
@@ -763,7 +786,29 @@ impl Game {
                         best = Some((j, d.max(0.0), m));
                     }
                 }
-                self.selected = best.map(|b| b.0);
+                // A piece, or (locked on) another ship, nearer the cursor than any body is picked.
+                let mut pick: Option<(RefKey, f32)> = None;
+                let mut consider = |k: RefKey, p: Particle| {
+                    let s = view.to_screen(p.x, p.y);
+                    let d = ((s.0 - mouse.0).powi(2) + (s.1 - mouse.1).powi(2)).sqrt();
+                    if d <= PICK_RADIUS_PX * ui && pick.is_none_or(|(_, bd)| d < bd) {
+                        pick = Some((k, d));
+                    }
+                };
+                for id in world.pieces.keys() {
+                    if let Some(p) = world.piece_at(*id, tick_f) {
+                        consider(RefKey::Piece(*id), p);
+                    }
+                }
+                for id in world.players.keys().filter(|id| locked && **id != world.my_id) {
+                    if let Some(p) = world.ship_at(*id, tick_f) {
+                        consider(RefKey::Ship(*id), p);
+                    }
+                }
+                match (pick, best) {
+                    (Some((k, d)), b) if b.is_none_or(|b| d < b.1) => (self.picked, self.selected) = (Some(k), None),
+                    _ => (self.picked, self.selected) = (None, best.map(|b| b.0)),
+                }
                 self.watch = None;
             }
         } else if !dragging {
@@ -832,12 +877,12 @@ impl Game {
                 }
             }
         }
-        // Reference frame for trails and predictions: the selected body, if any.
-        let ref_slot = self.selected;
-        let ref_now = ref_slot.map(&body);
+        // Reference frame for trails and predictions: the pick or the selected body, if any.
+        // (Trails go only by bodies, whose past the ephemeris keeps.)
+        let ref_now = reference.and_then(at_ref);
         if settings.trails {
-            let reference = if settings.trails_relative { ref_slot } else { None };
-            draw_trails(&self.frames, &view, reference, ref_now, &row, world.my_id, ui);
+            let by = self.selected.filter(|_| settings.trails_relative && self.picked.is_none());
+            draw_trails(&self.frames, &view, by, by.map(&body), &row, world.my_id, ui);
         }
 
         // --- bodies ----------------------------------------------------------------------------
@@ -963,14 +1008,15 @@ impl Game {
         }
 
         // --- mines ------------------------------------------------------------------------------
-        let mine_every = (MINE_SECONDS * world.rules.tick_hz as f64) as u32;
+        // Ticks on the orbit around a mine for each piece it gives.
+        let mine_every = |kind: PieceKind| (mine_seconds(kind) * world.rules.tick_hz as f64) as u32;
         for sp in world.mines.iter().filter(|sp| alive(sp.slot) && world.next_round_tick.is_none()) {
             let j = sp.slot as usize;
             let at = body(sp.slot);
             let s = view.to_screen(at.x, at.y);
             let radius = row.props.radius[j];
-            let color = style::piece_color(PieceKind::Crystal);
-            let name = "MINE".to_string();
+            let color = style::piece_color(sp.kind);
+            let name = if sp.kind == PieceKind::Scrap { "SCRAP MINE" } else { "CRYSTAL MINE" }.to_string();
             if !view.on_screen(s, 0.0) {
                 let at_edge = edge_arrow(s, color, ui);
                 let mut lines = vec![name];
@@ -987,9 +1033,10 @@ impl Game {
                 style::ring(s.0, s.1, outer.min(1.0e5), ui, style::alpha(color, 0.3));
                 style::ring(s.0, s.1, inner.min(1.0e5), ui, style::alpha(color, 0.3));
             }
-            let held = world.holds.get(&world.my_id).filter(|h| h.0 == sp.slot).map_or(0.0, |h| (h.1 % mine_every.max(1)) as f32 / mine_every.max(1) as f32);
+            let every = mine_every(sp.kind).max(1);
+            let held = world.holds.get(&world.my_id).filter(|h| h.0 == sp.slot).map_or(0.0, |h| (h.1 % every) as f32 / every as f32);
             let r_px = (radius / view.mpp) as f32;
-            style::mine(s, r_px, sp.left, held, ui);
+            style::mine(s, r_px, sp.kind, sp.left, held, ui);
             labels.push(name, s.0, s.1 - r_px.min(4000.0) - 26.0 * ui, LABEL * ui, color, Rank::Target);
         }
 
@@ -1123,7 +1170,21 @@ impl Game {
                         held: !spectating && controls.thrust > 0,
                         burn_mmps: (settings.burn_preview as f64 * 1.0e6) as i64,
                         shell,
-                        ref_slot,
+                        reference: reference.and_then(|k| {
+                            // Where it is as the path starts.
+                            let at = track.end();
+                            Some(match k {
+                                RefKey::Body(s) => Reference::Body(s),
+                                RefKey::Piece(id) => {
+                                    let t = &world.pieces.get(&id)?.track;
+                                    Reference::Piece(id, *t.at(at).unwrap_or(t.last()))
+                                }
+                                RefKey::Ship(id) => {
+                                    let t = world.players.get(&id)?.ship.as_ref()?;
+                                    Reference::Ship(id, *t.at(at).unwrap_or(t.last()))
+                                }
+                            })
+                        }),
                     });
                 }
                 _ => self.predictor.clear(),
@@ -1132,12 +1193,21 @@ impl Game {
         let predicting = fmt::now() - asked;
         let paths = &self.predictor.latest;
         // A result computed for another reference frame would be drawn in the wrong place.
-        let stale = paths.ref_slot != ref_slot;
+        let stale = paths.reference != reference;
         let anchor = ref_now.map_or((0.0, 0.0), |b| (b.x, b.y));
         if !stale {
             draw_path(&paths.held, anchor, &view, ui, Color::from_rgba(255, 220, 90, 150));
             draw_path(&paths.coast, anchor, &view, ui, Color::from_rgba(90, 255, 120, 170));
             draw_path(&paths.shell, anchor, &view, ui, Color::from_rgba(255, 130, 90, 170));
+        }
+        if let (false, Some((i, d))) = (stale, paths.shell_closest) {
+            // How near the shell would pass what is selected.
+            let q = paths.shell[i];
+            let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
+            let c = Color::from_rgba(255, 130, 90, 255);
+            style::ring(s.0, s.1, 5.0 * ui, 1.5 * ui, c);
+            let eta = i as f64 / world.rules.tick_hz as f64;
+            labels.block(vec![format!("shell {}", fmt::distance(d)), format!("in {eta:.1} s")], s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
         }
         let shell_live = (!stale).then(|| paths.shell.get(world.rules.shell_arm_ticks as usize)).flatten();
         if let Some(q) = shell_live {
@@ -1186,12 +1256,14 @@ impl Game {
                 let mut prev: Option<(f32, f32)> = None;
                 for t in (oldest..=newest).step_by(2) {
                     let Some(state) = track.at(t) else { continue };
-                    let shift = match (ref_slot, ref_now) {
-                        (Some(r), Some(now)) => world
+                    let shift = match (reference, ref_now) {
+                        (Some(RefKey::Body(r)), Some(now)) => world
                             .eph
                             .get(t)
                             .filter(|row| row.props.alive[r as usize])
                             .map(|row| (now.x - row.x[r as usize], now.y - row.y[r as usize])),
+                        (Some(RefKey::Piece(id)), Some(now)) => world.pieces.get(&id).and_then(|q| q.track.at(t)).map(|q| (now.x - q.x, now.y - q.y)),
+                        (Some(RefKey::Ship(id)), Some(now)) => world.players.get(&id).and_then(|q| q.ship.as_ref()?.at(t)).map(|q| (now.x - q.p.x, now.y - q.p.y)),
                         _ => Some((0.0, 0.0)),
                     };
                     let Some(shift) = shift else {
@@ -1294,6 +1366,26 @@ impl Game {
         }
 
         // --- selection info --------------------------------------------------------------------
+        if let (Some(k), Some(p)) = (self.picked, ref_now) {
+            let s = view.to_screen(p.x, p.y);
+            let r_px = 10.0 * ui;
+            draw_rectangle_lines(s.0 - r_px, s.1 - r_px, 2.0 * r_px, 2.0 * r_px, 1.5 * ui, WHITE);
+            let mut lines = vec![match k {
+                RefKey::Piece(id) => match world.pieces.get(&id).map(|q| q.kind) {
+                    Some(PieceKind::Crystal) => "crystal".to_string(),
+                    Some(PieceKind::Crate) => "supply crate".to_string(),
+                    _ => "scrap".to_string(),
+                },
+                RefKey::Ship(id) => world.player_name(id).to_string(),
+                RefKey::Body(s) => world.body_name(s),
+            }];
+            lines.push(format!("v = {}", fmt::speed(p.vx.hypot(p.vy))));
+            if let Some(ship) = own {
+                lines.push(format!("d = {}", fmt::distance((p.x - ship.x).hypot(p.y - ship.y))));
+                lines.push(format!("rel v = {}", fmt::speed((p.vx - ship.vx).hypot(p.vy - ship.vy))));
+            }
+            labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
+        }
         if let (Some(slot), Some(b)) = (self.selected, ref_now) {
             let s = view.to_screen(b.x, b.y);
             let r_px = ((row.props.radius[slot as usize] / view.mpp) as f32).min(4000.0) + 6.0 * ui;
@@ -1403,7 +1495,11 @@ impl Game {
         });
         let out = spectating && bases && world.base_of(world.my_id).is_some_and(|b| b.hp == 0);
         // The mine one is holding an orbit around, and how far along to the next crystal.
-        let mining = world.holds.get(&world.my_id).filter(|h| world.mines.iter().any(|m| m.slot == h.0)).map(|h| (h.1 % mine_every.max(1)) as f32 / mine_every.max(1) as f32);
+        let mining = world.holds.get(&world.my_id).and_then(|h| {
+            let kind = world.mines.iter().find(|m| m.slot == h.0)?.kind;
+            let every = mine_every(kind).max(1);
+            Some((kind, (h.1 % every) as f32 / every as f32))
+        });
         // Crystals turning up soon.
         let crystals_in = world.crystals_due.map(|t| (t as f64 - tick_f) / world.rules.tick_hz as f64).filter(|s| (0.0..10.0).contains(s) && bases && world.next_round_tick.is_none());
         let winner = world.winner.map(|w| world.team_label(w));
@@ -1417,8 +1513,8 @@ impl Game {
         if let Some((name, color, h, _, true)) = &siege {
             happening.push((format!("SIEGE · {name}"), None, *h, *color));
         }
-        if let Some(frac) = mining {
-            happening.push(("MINING".to_string(), None, frac, style::piece_color(PieceKind::Crystal)));
+        if let Some((kind, frac)) = mining {
+            happening.push(("MINING".to_string(), None, frac, style::piece_color(kind)));
         }
         if let Some(left) = crystals_in {
             happening.push(("CRYSTALS AT THE CENTER".to_string(), Some(format!("in {left:.0} s")), 1.0 - left as f32 / 10.0, style::piece_color(PieceKind::Crystal)));
@@ -1482,7 +1578,7 @@ impl Game {
         let shop_open = self.shop_open;
         let rules_now = world.rules.clone();
         let mut bought: Option<Ware> = None;
-        let (items, shielded) = me.map_or((Items::default(), false), |m| (m.items, m.shield));
+        let (items, shielded, locked_on) = me.map_or((Items::default(), false, false), |m| (m.items, m.shield, m.lock));
         let thrust_pct = self.thrust_pct;
         // The ruler replaces a "meters per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
@@ -1706,6 +1802,9 @@ impl Game {
                                 let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
                                 style::gauge(ui, "HOLD", &what, thrust_share, style::piece_color(PieceKind::Scrap));
                             }
+                            if locked_on {
+                                style::row(ui, "TARGET LOCK", RichText::new("on").color(gold), None);
+                            }
                             // Supplies carried, and the keys that use them.
                             for (k, supply) in Supply::CARRIED.into_iter().enumerate() {
                                 let n = items.count(supply);
@@ -1761,7 +1860,7 @@ impl Game {
             }
 
             if shop_open {
-                bought = shop(ctx, &rules_now, &bank, &upgrades, &items, shielded);
+                bought = shop(ctx, &rules_now, &bank, &upgrades, &items, (shielded, locked_on));
             }
 
             chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
@@ -1799,6 +1898,7 @@ impl Game {
         match chat_out.clicked {
             Some(Mention::Body(slot)) => {
                 self.selected = Some(slot);
+                self.picked = None;
                 self.watch = None;
             }
             Some(Mention::Player(id)) => self.watch = Some(id).filter(|id| *id != my_id),
@@ -1848,7 +1948,7 @@ struct Auto {
     /// The player moved the view by hand: leave it be until then.
     hands_off_until: f64,
     /// What it last framed (selection and round): a change is a reason to move at once.
-    framed: Option<(Option<u32>, Option<u32>)>,
+    framed: Option<(Option<RefKey>, Option<u32>)>,
 }
 
 /// Part of the screen, from the middle to the edge, that a new view fills.
@@ -2094,7 +2194,7 @@ impl Game {
 
 /// The shop, at home: the next tier of each upgrade, and supplies, for what is banked.
 /// Returns what was bought, if anything.
-fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrades: &Upgrades, items: &Items, shield: bool) -> Option<Ware> {
+fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrades: &Upgrades, items: &Items, (shield, lock): (bool, bool)) -> Option<Ware> {
     use egui::RichText;
     let mut bought = None;
     let (dim, gold, text) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::TEXT));
@@ -2151,12 +2251,14 @@ fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrade
                 ui.label(RichText::new(s.name().to_uppercase()).strong());
                 let have = match s {
                     Supply::Shield if shield => "on".to_string(),
+                    Supply::Lock if lock => "on".to_string(),
                     _ if s.carried() => format!("{} / {}", items.count(s), shop::CARRY),
                     _ => String::new(),
                 };
                 ui.label(RichText::new(have).color(gold));
                 let can = match s {
                     Supply::Shield => !shield,
+                    Supply::Lock => !lock,
                     _ => !s.carried() || items.count(s) < shop::CARRY,
                 };
                 if price_button(ui, s.price(), can) {

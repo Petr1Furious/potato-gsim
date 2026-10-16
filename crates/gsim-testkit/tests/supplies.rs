@@ -322,3 +322,15 @@ fn crates_turn_up_and_hold_a_supply() {
     assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text.starts_with("+1 ")));
     agree(&sim);
 }
+
+#[test]
+fn a_target_lock_lasts_until_the_ship_is_lost() {
+    let (mut sim, a, b, ann, _) = duel(13);
+    buy(&mut sim, a, Ware::Supply(Supply::Lock));
+    sim.run_with(0.3, idle);
+    assert!(sim.clients[a].session.world.as_ref().unwrap().players[&ann].lock);
+    assert!(sim.clients[b].session.world.as_ref().unwrap().players[&ann].lock);
+    sim.clients[a].session.send_chat("/respawn");
+    sim.run_with(0.5, idle);
+    assert!(!sim.clients[a].session.world.as_ref().unwrap().players[&ann].lock, "gone with the ship");
+}
