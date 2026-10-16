@@ -159,15 +159,6 @@ impl Upgrades {
         self.0[u.index()] = (self.0[u.index()] + 1).min(TIERS);
     }
 
-    /// These tiers for the ship, and those of `base` for the base.
-    pub fn with_base(&self, base: &Upgrades) -> Upgrades {
-        let mut ups = *self;
-        for u in Upgrade::BASE {
-            ups.0[u.index()] = base.0[u.index()];
-        }
-        ups
-    }
-
     /// The same with this tier of `u`.
     fn at(mut self, u: Upgrade, tier: u8) -> Upgrades {
         self.0[u.index()] = tier.min(TIERS);
@@ -312,7 +303,7 @@ impl Items {
 }
 
 /// What an EMP reaches (m), and for how long the engines it hits stay dead (s).
-pub const EMP_RADIUS: f64 = 3.0e8;
+pub const EMP_RADIUS: f64 = 1.2e9;
 pub const EMP_SECONDS: f64 = 3.0;
 /// How long a scrap magnet lasts (s), and how many times as far it reaches.
 pub const MAGNET_SECONDS: f64 = 30.0;

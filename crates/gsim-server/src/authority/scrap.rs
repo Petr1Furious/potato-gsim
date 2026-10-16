@@ -329,10 +329,10 @@ impl Authority {
         self.base_of(player).map_or(Purse::default(), |b| b.bank)
     }
 
-    /// The player's upgrades for their ship, and their team's for its base.
+    /// The upgrades the player's team has bought (all shared), or the player's own without one.
     pub(super) fn upgrades_of(&self, player: PlayerId) -> Upgrades {
-        let ship = self.players.get(&player).map_or(Upgrades::default(), |p| p.upgrades);
-        self.base_of(player).map_or(ship, |b| ship.with_base(&b.upgrades))
+        let own = self.players.get(&player).map_or(Upgrades::default(), |p| p.upgrades);
+        self.base_of(player).map_or(own, |b| b.upgrades)
     }
 
     /// Something from the shop, for what is banked: only at home (or waiting there for a ship).
@@ -374,7 +374,6 @@ impl Authority {
             return self.send(Target::One(conn), ServerMsg::Chat(ChatLine { kind: ChatKind::Error, from: None, text }));
         }
         match ware {
-            Ware::Upgrade(u) if !u.for_base() => p.upgrades.raise(u),
             Ware::Upgrade(_) => {}
             Ware::Supply(Supply::Shield) => p.shield = true,
             Ware::Supply(Supply::RapidFire) => p.quick = true,
@@ -382,19 +381,23 @@ impl Authority {
             Ware::Supply(Supply::Repair) => {}
             Ware::Supply(s) => *p.items.slot(s).unwrap() += 1,
         }
-        // (A new magazine for more shells, and ammo fills it.)
-        let fresh = shop::magazine(tick, &rules, &p.upgrades, p.quick);
-        p.magazine = if ware == Ware::Supply(Supply::RapidFire) { fresh } else { p.magazine.refit(tick, fresh, &rules) };
-        // What the team shares: the bank, the base and what was bought for it.
+        // What the team shares: the bank, the base and every upgrade.
         let b = self.base_of_mut(id).expect("a base, to be at home");
         b.bank.take(price);
         match ware {
-            Ware::Upgrade(u) if u.for_base() => b.upgrades.raise(u),
-            Ware::Supply(Supply::Repair) => {
-                b.hp = (b.hp + REPAIR_HP).min(BASE_HP);
-                self.bases_changed = true;
-            }
+            Ware::Upgrade(u) => b.upgrades.raise(u),
+            Ware::Supply(Supply::Repair) => b.hp = (b.hp + REPAIR_HP).min(BASE_HP),
             _ => {}
+        }
+        let (team, ups) = (b.team, b.upgrades);
+        self.bases_changed |= ware == Ware::Supply(Supply::Repair);
+        // Everyone on the team flies with what was bought (a new magazine for more shells, and
+        // rapid fire fills the buyer's).
+
+        for p in self.players.values_mut().filter(|p| p.id == id || p.team == team) {
+            p.upgrades = ups;
+            let fresh = shop::magazine(tick, &rules, &ups, p.quick);
+            p.magazine = if p.id == id && ware == Ware::Supply(Supply::RapidFire) { fresh } else { p.magazine.refit(tick, fresh, &rules) };
         }
         self.team_loadout(tick, id);
     }

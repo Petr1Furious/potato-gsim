@@ -157,7 +157,7 @@ fn crystals_turn_up_at_the_center_every_so_often() {
 fn orbits_around_mines_keep_their_shape() {
     // In a generated world, where the bases would drag a ship off a planet they do not pull
     // the same way, if they reached that far.
-    for seed in [8, 10] {
+    for seed in [8, 12] {
         let sc = gsim_server::scenario::build("random", seed, &Default::default()).unwrap();
         let mut sim = Sim::new(sc, seed);
         sim.server.set_rounds(0, 600, None);

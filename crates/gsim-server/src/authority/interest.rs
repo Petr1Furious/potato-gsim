@@ -22,6 +22,8 @@ const FAST_SHARE: f64 = 0.25;
 /// When a body has to be replaced by one like it: how many seconds of play a difference in
 /// velocity weighs as much as the distance it would open up.
 const ALIKE_SECONDS: f64 = 10.0;
+/// A ship this near a body of interest keeps it where it is, however far out (m).
+const NEAR: f64 = 3.0e9;
 
 /// What is wrong with a body of interest.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,8 +123,8 @@ impl Authority {
         })
     }
 
-    /// Somebody is on the way to `j`: flying straight at it, thrusting towards it, or already
-    /// circling it.
+    /// Somebody is on the way to `j` or about it: flying straight at it, thrusting towards it,
+    /// circling it, or anywhere near it.
     fn sought(&self, j: usize) -> bool {
         let (t, m) = (self.tick(), &self.massive);
         self.players.values().any(|p| {
@@ -135,7 +137,7 @@ impl Authority {
             let input = p.timeline.at(t);
             let (hx, hy) = math::angle_to_dir(input.angle);
             let thrusting = input.thrust > 0 && s.fuel > 0 && dx * hx + dy * hy > AIM_COS * d;
-            flying || thrusting || p.hold.is_some_and(|h| h.0 == j as u32)
+            flying || thrusting || d < NEAR || p.hold.is_some_and(|h| h.0 == j as u32)
         })
     }
 
@@ -173,5 +175,22 @@ impl Authority {
         for p in self.players.values_mut() {
             p.hold = p.hold.filter(|h| h.0 != slot);
         }
+    }
+}
+
+impl Authority {
+    /// How much room there is for an orbit around `j`, in its own radii: how far out its own
+    /// pull beats every neighbor of a third of its mass or more (its Hill sphere against the
+    /// worst of them).
+    pub(super) fn room(&self, j: usize) -> f64 {
+        let m = &self.massive;
+        let worst = (0..m.len())
+            .filter(|&k| k != j && m.alive[k] && !m.fixed[k] && m.mass[k] >= PAIR_MASS * m.mass[j])
+            .map(|k| {
+                let d = ((m.x[k] - m.x[j]).powi(2) + (m.y[k] - m.y[j]).powi(2)).sqrt();
+                d * (m.mass[j] / (3.0 * m.mass[k])).cbrt().min(PAIR_ROOM)
+            })
+            .fold(f64::MAX, f64::min);
+        worst / m.radius[j]
     }
 }

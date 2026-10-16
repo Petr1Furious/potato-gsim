@@ -296,7 +296,7 @@ pub fn well_seed(s: (f32, f32), ready: f32, ui: f32) {
 /// An EMP going off: a bright ring racing out to `reach` (screen pixels), `age` 0 to 1.
 pub fn emp(s: (f32, f32), reach: f32, age: f32, ui: f32) {
     let c = Color::new(0.6, 0.85, 1.0, 1.0);
-    let r = reach.clamp(30.0 * ui, 3000.0) * age.sqrt();
+    let r = reach.clamp(30.0 * ui, 8000.0) * age.sqrt();
     ring(s.0, s.1, r, (3.0 - 2.0 * age) * ui, alpha(c, (1.0 - age) * (1.0 - age)));
     disc(s.0, s.1, r, alpha(c, 0.08 * (1.0 - age)));
 }

@@ -18,21 +18,24 @@ impl Authority {
         }
     }
 
-    /// A body for a new mine: a planet among the few closest to the center that is fit for it
-    /// (see `fit_for_interest`), no mine already and not one of `avoid`. `None` if there is none.
+    /// A body for a new mine: one of the heaviest among the planets with the most room for an
+    /// orbit around them (see [`Self::room`]) that are fit for it (see `fit_for_interest`: near enough to the
+    /// center, among other things), no mine already and not one of `avoid`: they are the least
+    /// likely to be thrown about and moved off soon. `None` if there is none.
     pub(super) fn choose_mine(&mut self, avoid: &[u32]) -> Option<u32> {
         let frame = SystemFrame::of(&self.massive.kinematics());
         let m = &self.massive;
         let mut cands: Vec<(u32, f64)> = (0..m.len())
             .filter(|&j| !avoid.contains(&(j as u32)) && self.fit_for_interest(&frame, j, true))
             .filter(|&j| !self.mines.iter().any(|s| s.slot as usize == j))
-            .map(|j| (j as u32, m.x[j] * m.x[j] + m.y[j] * m.y[j]))
+            .map(|j| (j as u32, self.room(j)))
             .collect();
-        // The heavier half: their orbits are roomy enough to fly.
+        // The most room around them (in their own radii), then the heaviest of those. (Against
+        // the planets nearest the center, this moves mines about half as often.)
+        cands.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        cands.truncate(8);
         cands.sort_by(|a, b| m.mass[b.0 as usize].total_cmp(&m.mass[a.0 as usize]).then(a.0.cmp(&b.0)));
-        cands.truncate((cands.len() / 2).max(8.min(cands.len())));
-        cands.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-        cands.truncate(5);
+        cands.truncate(4);
         (!cands.is_empty()).then(|| cands[(self.rng.u64() % cands.len() as u64) as usize].0)
     }
 

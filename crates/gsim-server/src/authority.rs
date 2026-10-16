@@ -681,7 +681,10 @@ impl Authority {
                 Some(at) => at,
                 None => self.spawn_state(),
             };
+            // (With what the team has bought: one who came back in the middle of a round too.)
+            let ups = self.upgrades_of(id);
             let p = self.players.get_mut(&id).unwrap();
+            p.upgrades = ups;
             // A new ship comes fully armed, as it comes fully fueled, with an empty hold.
             let state = ShipState::with_kit(at, shop::kit(&rules, &p.upgrades, &Purse::default()));
             p.ship = Some(state);

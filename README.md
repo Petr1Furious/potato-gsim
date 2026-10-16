@@ -123,9 +123,9 @@ Within its home zone a ship feels only its own base: other bodies' pull fades ou
 stretch as the base's own pull fades in, so orbits around home keep their shape.
 
 At home (or waiting there for a ship), `B` opens the shop, even once the base has fallen. Ship
-upgrades, three tiers each, kept when the ship is lost: thrust (up to x3), delta-v (up to
+upgrades, three tiers each, kept when the ship is lost and shared by the whole team: thrust (up to x3), delta-v (up to
 60 km/s), shells (up to 50), fire rate (up to x3) and shell speed (up to 24 km/s), for 4, 8 and
-16 scrap (the last also takes 4 crystals). Base upgrades, shared by its team: armor (up to x3),
+16 scrap (the last also takes 4 crystals). Base upgrades: armor (up to x3),
 home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
 Supplies: a target lock (other ships can be clicked to select them, for the predicted path and
 the shell preview with its closest approach, until the ship is lost), a shield (drawn around
@@ -134,7 +134,7 @@ shells, fired and coming back twice as fast, until the ship is lost), base repai
 five to carry along, used with the keys 1 to 5 while the shop is closed: warp home (1 or `Q`: a
 jump back home, leaving the cargo behind), a gravity well (2 or `E`: fired towards the cursor
 like a shell, after a second it pulls every ship near it in for 10 s), an EMP (3: the engines
-of enemy ships within 300 Mm go dead for 3 s), a scrap magnet (4: pieces are taken from three
+of enemy ships within 1.2 Gm go dead for 3 s), a scrap magnet (4: pieces are taken from three
 times as far for 30 s) and an afterburner (5: 10 km/s of delta-v beyond a full tank). Every two
 minutes a **supply crate** turns up somewhere: the first ship through it gets a carried supply.
 
@@ -144,7 +144,7 @@ long shots (faster shells that fly twice as long), scrap rush, crystal fever (cr
 center every 30 s) or heavy rams (2.5 times the damage to a base), or none; the chat says
 which, and the twist shows by the round number. With four or more playing, a round may also be played in
 **teams** of two (or of three, with six or more): split at random, each team shares one base,
-its bank and the upgrades bought for it (ship upgrades stay each player's own), and the last
+its bank and every upgrade bought, and the last
 team in play wins. Ships wear a ring in their team's color. A round of bases has no time limit: 12 minutes
 in comes **sudden death**, when every base loses 1 % a second and cannot be repaired.
 

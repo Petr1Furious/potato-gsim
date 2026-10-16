@@ -88,7 +88,9 @@ fn teams_of_two_share_a_base_a_bank_and_its_upgrades() {
     sim.run_with(0.5, idle);
     assert_eq!(sim.server.purse(ids[0]).unwrap().1.scrap, 50 - Upgrade::Armor.price(1).scrap - Upgrade::Thrust.price(1).scrap);
     assert_eq!(sim.server.purse(ids[0]).unwrap().2.tier(Upgrade::Armor), 1, "the base's, so ann's too");
-    assert_eq!(sim.server.purse(ids[0]).unwrap().2.tier(Upgrade::Thrust), 0, "the ship's own");
+    assert_eq!(sim.server.purse(ids[0]).unwrap().2.tier(Upgrade::Thrust), 1, "the ship upgrades too");
+    let rules = sim.server.rules.clone();
+    assert_eq!(sim.server.ship(ids[0]).unwrap().kit.burn, gsim_core::Kit::of(&rules).burn * 3 / 2, "ann flies with it at once");
     assert_eq!(sim.clients[0].session.world.as_ref().unwrap().players[&ids[0]].upgrades.tier(Upgrade::Armor), 1);
     sim.ships_agree().unwrap();
 }
