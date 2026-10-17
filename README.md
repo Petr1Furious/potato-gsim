@@ -107,7 +107,8 @@ Clouds of **scrap** float around the center. A ship takes a piece by passing wit
 it, carries it, and banks it on coming home (into its zone). Every piece carried makes the ship
 5 % heavier (a crystal 15 %), so the same burn gives less delta-v: a full hold is slow and easy
 to catch. Pieces that drift far beyond the bases with no ship within 3 Gm fade away over a few
-seconds. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
+seconds. `J` drops the whole cargo to make the ship light again: anyone else can take it at once, the
+ship itself only after 3 s. A ship that is lost spills its cargo where it was; one that crashes leaves it going slowly
 round what it hit.
 
 **Mines** are planets near the center that give a piece to a ship holding a qualifying orbit
@@ -227,6 +228,7 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | R | Select the nearest target (with bases: enemy base), then the next one |
 | P, O | Ship trajectory prediction, shell trajectory preview |
 | V | Back to your ship and the selection (or just the ship, at a sensible zoom) |
+| J | Drop the cargo (bases) |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
 | B, 1 - 9, 1 - 5, Q, E | Shop (bases, at home), buy upgrades; use supplies (Q warp home, E gravity well) |

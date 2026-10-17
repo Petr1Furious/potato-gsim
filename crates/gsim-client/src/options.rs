@@ -116,6 +116,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Point at the map", "G");
         style::key_row(ui, "Shop (bases, at home), buy", "B, 1 - 9");
         style::key_row(ui, "Back to your ship (and the selection)", "V");
+        style::key_row(ui, "Drop the cargo (bases)", "J");
         style::key_row(ui, "Use supplies (warp home, gravity well, ...)", "1 - 5, Q, E");
         style::key_row(ui, "Self-destruct (hold)", "BACKSPACE");
     }

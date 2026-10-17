@@ -371,6 +371,7 @@ impl Authority {
             ClientMsg::Mark { x, y } => self.mark(conn, x, y),
             ClientMsg::Cmds(cmds) => self.commands(conn, cmds),
             ClientMsg::Buy(ware) => self.buy(conn, ware),
+            ClientMsg::Jettison => self.jettison(conn),
             ClientMsg::Use { supply, angle, speed } => self.use_supply(conn, supply, angle, speed),
             ClientMsg::ResyncRequest => {
                 if let Some(&id) = self.by_conn.get(&conn) {
@@ -801,8 +802,8 @@ impl Authority {
         let lost: Vec<PlayerId> = deaths.iter().map(|d| d.0).collect();
         segs.retain(|s| !lost.contains(&s.0));
         // (How far each ship takes pieces from: further with a scrap magnet.)
-        let reach: Vec<f64> = segs.iter().map(|s| if self.players.get(&s.0).is_some_and(|p| t < p.magnet_until) { shop::MAGNET_REACH } else { 1.0 } * shop::PICKUP_RADIUS).collect();
-        let picked = scrap::step_pieces(&mut self.pieces, &segs, &reach, &view, &rules, &mut self.scratch, 4.0 * self.world_r);
+        let takers: Vec<(Sweep, f64)> = segs.iter().map(|s| (*s, if self.players.get(&s.0).is_some_and(|p| t < p.magnet_until) { shop::MAGNET_REACH } else { 1.0 } * shop::PICKUP_RADIUS)).collect();
+        let picked = scrap::step_pieces(&mut self.pieces, &takers, &view, &rules, &mut self.scratch, 4.0 * self.world_r, t);
 
         // Wells fly on as shells do (and are gone if they hit something).
         let scratch = &mut self.scratch;

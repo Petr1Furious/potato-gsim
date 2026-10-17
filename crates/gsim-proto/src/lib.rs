@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -62,6 +62,8 @@ pub enum ClientMsg {
     ResyncRequest,
     /// Reliable: buy this (at home, from what is banked).
     Buy(Ware),
+    /// Reliable: drop everything the ship carries.
+    Jettison,
     /// Reliable: use one of the supplies the ship carries (a gravity well is fired with this
     /// heading and speed, as a shell is).
     Use { supply: Supply, angle: u16, speed: f32 },

@@ -363,6 +363,10 @@ impl Game {
             }
             self.pick_target |= is_key_pressed(KeyCode::R);
             refocus = is_key_pressed(KeyCode::V);
+            if is_key_pressed(KeyCode::J) {
+                // Jettison: everything in the hold out, to be light again.
+                self.net.session.jettison();
+            }
             if is_key_pressed(KeyCode::B) {
                 self.shop_open = !self.shop_open;
                 shop_asked = self.shop_open;
@@ -1804,12 +1808,47 @@ impl Game {
             Area::new(Id::new("ship")).anchor(Align2::RIGHT_BOTTOM, [-10.0, -10.0]).interactable(false).show(ctx, |ui| {
                 style::panel().show(ui, |ui| {
                     ui.set_width(220.0);
+                    // From the top: what is banked, what the ship carries, what is on it and what
+                    // it can use; then, always in the same place at the bottom, the gauges.
+                    if bases && playing {
+                        let value = RichText::new(format!("{} scrap · {} crystals", bank.scrap, bank.crystals)).color(style::c32(style::piece_color(PieceKind::Scrap)));
+                        style::row(ui, "BANK", value, can_shop.then_some("B"));
+                    }
+                    if fuel.is_some() {
+                        for (n, what, kind) in [(cargo.scrap, "SCRAP", PieceKind::Scrap), (cargo.crystals, "CRYSTALS", PieceKind::Crystal)] {
+                            if n > 0 {
+                                style::row(ui, what, RichText::new(n.to_string()).color(style::c32(style::piece_color(kind))), None);
+                            }
+                        }
+                        for (on, what) in [(shielded, "SHIELD"), (rapid, "RAPID FIRE"), (locked_on, "TARGET LOCK")] {
+                            if on {
+                                style::row(ui, what, RichText::new("on").color(good), None);
+                            }
+                        }
+                        if let Some(left) = magnet {
+                            style::row(ui, "SCRAP MAGNET", RichText::new(format!("{left:.0} s left")).color(good), None);
+                        }
+                        for (k, supply) in Supply::CARRIED.into_iter().enumerate() {
+                            let n = items.count(supply);
+                            if n > 0 {
+                                let key = (k + 1).to_string();
+                                style::row(ui, &supply.name().to_uppercase(), RichText::new(n.to_string()).color(gold), Some(&key));
+                            }
+                        }
+                    }
                     match fuel {
                         Some(f) => {
-                            let frac = f as f32 / fuel_max as f32;
-                            let fuel_color = if frac < 0.2 { style::EMBER } else { style::ACCENT };
-                            style::gauge(ui, "DELTA-V", &fmt::speed(f as f64 / 1000.0), frac, fuel_color);
-                            style::gauge(ui, "THROTTLE", &format!("{thrust_pct:.0} %"), thrust_pct / 100.0, style::GOOD);
+                            // A laden ship gets less out of its tank and its engine: what it would
+                            // have unladen, the lost part in red.
+                            let share = thrust_share.clamp(0.0, 1.0);
+                            let tank = fuel_max.max(1) as f32;
+                            let have = f as f32 * share;
+                            let fuel_color = if have < 0.2 * tank { style::EMBER } else { style::ACCENT };
+                            let lost = Some(Color::new(0.62, 0.16, 0.20, 0.9));
+                            style::split_gauge(ui, "DELTA-V", &fmt::speed(have as f64 / 1000.0), &[(have / tank, Some(fuel_color)), (f as f32 * (1.0 - share) / tank, lost)]);
+                            let throttle = thrust_pct / 100.0;
+                            let thrust = format!("{:.0} %", 100.0 * throttle * share);
+                            style::split_gauge(ui, "THRUST", &thrust, &[(throttle * share, Some(style::GOOD)), ((1.0 - throttle) * share, None), (1.0 - share, lost)]);
                             if free_shells {
                                 // At home shells cost nothing.
                                 style::gauge(ui, "SHELLS", "free", 1.0, if reloading { style::DIM } else { style::GOOD });
@@ -1817,28 +1856,6 @@ impl Game {
                                 let stock = (shells as f32 + next_shell) / shells_max.max(1) as f32;
                                 let ready = shells > 0 && !reloading;
                                 style::gauge(ui, "SHELLS", &format!("{shells} / {shells_max}"), stock, if ready { style::EMBER } else { style::DIM });
-                            }
-                            if !cargo.is_empty() {
-                                // What it carries, by how much less the engine pushes it.
-                                let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
-                                style::gauge(ui, "HOLD", &what, thrust_share, style::piece_color(PieceKind::Scrap));
-                            }
-                            // What is on the ship for now: buffs, with no key to use them.
-                            for (on, what) in [(shielded, "SHIELD"), (rapid, "RAPID FIRE"), (locked_on, "TARGET LOCK")] {
-                                if on {
-                                    style::row(ui, what, RichText::new("on").color(good), None);
-                                }
-                            }
-                            if let Some(left) = magnet {
-                                style::row(ui, "SCRAP MAGNET", RichText::new(format!("{left:.0} s left")).color(good), None);
-                            }
-                            // Supplies carried, and the keys that use them.
-                            for (k, supply) in Supply::CARRIED.into_iter().enumerate() {
-                                let n = items.count(supply);
-                                if n > 0 {
-                                    let key = (k + 1).to_string();
-                                    style::row(ui, &supply.name().to_uppercase(), RichText::new(n.to_string()).color(gold), Some(&key));
-                                }
                             }
                         }
                         None if spectating => {
@@ -1851,11 +1868,6 @@ impl Game {
                                 ui.label(RichText::new("waiting for a ship").heading().color(bad));
                             }
                         }
-                    }
-                    if bases && playing {
-                        // What is banked, and the key for the shop where it is open.
-                        let value = RichText::new(format!("{} scrap · {} crystals", bank.scrap, bank.crystals)).color(style::c32(style::piece_color(PieceKind::Scrap)));
-                        style::row(ui, "BANK", value, can_shop.then_some("B"));
                     }
                 });
             });

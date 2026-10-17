@@ -283,3 +283,32 @@ fn pieces_far_out_fade_away_unless_somebody_is_near() {
     assert_eq!(count(&sim), 0, "and are gone");
     agree(&sim);
 }
+
+#[test]
+fn a_ship_drops_its_cargo_and_takes_it_back_only_later() {
+    let (mut sim, a, _, ann, bob) = duel(8);
+    let rules = sim.server.rules.clone();
+    take_scrap(&mut sim, ann);
+    take_scrap(&mut sim, ann);
+    let carried = sim.server.purse(ann).unwrap().0.scrap;
+    assert!(carried >= 2);
+    let before = sim.server.pieces().len();
+    sim.clients[a].session.jettison();
+    sim.run_with(1.0, idle);
+    // Light again, and the pieces float beside the ship without coming back.
+    assert!(sim.server.purse(ann).unwrap().0.is_empty());
+    assert_eq!(sim.server.ship(ann).unwrap().kit, shop::kit(&rules, &Default::default(), &Purse::default()));
+    assert_eq!(sim.server.pieces().len(), before + carried as usize);
+    assert!(sim.clients[a].session.world.as_ref().unwrap().alerts.iter().any(|al| al.text.starts_with("Dropped")));
+    // After 3 s ann, still beside them, takes them back.
+    sim.run_with(2.5, idle);
+    assert_eq!(sim.server.purse(ann).unwrap().0.scrap, carried, "taken back");
+    // Anybody else can take them at once.
+    sim.clients[a].session.jettison();
+    sim.run_with(0.2, idle);
+    let at = sim.server.ship(ann).unwrap().p;
+    place(&mut sim, bob, Particle { x: at.x + 1.0e6, ..at });
+    sim.run_with(0.5, idle);
+    assert_eq!(sim.server.purse(bob).unwrap().0.scrap, carried, "bob took them");
+    agree(&sim);
+}

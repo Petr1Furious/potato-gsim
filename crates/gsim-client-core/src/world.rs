@@ -256,6 +256,8 @@ pub struct World {
     pub winner: Option<TeamId>,
     /// What just happened to us, newest last.
     pub alerts: VecDeque<Alert>,
+    /// We asked to drop our cargo: the hold emptying next is that, not a loss.
+    pub jettisoned: bool,
     scratch: Scratch,
 }
 
@@ -328,6 +330,7 @@ impl World {
             sieges: Vec::new(),
             winner: None,
             alerts: VecDeque::new(),
+            jettisoned: false,
         }
     }
 
@@ -871,7 +874,13 @@ impl World {
         } else if let Some(u) = raised {
             Some((format!("{} {}", capitalized(u.name()), "I".repeat(new.upgrades.tier(u) as usize)), true))
         } else if emptied {
-            Some(if new.bank != p.bank { (format!("Banked {}", p.cargo.describe()), true) } else { (format!("Lost {}", p.cargo.describe()), false) })
+            Some(if new.bank != p.bank {
+                (format!("Banked {}", p.cargo.describe()), true)
+            } else if std::mem::take(&mut self.jettisoned) {
+                (format!("Dropped {}", p.cargo.describe()), true)
+            } else {
+                (format!("Lost {}", p.cargo.describe()), false)
+            })
         } else {
             // A supply not bought: from a crate (or an operator).
             let gained = Supply::CARRIED.into_iter().find(|s| new.items.count(*s) > p.items.count(*s)).filter(|_| new.bank == p.bank);

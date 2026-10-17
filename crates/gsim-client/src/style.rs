@@ -752,6 +752,34 @@ pub fn key_cap(ui: &mut egui::Ui, key: &str) {
         .show(ui, |ui| ui.label(egui::RichText::new(key).monospace().small().color(c32(ACCENT))));
 }
 
+/// A gauge whose bar is made of parts laid end to end: (share of the whole, color; none for a
+/// gap). Like [`gauge`] otherwise.
+pub fn split_gauge(ui: &mut egui::Ui, label: &str, value: &str, parts: &[(f32, Option<Color>)]) {
+    ui.horizontal(|ui| {
+        caption(ui, label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(value).small());
+        });
+    });
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 1.0, egui::Color32::from_rgb(24, 32, 46));
+    let mut x = rect.left();
+    for (share, color) in parts {
+        let w = rect.width() * share.clamp(0.0, 1.0);
+        if let Some(c) = color {
+            let part = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2((x + w).min(rect.right()), rect.bottom()));
+            painter.rect_filled(part, 1.0, c32(*c));
+        }
+        x += w;
+    }
+    for i in 1..10 {
+        let x = rect.left() + rect.width() * i as f32 / 10.0;
+        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.0, egui::Color32::from_rgb(6, 10, 18)));
+    }
+    ui.add_space(3.0);
+}
+
 /// Section header inside a window.
 pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(6.0);

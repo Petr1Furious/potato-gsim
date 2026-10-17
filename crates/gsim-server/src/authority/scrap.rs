@@ -44,19 +44,21 @@ pub(super) struct Piece {
     pub p: Particle,
     /// Fading away since this tick (far out, with nobody near).
     pub fading: Option<Tick>,
+    /// Dropped by this player, who cannot take it back before this tick.
+    pub shy: Option<(PlayerId, Tick)>,
 }
 
 /// One tick of every piece. Returns those gone: taken by a ship passing close (one of `ships`:
-/// where each was at the start and at the end of the tick), crashed, or further than `far`
-/// from the center.
+/// where each was at the start and at the end of the tick, and how close it takes pieces from;
+/// not one that dropped the piece just now), crashed, or further than `far` from the center.
 pub(super) fn step_pieces(
     pieces: &mut [Piece],
-    ships: &[Sweep],
-    reach: &[f64],
+    ships: &[(Sweep, f64)],
     view: &MassiveView,
     rules: &GameRules,
     scratch: &mut Scratch,
     far: f64,
+    tick: Tick,
 ) -> Vec<(PieceId, Option<PlayerId>)> {
     let mut gone = Vec::new();
     for piece in pieces.iter_mut() {
@@ -66,7 +68,9 @@ pub(super) fn step_pieces(
             continue;
         }
         let after = (piece.p.x, piece.p.y);
-        if let Some((by, _)) = ships.iter().zip(reach).find(|(s, r)| swept_min_dist2(before, after, s.1, s.2) <= *r * *r) {
+        // (Not by whoever just dropped it.)
+        let shy = |id: PlayerId| piece.shy.is_some_and(|(p, until)| p == id && tick < until);
+        if let Some((by, _)) = ships.iter().find(|(s, r)| !shy(s.0) && swept_min_dist2(before, after, s.1, s.2) <= *r * *r) {
             gone.push((piece.id, Some(by.0)));
         } else if after.0 * after.0 + after.1 * after.1 > far * far {
             gone.push((piece.id, None));
@@ -113,7 +117,7 @@ impl Authority {
         // Rapid fire, a magnet and a target lock go with the ship.
         let changed = p.quick || p.lock || p.magnet_until > 0;
         (p.quick, p.magnet_until, p.lock) = (false, 0, false);
-        if self.drop_cargo(tick, player, body) || changed {
+        if self.drop_cargo(tick, player, body, None) || changed {
             self.loadout(tick, player);
         }
     }
@@ -121,7 +125,7 @@ impl Authority {
     /// What the ship carries floats away from where it is. False if it carried nothing.
     /// From a crash into `body`, the cargo goes gently round that body instead: the ship hit it
     /// far too fast for anything to be caught at that speed.
-    fn drop_cargo(&mut self, tick: Tick, player: PlayerId, body: Option<u32>) -> bool {
+    fn drop_cargo(&mut self, tick: Tick, player: PlayerId, body: Option<u32>, shy: Option<(PlayerId, Tick)>) -> bool {
         let Some(p) = self.players.get_mut(&player) else { return false };
         let (cargo, ship) = (std::mem::take(&mut p.cargo), p.ship);
         if let Some(ship) = ship {
@@ -133,7 +137,7 @@ impl Authority {
                     None => self.scatter(ship.p, 0.25 * CLOUD_SPREAD, SPILL_DRIFT),
                 }))
                 .collect();
-            self.add_pieces(tick, spilled);
+            self.add_pieces(tick, spilled, shy);
         }
         !cargo.is_empty()
     }
@@ -159,12 +163,12 @@ impl Authority {
         Particle { x: p.x + r * a.cos(), y: p.y + r * a.sin(), vx: p.vx + v * b.cos(), vy: p.vy + v * b.sin() }
     }
 
-    fn add_pieces(&mut self, tick: Tick, new: Vec<(PieceKind, Particle)>) {
+    fn add_pieces(&mut self, tick: Tick, new: Vec<(PieceKind, Particle)>, shy: Option<(PlayerId, Tick)>) {
         let mut pieces = Vec::new();
         for (kind, p) in new {
             let id = self.next_piece_id;
             self.next_piece_id += 1;
-            self.pieces.push(Piece { id, kind, p, fading: None });
+            self.pieces.push(Piece { id, kind, p, fading: None, shy });
             pieces.push(PieceInfo { id, kind, p, fading: None });
         }
         if !pieces.is_empty() {
@@ -203,13 +207,13 @@ impl Authority {
             self.cloud_due = tick + (CLOUD_EVERY_SECONDS * hz) as Tick;
             if self.scrap_count() < self.scrap_wanted() {
                 if let Some(cloud) = self.cloud(PieceKind::Scrap, CLOUD, FIELD) {
-                    self.add_pieces(tick, cloud);
+                    self.add_pieces(tick, cloud, None);
                 }
             }
         }
         if playing && self.crate_due.is_some_and(|due| tick >= due) {
             if let Some(one) = self.cloud(PieceKind::Crate, 1, CRATE_FIELD) {
-                self.add_pieces(tick, one);
+                self.add_pieces(tick, one, None);
             }
             self.crate_due = Some(tick + (CRATE_EVERY_SECONDS * hz) as Tick);
         }
@@ -217,7 +221,7 @@ impl Authority {
             let fever = self.roll.twist == Twist::CrystalFever;
             let n = 1 + self.players.values().filter(|p| !p.spectating).count() / 6 + fever as usize;
             if let Some(cloud) = self.cloud(PieceKind::Crystal, n, CRYSTAL_FIELD) {
-                self.add_pieces(tick, cloud);
+                self.add_pieces(tick, cloud, None);
             }
             let every = if fever { FEVER_EVERY_SECONDS } else { CRYSTALS_EVERY_SECONDS };
             self.crystals_due = Some(tick + (every * hz) as Tick);
@@ -293,7 +297,7 @@ impl Authority {
             for (kind, p) in cloud {
                 let id = self.next_piece_id;
                 self.next_piece_id += 1;
-                self.pieces.push(Piece { id, kind, p, fading: None });
+                self.pieces.push(Piece { id, kind, p, fading: None, shy: None });
             }
         }
         self.cloud_due = tick;
@@ -416,7 +420,7 @@ impl Authority {
                 let Some(at) = home else { return };
                 *count -= 1;
                 // The cargo stays behind.
-                self.drop_cargo(tick, id, None);
+                self.drop_cargo(tick, id, None, None);
                 self.loadout(tick, id);
                 let kit = self.players[&id].ship.map_or(ship.kit, |s| s.kit);
                 self.place_ship(id, ShipState { p: at, kit, ..ship });
@@ -517,5 +521,23 @@ impl Authority {
             }
         }
         self.loadout(tick, player);
+    }
+}
+
+/// Seconds before a ship can take back what it dropped.
+const SHY_SECONDS: f64 = 3.0;
+
+impl Authority {
+    /// The ship drops all it carries, to be light again: anybody else can take it at once,
+    /// the ship itself only a few seconds later.
+    pub(super) fn jettison(&mut self, conn: ConnId) {
+        let Some(&id) = self.by_conn.get(&conn) else { return };
+        let tick = self.tick();
+        if self.players.get(&id).is_none_or(|p| p.ship.is_none() || p.cargo.is_empty()) {
+            return;
+        }
+        let until = tick + (SHY_SECONDS * self.rules.tick_hz as f64) as Tick;
+        self.drop_cargo(tick, id, None, Some((id, until)));
+        self.loadout(tick, id);
     }
 }

@@ -413,6 +413,14 @@ impl Session {
         self.out.push(ClientMsg::Buy(ware));
     }
 
+    /// Drop everything the ship carries.
+    pub fn jettison(&mut self) {
+        if let Some(w) = self.world.as_mut() {
+            w.jettisoned = true;
+        }
+        self.out.push(ClientMsg::Jettison);
+    }
+
     /// Use a supply the ship carries (a gravity well goes this way, at this speed, as a shell).
     pub fn use_supply(&mut self, supply: Supply, angle: u16, speed: f32) {
         self.out.push(ClientMsg::Use { supply, angle, speed });
