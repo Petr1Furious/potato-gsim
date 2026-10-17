@@ -1173,7 +1173,7 @@ impl Game {
                         reader: world.eph.reader(),
                         rules: world.rules.clone(),
                         ship: *track.last(),
-                        wells: world.well_paths(),
+                        wells: world.well_paths(if spectating { self.watch.unwrap_or(world.my_id) } else { world.my_id }),
                         start: track.end(),
                         timeline: me.timeline.clone(),
                         ticks: self.lookahead_ticks,
@@ -1207,9 +1207,10 @@ impl Game {
         let stale = paths.reference != reference;
         let anchor = ref_now.map_or((0.0, 0.0), |b| (b.x, b.y));
         if !stale {
-            draw_path(&paths.held, anchor, &view, ui, Color::from_rgba(255, 220, 90, 150));
-            draw_path(&paths.coast, anchor, &view, ui, Color::from_rgba(90, 255, 120, 170));
-            draw_path(&paths.shell, anchor, &view, ui, Color::from_rgba(255, 130, 90, 170));
+            draw_path(&paths.held, anchor, &view, ui, Color::from_rgba(255, 220, 90, 150), true);
+            // A path that ends in an impact stays bright to the end: that end matters.
+            draw_path(&paths.coast, anchor, &view, ui, Color::from_rgba(90, 255, 120, 170), !paths.coast_impact);
+            draw_path(&paths.shell, anchor, &view, ui, Color::from_rgba(255, 130, 90, 170), true);
         }
         let shell_live = (!stale).then(|| paths.shell.get(world.rules.shell_arm_ticks as usize)).flatten();
         if let Some(q) = shell_live {
@@ -1223,7 +1224,9 @@ impl Game {
             draw_line(s.0 - 6.0 * ui, s.1 - 6.0 * ui, s.0 + 6.0 * ui, s.1 + 6.0 * ui, 2.0 * ui, RED);
             draw_line(s.0 - 6.0 * ui, s.1 + 6.0 * ui, s.0 + 6.0 * ui, s.1 - 6.0 * ui, 2.0 * ui, RED);
             labels.push("impact", s.0, s.1 + 20.0 * ui, LABEL * ui, RED, Rank::Approach);
-        } else if let Some((i, d)) = paths.closest {
+        }
+        // The closest approach, also on a path that ends in an impact.
+        if let (false, Some((i, d))) = (stale, paths.closest) {
             if i > 0 && i + 1 < paths.coast.len() {
                 let q = paths.coast[i];
                 let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
@@ -1323,12 +1326,12 @@ impl Game {
             if !mine {
                 labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Player);
             } else {
-                // How fast, and how fast against what is selected.
-                let mut text = fmt::speed(ship.vx.hypot(ship.vy));
-                if let Some(r) = ref_now {
-                    text = format!("{text} · rel {}", fmt::speed((ship.vx - r.vx).hypot(ship.vy - r.vy)));
-                }
-                labels.push(text, s.0, s.1 + 20.0 * ui, LABEL * ui, style::DIM, Rank::Player);
+                // How fast: against what is selected, if anything is.
+                let text = match ref_now {
+                    Some(r) => format!("rel {}", fmt::speed((ship.vx - r.vx).hypot(ship.vy - r.vy))),
+                    None => fmt::speed(ship.vx.hypot(ship.vy)),
+                };
+                labels.push(text, s.0, s.1 + 20.0 * ui, LABEL * ui, style::DIM, Rank::Own);
             }
         }
 
@@ -2087,15 +2090,16 @@ pub(crate) fn fit_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f64
     view.mpp = needed.clamp(MIN_MPP, 1.0e12);
 }
 
-/// A predicted path, fading out towards its end (the further ahead, the less it is to be relied on).
-pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {
+/// A predicted path; with `fade`, fading out towards its end (the further ahead, the less it is to
+/// be relied on).
+pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color, fade: bool) {
     let mut prev: Option<(f32, f32)> = None;
     let n = points.len().max(1) as f32;
     for (k, q) in points.iter().enumerate() {
         let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
         if let Some(p) = prev {
             if (view.on_screen(p, 200.0) || view.on_screen(s, 200.0)) && s.0.is_finite() && s.1.is_finite() {
-                let fade = 1.0 - 0.85 * k as f32 / n;
+                let fade = if fade { 1.0 - 0.85 * k as f32 / n } else { 1.0 };
                 draw_line(p.0, p.1, s.0, s.1, 1.5 * ui, style::alpha(color, color.a * fade));
             }
         }

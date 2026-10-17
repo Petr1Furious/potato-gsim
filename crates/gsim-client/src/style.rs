@@ -825,6 +825,8 @@ pub enum Rank {
     Approach,
     Target,
     Selection,
+    /// Our own ship's: above everything else.
+    Own,
 }
 
 /// One label: one or more centered lines that belong together.

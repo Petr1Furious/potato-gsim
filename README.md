@@ -133,7 +133,8 @@ the ship; it survives one shell), rapid fire (twice the
 shells, fired and coming back twice as fast, until the ship is lost), base repair (+20 %), and
 five to carry along, used with the keys 1 to 5 while the shop is closed: warp home (1 or `Q`: a
 jump back home, leaving the cargo behind), a gravity well (2 or `E`: fired towards the cursor
-like a shell, after a second it pulls every ship near it in for 10 s), an EMP (3: the engines
+like a shell, after a second it pulls every other ship within about a gigameter in for 10 s,
+so hard that one caught near it cannot burn its way out), an EMP (3: the engines
 of enemy ships within 1.2 Gm go dead for 3 s), a scrap magnet (4: pieces are taken from ten
 times as far for 30 s) and an afterburner (5: 10 km/s of delta-v beyond a full tank). Every two
 minutes a **supply crate** turns up somewhere: the first ship through it gets a carried supply.

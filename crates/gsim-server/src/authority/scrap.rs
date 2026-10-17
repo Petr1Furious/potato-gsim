@@ -430,7 +430,7 @@ impl Authority {
                 let (dx, dy) = math::angle_to_dir(angle);
                 let muzzle = self.rules.ship_radius + 2.0 * self.rules.shell_radius;
                 let p = Particle { x: ship.p.x + dx * muzzle, y: ship.p.y + dy * muzzle, vx: ship.p.vx + dx * speed, vy: ship.p.vy + dy * speed };
-                self.wells.push((tick, p));
+                self.wells.push((tick, id, p));
                 self.event(Event::Well { tick, player: id, p });
                 self.loadout(tick, id);
             }

@@ -324,7 +324,7 @@ impl World {
             bases: w.bases.clone(),
             mines: w.mines.clone(),
             crystals_due: w.crystals_due,
-            wells: w.wells.iter().map(|(fired, p)| WellRep { fired: *fired, start: tick, path: vec![*p], ended: false }).collect(),
+            wells: w.wells.iter().map(|(fired, owner, p)| WellRep { fired: *fired, owner: *owner, start: tick, path: vec![*p], ended: false }).collect(),
             sieges: Vec::new(),
             winner: None,
             alerts: VecDeque::new(),
@@ -621,8 +621,8 @@ impl World {
                 }
                 self.crystals_due = due;
             }
-            Event::Well { tick, p, .. } => {
-                self.wells.push(WellRep { fired: tick, start: tick, path: vec![p], ended: false });
+            Event::Well { tick, player, p } => {
+                self.wells.push(WellRep { fired: tick, owner: player, start: tick, path: vec![p], ended: false });
                 // Every ship feels it once it is armed.
                 let armed = tick + self.rules.well_arm_ticks as Tick;
                 for p in self.players.values_mut() {
@@ -764,14 +764,14 @@ impl World {
                 }
             }
         }
-        for p in self.players.values_mut() {
+        for (&id, p) in self.players.iter_mut() {
             let Some(ship) = p.ship.as_mut() else { continue };
             let (timeline, kits, wells, stunned, boosts) = (&p.timeline, &p.kits, &self.wells, p.stunned, &p.boosts);
             let rolled = ship.advance(target, |s, t| {
                 let row = eph.get(t)?;
                 // An EMP leaves the engine dead for a while.
                 let input = if (stunned.0..stunned.1).contains(&t) { ShipInput { thrust: 0, ..timeline.at(t) } } else { timeline.at(t) };
-                let hit = step_ship(s, input, &pulling(wells, t, rules), &row.view(), rules, scratch);
+                let hit = step_ship(s, input, &pulling(wells, t, rules, id), &row.view(), rules, scratch);
                 // An afterburner's delta-v from the tick it was lit.
                 if let Some(fuel) = boosts.get(&(t + 1)) {
                     s.fuel += fuel;
@@ -911,6 +911,8 @@ fn capitalized(word: &str) -> String {
 /// A gravity well: where it is, tick by tick from `start`, as far as worked out.
 pub struct WellRep {
     pub fired: Tick,
+    /// Who fired it: it does not pull them.
+    pub owner: PlayerId,
     pub start: Tick,
     pub path: Vec<Particle>,
     /// It hit something, and is gone after the last point.
@@ -924,23 +926,25 @@ impl WellRep {
     }
 }
 
-/// Where the wells that pull at `tick` are.
-fn pulling(wells: &[WellRep], tick: Tick, rules: &GameRules) -> Vec<(f64, f64)> {
+/// Where the wells that pull `player` at `tick` are (all but their own).
+fn pulling(wells: &[WellRep], tick: Tick, rules: &GameRules, player: PlayerId) -> Vec<(f64, f64)> {
     let arm = rules.well_arm_ticks as Tick;
     wells
         .iter()
+        .filter(|w| w.owner != player)
         .filter(|w| tick >= w.fired + arm && tick < w.fired + arm + rules.well_ticks as Tick)
         .filter_map(|w| w.at(tick).map(|p| (p.x, p.y)))
         .collect()
 }
 
 impl World {
-    /// For predictions: each well that pulls, from the tick it starts to on, where it is (as
-    /// far as worked out).
-    pub fn well_paths(&self) -> Vec<(Tick, Vec<(f64, f64)>)> {
+    /// For predictions of `player`'s ship: each well that pulls it, from the tick it starts to on,
+    /// where it is (as far as worked out).
+    pub fn well_paths(&self, player: PlayerId) -> Vec<(Tick, Vec<(f64, f64)>)> {
         let (arm, life) = (self.rules.well_arm_ticks as Tick, self.rules.well_ticks as Tick);
         self.wells
             .iter()
+            .filter(|w| w.owner != player)
             .map(|w| {
                 let from = w.fired + arm;
                 let points = (from..from + life).map_while(|t| w.at(t).map(|p| (p.x, p.y))).collect();

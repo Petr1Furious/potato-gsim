@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -306,8 +306,8 @@ pub struct Welcome {
     pub mines: Vec<Mine>,
     /// When crystals next turn up near the center.
     pub crystals_due: Option<Tick>,
-    /// Gravity wells on their way or pulling: (tick fired, state at `massive.tick`).
-    pub wells: Vec<(Tick, Particle)>,
+    /// Gravity wells on their way or pulling: (tick fired, by whom, state at `massive.tick`).
+    pub wells: Vec<(Tick, PlayerId, Particle)>,
     pub rules: GameRules,
     pub massive: MassiveSnapshot,
     pub names: Vec<(u32, String)>,
@@ -346,7 +346,7 @@ pub enum Event {
     /// Crystals turn up near the center at `due`.
     CrystalsDue { due: Option<Tick> },
     /// `player` fired a gravity well at `tick`, from `p`. It flies as a shell does and pulls
-    /// ships in for `GameRules::well_ticks` from `GameRules::well_arm_ticks` on.
+    /// ships (but `player`'s) in for `GameRules::well_ticks` from `GameRules::well_arm_ticks` on.
     Well { tick: Tick, player: PlayerId, p: Particle },
     /// `player` jumped home, leaving their cargo behind.
     Warped { tick: Tick, player: PlayerId },

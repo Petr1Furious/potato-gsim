@@ -352,3 +352,32 @@ fn a_bigger_blast_reaches_further() {
     assert!(sim.server.ship(bob).is_none(), "twice the radius: bob is caught");
     agree(&sim);
 }
+
+#[test]
+fn a_gravity_well_holds_even_a_ship_burning_away_but_not_its_own() {
+    let (mut sim, a, b, ann, bob) = duel(15);
+    buy(&mut sim, a, Ware::Supply(Supply::Well));
+    // bob has the strongest engine there is.
+    sim.server.grant(bob, Purse { scrap: 100, crystals: 10 });
+    let p = orbit_around(&sim, bob, 60.0);
+    place(&mut sim, bob, p);
+    sim.run_with(0.3, idle);
+    for _ in 0..3 {
+        buy(&mut sim, b, Ware::Upgrade(Upgrade::Thrust));
+    }
+    assert_eq!(sim.server.purse(bob).unwrap().2.tier(Upgrade::Thrust), 3);
+    // Out in empty space: ann fires a slow well towards bob, who burns away from it flat out.
+    place(&mut sim, ann, Particle { x: 2.0e11, y: 0.0, vx: 0.0, vy: 0.0 });
+    place(&mut sim, bob, Particle { x: 2.0e11 + 2.4e8, y: 0.0, vx: 0.0, vy: 0.0 });
+    sim.run_with(0.2, idle);
+    sim.clients[a].session.use_supply(Supply::Well, 0, 1000.0);
+    // (From when it is armed: before, bob is free to get away.)
+    sim.run_with(1.1, idle);
+    sim.run_with(9.0, |i, _| if i == b { Controls { angle: 0, thrust: 100, ..Controls::default() } } else { Controls::default() });
+    let x = sim.server.ship(bob).map(|s| s.p.x - 2.0e11);
+    // Free, that burn would have taken bob some 20 Gm away; the well (moving at 1 km/s) only
+    // about 1 Gm.
+    assert!(x.is_none_or(|x| x < 3.0e9), "bob got away: {x:?}");
+    assert!(sim.server.ship(ann).unwrap().p.vx.abs() < 1.0, "the well does not pull its own ship");
+    agree(&sim);
+}

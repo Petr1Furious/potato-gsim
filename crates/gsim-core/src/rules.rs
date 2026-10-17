@@ -73,8 +73,9 @@ pub struct GameRules {
     /// orbits around bodies there are left alone.
     pub base_reach: f64,
     /// A gravity well (fired by a ship like a shell) starts pulling this long after it is
-    /// fired, and then pulls ships for this long, as a body of this mass would, but no harder
-    /// than from this far.
+    /// fired, and then pulls ships for this long, as a body of this mass would, but softened
+    /// over this far: inside, it pulls like a spring, which an engine burning one way cannot
+    /// pump its way out of (a hard core would sling ships out instead).
     pub well_arm_ticks: u32,
     pub well_ticks: u32,
     pub well_mass: f64,
@@ -131,8 +132,8 @@ impl GameRules {
             base_reach: 0.0,
             well_arm_ticks: secs(1.0),
             well_ticks: secs(10.0),
-            well_mass: 1.2e25,
-            well_core: 3.0e7,
+            well_mass: 3.0e26,
+            well_core: 3.0e8,
         }
     }
 

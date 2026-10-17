@@ -191,8 +191,8 @@ pub struct Authority {
     crystals_due: Option<Tick>,
     /// When the next supply crate turns up.
     crate_due: Option<Tick>,
-    /// Gravity wells: (tick fired, where each is now).
-    wells: Vec<(Tick, Particle)>,
+    /// Gravity wells: (tick fired, by whom, where each is now).
+    wells: Vec<(Tick, PlayerId, Particle)>,
     /// From this tick on every base wears down.
     sudden_death: Option<Tick>,
     /// How this round of bases differs from the others.
@@ -737,7 +737,8 @@ impl Authority {
         // Gravity wells pull ships in for a while, once armed.
         let arm = rules.well_arm_ticks as Tick;
         self.wells.retain(|w| t < w.0 + arm + rules.well_ticks as Tick);
-        let wells: Vec<(f64, f64)> = self.wells.iter().filter(|w| t >= w.0 + arm).map(|w| (w.1.x, w.1.y)).collect();
+        // (Each pulls every ship but the one that fired it.)
+        let wells: Vec<(PlayerId, (f64, f64))> = self.wells.iter().filter(|w| t >= w.0 + arm).map(|w| (w.1, (w.2.x, w.2.y))).collect();
         // (victim, killer, body)
         let mut deaths: Vec<(PlayerId, Option<PlayerId>, Option<u32>)> = Vec::new();
         // Ship segments over this tick, for the proximity fuses.
@@ -747,7 +748,8 @@ impl Authority {
             let before = (ship.p.x, ship.p.y);
             // An EMP leaves the engine dead for a while.
             let input = if (p.stunned.0..p.stunned.1).contains(&t) { ShipInput { thrust: 0, ..p.timeline.at(t) } } else { p.timeline.at(t) };
-            match step_ship(ship, input, &wells, &view, &rules, &mut self.scratch) {
+            let pulled: Vec<(f64, f64)> = wells.iter().filter(|w| w.0 != p.id).map(|w| w.1).collect();
+            match step_ship(ship, input, &pulled, &view, &rules, &mut self.scratch) {
                 Some(body) => deaths.push((p.id, None, Some(body))),
                 None => segs.push((p.id, before, (ship.p.x, ship.p.y))),
             }
@@ -804,7 +806,7 @@ impl Authority {
 
         // Wells fly on as shells do (and are gone if they hit something).
         let scratch = &mut self.scratch;
-        self.wells.retain_mut(|w| step_particle(&mut w.1, (0.0, 0.0), rules.shell_radius, &view, &rules, scratch).is_none());
+        self.wells.retain_mut(|w| step_particle(&mut w.2, (0.0, 0.0), rules.shell_radius, &view, &rules, scratch).is_none());
 
         let merges = self.massive.step(&rules);
         let next = t + 1;
