@@ -138,10 +138,10 @@ impl Upgrade {
         match (self.for_base(), tier) {
             (true, 1) => Purse { scrap: 6, crystals: 0 },
             (true, 2) => Purse { scrap: 12, crystals: 0 },
-            (true, _) => Purse { scrap: 24, crystals: 4 },
+            (true, _) => Purse { scrap: 24, crystals: 1 },
             (false, 1) => Purse { scrap: 4, crystals: 0 },
             (false, 2) => Purse { scrap: 8, crystals: 0 },
-            (false, _) => Purse { scrap: 16, crystals: 4 },
+            (false, _) => Purse { scrap: 16, crystals: 1 },
         }
     }
 
@@ -287,7 +287,7 @@ impl Supply {
             Supply::Emp => Purse { scrap: 6, crystals: 1 },
             Supply::Magnet => Purse { scrap: 3, crystals: 0 },
             Supply::Afterburner => Purse { scrap: 5, crystals: 0 },
-            Supply::Lock => Purse { scrap: 12, crystals: 3 },
+            Supply::Lock => Purse { scrap: 8, crystals: 2 },
         }
     }
 

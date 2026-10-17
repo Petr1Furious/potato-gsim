@@ -126,8 +126,8 @@ stretch as the base's own pull fades in, so orbits around home keep their shape.
 At home (or waiting there for a ship), `B` opens the shop, even once the base has fallen. Ship
 upgrades, three tiers each, kept when the ship is lost and shared by the whole team: thrust (up to x3), delta-v (up to
 60 km/s), shells (up to 50), fire rate (up to x3), shell speed (up to 24 km/s) and blast radius (up to 50 Mm), for 4, 8 and
-16 scrap (the last also takes 4 crystals). Base upgrades: armor (up to x3),
-home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
+16 scrap (the last also takes a crystal). Base upgrades: armor (up to x3),
+home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and a crystal).
 Supplies: a target lock (other ships can be clicked to select them, for the predicted path and
 the shell preview with its closest approach, until the ship is lost), a shield (drawn around
 the ship; it survives one shell), rapid fire (twice the
