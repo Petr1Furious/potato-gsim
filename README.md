@@ -139,6 +139,8 @@ so hard that one caught near it cannot burn its way out), an EMP (3: the engines
 of enemy ships within 1.2 Gm go dead for 3 s), a scrap magnet (4: pieces are taken from ten
 times as far for 30 s) and an afterburner (5: 10 km/s of delta-v beyond a full tank). Every two
 minutes a **supply crate** turns up somewhere: the first ship through it gets a carried supply.
+With targets, crates turn up every 45 s and hold a shield, rapid fire, a target lock, a gravity
+well, an EMP or an afterburner.
 
 Every round of bases rolls how much scrap floats about, whether there is a mine more, and a
 twist: deep tanks (twice the delta-v), quick guns (shells fire and come back twice as fast),

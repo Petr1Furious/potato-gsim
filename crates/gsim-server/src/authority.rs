@@ -864,8 +864,12 @@ impl Authority {
         // --- objectives, bases and rounds ---
         let playing = self.next_round_tick.is_none();
         match self.mode {
-            GameMode::Targets if self.objective_enabled => self.tend_objectives(next, &merges, playing),
-            GameMode::Targets => {}
+            GameMode::Targets => {
+                if self.objective_enabled {
+                    self.tend_objectives(next, &merges, playing);
+                }
+                self.tend_crates(next, playing);
+            }
             GameMode::Bases => self.tend_bases(next, &merges, playing),
         }
         if self.next_round_tick.is_none() && self.round_end_tick.is_some_and(|e| next >= e) {

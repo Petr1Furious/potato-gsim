@@ -381,3 +381,29 @@ fn a_gravity_well_holds_even_a_ship_burning_away_but_not_its_own() {
     assert!(sim.server.ship(ann).unwrap().p.vx.abs() < 1.0, "the well does not pull its own ship");
     agree(&sim);
 }
+
+#[test]
+fn with_targets_crates_come_often_and_hold_what_makes_sense_there() {
+    let mut sim = Sim::new(open_space(), 16);
+    sim.server.set_rounds(0, 600, None);
+    sim.server.set_mode(GameMode::Targets);
+    let a = sim.add_client("ann", LINK);
+    sim.run_with(1.0, idle);
+    let ann = sim.player_id(a).unwrap();
+    for round in 0..4 {
+        // One within 20 s of the round, then every 45 s.
+        sim.run_with(if round == 0 { 20.5 } else { 45.0 }, idle);
+        let (_, p) = *sim.server.pieces().iter().find(|q| q.0 == PieceKind::Crate).expect("a crate");
+        place(&mut sim, ann, Particle { x: p.x - 1.0e7, ..p });
+        sim.run_with(0.5, idle);
+        assert!(!sim.server.pieces().iter().any(|q| q.0 == PieceKind::Crate), "taken");
+    }
+    let items = sim.server.items(ann).unwrap();
+    for s in [Supply::Warp, Supply::Magnet] {
+        assert_eq!(items.count(s), 0, "no {} without a base or scrap", s.name());
+    }
+    let carried: u8 = Supply::CARRIED.iter().map(|s| items.count(*s)).sum();
+    let on = [sim.server.shielded(ann).unwrap(), sim.server.magazine(ann).unwrap().max > sim.server.rules.shell_max].iter().filter(|x| **x).count();
+    assert!(carried as usize + on >= 2, "four crates gave something: {items:?}");
+    agree(&sim);
+}

@@ -29,6 +29,11 @@ const CRATE_FIELD: (f64, f64) = (0.1, 0.7);
 const CRATE_FIRST_SECONDS: f64 = 45.0;
 const CRATE_EVERY_SECONDS: f64 = 120.0;
 const CRATE_SCRAP: u32 = 5;
+/// With targets: crates first this long into a round and then every so often (s), holding one
+/// of these.
+const TARGETS_CRATE_FIRST_SECONDS: f64 = 20.0;
+const TARGETS_CRATE_EVERY_SECONDS: f64 = 45.0;
+const TARGETS_CRATE: [Supply; 6] = [Supply::Shield, Supply::RapidFire, Supply::Lock, Supply::Well, Supply::Emp, Supply::Afterburner];
 /// A piece further out than this many times the bases' ring, with no ship within
 /// `STRAY_COMPANY` (m), fades away.
 const STRAY_RINGS: f64 = 1.25;
@@ -86,15 +91,30 @@ impl Authority {
         for (id, by) in gone {
             let Some(k) = self.pieces.iter().position(|p| p.id == id) else { continue };
             let piece = self.pieces.swap_remove(k);
-            // A crate holds a supply that will be carried, one there is room for (or, failing that,
-            // a few scrap).
+            // A crate holds a supply there is room for: with bases one to carry (or, failing that, a
+            // few scrap); with targets, one of those that make sense without a base.
             let pick = self.scrap_rng.u64() as usize;
+            let bases = self.mode == GameMode::Bases;
             if let Some(p) = by.and_then(|by| self.players.get_mut(&by)) {
                 if piece.kind == PieceKind::Crate {
-                    let room: Vec<Supply> = Supply::CARRIED.into_iter().filter(|s| p.items.count(*s) < shop::CARRY).collect();
+                    let pool: &[Supply] = if bases { &Supply::CARRIED } else { &TARGETS_CRATE };
+                    let free = |s: &Supply| match s {
+                        Supply::Shield => !p.shield,
+                        Supply::RapidFire => !p.quick,
+                        Supply::Lock => !p.lock,
+                        _ => p.items.count(*s) < shop::CARRY,
+                    };
+                    let room: Vec<Supply> = pool.iter().copied().filter(free).collect();
                     match room.get(pick % room.len().max(1)) {
+                        Some(Supply::Shield) => p.shield = true,
+                        Some(Supply::RapidFire) => {
+                            p.quick = true;
+                            p.magazine = shop::magazine(tick, &self.rules, &p.upgrades, true);
+                        }
+                        Some(Supply::Lock) => p.lock = true,
                         Some(s) => *p.items.slot(*s).unwrap() += 1,
-                        None => p.cargo.add(Purse { scrap: CRATE_SCRAP, crystals: 0 }),
+                        None if bases => p.cargo.add(Purse { scrap: CRATE_SCRAP, crystals: 0 }),
+                        None => {}
                     }
                 } else {
                     p.cargo.add(Purse::one(piece.kind));
@@ -211,12 +231,7 @@ impl Authority {
                 }
             }
         }
-        if playing && self.crate_due.is_some_and(|due| tick >= due) {
-            if let Some(one) = self.cloud(PieceKind::Crate, 1, CRATE_FIELD) {
-                self.add_pieces(tick, one, None);
-            }
-            self.crate_due = Some(tick + (CRATE_EVERY_SECONDS * hz) as Tick);
-        }
+        self.tend_crates(tick, playing);
         if playing && self.crystals_due.is_some_and(|due| tick >= due) {
             let fever = self.roll.twist == Twist::CrystalFever;
             let n = 1 + self.players.values().filter(|p| !p.spectating).count() / 6 + fever as usize;
@@ -237,6 +252,25 @@ impl Authority {
                 b.bank.add(cargo);
             }
             self.team_loadout(tick, id);
+        }
+    }
+
+    /// Once a tick, in either mode: a supply crate every so often (more often with targets, where
+    /// they are the only thing to pick up).
+    pub(super) fn tend_crates(&mut self, tick: Tick, playing: bool) {
+        let hz = self.rules.tick_hz as f64;
+        let bases = self.mode == GameMode::Bases;
+        if self.crate_due.is_none() {
+            // (A world that never started a round: the first one a while from now.)
+            let first = if bases { CRATE_FIRST_SECONDS } else { TARGETS_CRATE_FIRST_SECONDS };
+            self.crate_due = Some(tick + (first * hz) as Tick);
+        }
+        if playing && self.crate_due.is_some_and(|due| tick >= due) {
+            if let Some(one) = self.cloud(PieceKind::Crate, 1, CRATE_FIELD) {
+                self.add_pieces(tick, one, None);
+            }
+            let every = if bases { CRATE_EVERY_SECONDS } else { TARGETS_CRATE_EVERY_SECONDS };
+            self.crate_due = Some(tick + (every * hz) as Tick);
         }
     }
 
@@ -287,11 +321,11 @@ impl Authority {
     pub(super) fn sow_scrap(&mut self) {
         self.pieces.clear();
         self.crystals_due = None;
-        self.crate_due = None;
+        let tick = self.tick();
         if self.mode != GameMode::Bases {
+            self.crate_due = Some(tick + (TARGETS_CRATE_FIRST_SECONDS * self.rules.tick_hz as f64) as Tick);
             return;
         }
-        let tick = self.tick();
         for _ in 0..self.scrap_wanted().div_ceil(CLOUD) {
             let Some(cloud) = self.cloud(PieceKind::Scrap, CLOUD, FIELD) else { break };
             for (kind, p) in cloud {

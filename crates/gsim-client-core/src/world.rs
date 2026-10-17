@@ -884,7 +884,9 @@ impl World {
         } else {
             // A supply not bought: from a crate (or an operator).
             let gained = Supply::CARRIED.into_iter().find(|s| new.items.count(*s) > p.items.count(*s)).filter(|_| new.bank == p.bank);
-            gained.map(|s| (format!("+1 {}", s.name()), true))
+            let switched = [(new.shield && !p.shield, Supply::Shield), (new.quick && !p.quick, Supply::RapidFire), (new.lock && !p.lock, Supply::Lock)];
+            let on = switched.into_iter().find(|s| s.0).map(|s| s.1).filter(|_| new.bank == p.bank);
+            gained.map(|s| (format!("+1 {}", s.name()), true)).or(on.map(|s| (format!("{} on", capitalized(s.name())), true)))
         };
         (p.cargo, p.bank, p.upgrades, p.items, p.magazine, p.shield, p.quick, p.magnet_until, p.lock) = (new.cargo, new.bank, new.upgrades, new.items, new.magazine, new.shield, new.quick, new.magnet_until, new.lock);
         let kit = shop::kit(&self.rules, &new.upgrades, &new.cargo);
