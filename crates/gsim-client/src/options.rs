@@ -25,7 +25,7 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::toggle(ui, &mut settings.trails, "Trails", "L").on_hover_text("Where bodies and ships have just been.");
         style::toggle(ui, &mut settings.trails_relative, "Trails relative to selection", "K")
             .on_hover_text("Trails as seen from the selected body: an orbit around it draws a loop.");
-        style::toggle(ui, &mut settings.body_names, "Body names", "N").on_hover_text("Names next to named bodies.");
+        ui.checkbox(&mut settings.body_details, "Body details").on_hover_text("Mass, size, speed and distance of the selected body, under it.");
     }
     if world == World::Large {
         style::toggle(ui, &mut settings.follow, "Camera follows selection", "F").on_hover_text("On: the camera stays with the selection. Off: it stays where it is.");
@@ -114,7 +114,8 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, world: World) {
         style::key_row(ui, "Zoom, pan, select", "WHEEL, DRAG, CLICK");
         style::key_row(ui, "Chat, command", "T, /");
         style::key_row(ui, "Point at the map", "G");
-        style::key_row(ui, "Shop (bases, at home), buy", "B, 1 - 8");
+        style::key_row(ui, "Shop (bases, at home), buy", "B, 1 - 9");
+        style::key_row(ui, "Back to your ship (and the selection)", "V");
         style::key_row(ui, "Use supplies (warp home, gravity well, ...)", "1 - 5, Q, E");
         style::key_row(ui, "Self-destruct (hold)", "BACKSPACE");
     }

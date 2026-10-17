@@ -80,6 +80,8 @@ pub enum Upgrade {
     /// How fast shells are fired and come back.
     FireRate,
     ShellSpeed,
+    /// Shells go off further from a ship.
+    Blast,
     /// The base takes less damage.
     Armor,
     /// A wider home zone.
@@ -92,7 +94,7 @@ pub enum Upgrade {
 pub const TIERS: u8 = 3;
 
 impl Upgrade {
-    pub const SHIP: [Upgrade; 5] = [Upgrade::Thrust, Upgrade::DeltaV, Upgrade::Shells, Upgrade::FireRate, Upgrade::ShellSpeed];
+    pub const SHIP: [Upgrade; 6] = [Upgrade::Thrust, Upgrade::DeltaV, Upgrade::Shells, Upgrade::FireRate, Upgrade::ShellSpeed, Upgrade::Blast];
     pub const BASE: [Upgrade; 3] = [Upgrade::Armor, Upgrade::HomeZone, Upgrade::Respawn];
 
     /// For the base (shared by its team), rather than for the ship.
@@ -107,6 +109,7 @@ impl Upgrade {
             Upgrade::Shells => "shells",
             Upgrade::FireRate => "fire rate",
             Upgrade::ShellSpeed => "shell speed",
+            Upgrade::Blast => "blast radius",
             Upgrade::Armor => "armor",
             Upgrade::HomeZone => "home zone",
             Upgrade::Respawn => "respawn",
@@ -123,6 +126,7 @@ impl Upgrade {
             Upgrade::Shells => magazine(0, rules, &ups, false).max.to_string(),
             Upgrade::FireRate => times(ups.percent(self, FIRE_RATE)),
             Upgrade::ShellSpeed => format!("{} km/s", shell_speed_max(rules, &ups) / 1000.0),
+            Upgrade::Blast => format!("{:.0} Mm", blast_radius(rules, &ups) / 1.0e6),
             Upgrade::Armor => times(ups.percent(self, ARMOR)),
             Upgrade::HomeZone => format!("{:.0} Mm", zone_radii(&ups) * crate::BASE_RADIUS / 1.0e6),
             Upgrade::Respawn => format!("{} s", respawn_ticks(rules, &ups) as f64 / rules.tick_hz as f64),
@@ -148,7 +152,7 @@ impl Upgrade {
 
 /// Each upgrade's tier, 0 for none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Upgrades(pub [u8; 8]);
+pub struct Upgrades(pub [u8; 9]);
 
 impl Upgrades {
     pub fn tier(&self, u: Upgrade) -> u8 {
@@ -201,6 +205,11 @@ pub fn magazine(tick: Tick, rules: &GameRules, ups: &Upgrades, quick: bool) -> M
 /// The fastest a shell leaves the guns (m/s).
 pub fn shell_speed_max(rules: &GameRules, ups: &Upgrades) -> f64 {
     rules.shell_speed_max * ups.percent(Upgrade::ShellSpeed, [100, 150, 200, 300]) as f64 / 100.0
+}
+
+/// How far from a ship a shell from these guns goes off (m).
+pub fn blast_radius(rules: &GameRules, ups: &Upgrades) -> f64 {
+    rules.shell_blast_radius * ups.percent(Upgrade::Blast, [100, 150, 200, 250]) as f64 / 100.0
 }
 
 /// How far around the base its home zone reaches, in base radii.
@@ -307,7 +316,7 @@ pub const EMP_RADIUS: f64 = 1.2e9;
 pub const EMP_SECONDS: f64 = 3.0;
 /// How long a scrap magnet lasts (s), and how many times as far it reaches.
 pub const MAGNET_SECONDS: f64 = 30.0;
-pub const MAGNET_REACH: f64 = 3.0;
+pub const MAGNET_REACH: f64 = 10.0;
 /// What an afterburner adds (mm/s of delta-v).
 pub const AFTERBURNER_MMPS: i64 = 10_000_000;
 

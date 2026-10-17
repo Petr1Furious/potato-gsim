@@ -77,8 +77,6 @@ pub struct Paths {
     /// After `farthest` the path really does come back: at least half way to where it was
     /// nearest before. A path that merely wavers on its way out does not.
     pub returns: bool,
-    /// Index into `shell` and distance of the shell's closest approach to the reference.
-    pub shell_closest: Option<(usize, f64)>,
     pub compute_ms: f64,
 }
 
@@ -336,11 +334,6 @@ impl Doing {
         }
         if let Some(shell) = &self.shell {
             out.shell = relative(job, &shell.path, moving);
-            if job.reference.is_some() {
-                // How near the shell comes to what it is aimed at.
-                let d: Vec<f64> = out.shell.iter().map(|q| (q.0 * q.0 + q.1 * q.1).sqrt()).collect();
-                out.shell_closest = next_closest(&d);
-            }
         }
         Some(out)
     }

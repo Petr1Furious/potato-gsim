@@ -173,12 +173,15 @@ pub struct ShellRep {
     pub owner: PlayerId,
     pub spawn_tick: Tick,
     pub track: Track<Particle>,
+    /// How far from a ship it goes off.
+    pub blast: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EffectKind {
     ShipDestroyed,
-    ShellBlast,
+    /// A shell went off, this far around.
+    ShellBlast(f64),
     /// Somebody completed the orbit objective around the body at this spot.
     Captured,
     /// A base went down here.
@@ -294,7 +297,7 @@ impl World {
         let shells = w
             .shells
             .iter()
-            .map(|s| (s.id, ShellRep { owner: s.owner, spawn_tick: s.spawn_tick, track: Track::new(tick, s.p) }))
+            .map(|s| (s.id, ShellRep { owner: s.owner, spawn_tick: s.spawn_tick, track: Track::new(tick, s.p), blast: s.blast }))
             .collect();
         let pieces = w.pieces.iter().map(|p| (p.id, PieceRep { kind: p.kind, track: Track::new(tick, p.p), fading: p.fading })).collect();
         Self {
@@ -510,8 +513,8 @@ impl World {
                     }
                 }
             }
-            Event::ShellSpawn { tick, id, owner, p, free } => {
-                self.shells.insert(id, ShellRep { owner, spawn_tick: tick, track: Track::new(tick, p) });
+            Event::ShellSpawn { tick, id, owner, p, free, blast } => {
+                self.shells.insert(id, ShellRep { owner, spawn_tick: tick, track: Track::new(tick, p), blast });
                 if let Some(pl) = self.players.get_mut(&owner) {
                     pl.next_fire_tick = tick + pl.magazine.cooldown();
                     if !free {
@@ -524,7 +527,7 @@ impl World {
                     s.track.dies_at = Some(tick);
                     if exploded {
                         let at = *s.track.at(tick).unwrap_or(s.track.last());
-                        self.effects.push_back(Effect { tick, at, kind: EffectKind::ShellBlast });
+                        self.effects.push_back(Effect { tick, at, kind: EffectKind::ShellBlast(s.blast) });
                     }
                 }
             }

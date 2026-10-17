@@ -5,7 +5,7 @@ use gsim_core::{GameRules, Magazine, MassiveSnapshot, Particle, ShipInput, ShipS
 use serde::{Deserialize, Serialize};
 
 /// Bump on any wire or simulation change.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 pub const DEFAULT_PORT: u16 = 27777;
 pub const MAX_NAME_CHARS: usize = 24;
 /// Commands are re-sent until acknowledged; this bounds one packet.
@@ -281,6 +281,8 @@ pub struct ShellInfo {
     pub owner: PlayerId,
     pub spawn_tick: Tick,
     pub p: Particle,
+    /// How far from a ship it goes off (its guns' blast radius).
+    pub blast: f64,
 }
 
 /// Complete world at the start of `massive.tick`.
@@ -324,8 +326,9 @@ pub enum Event {
     Gamemode { tick: Tick, player: PlayerId, spectating: bool },
     ShipSpawn { tick: Tick, player: PlayerId, state: ShipState },
     Input { player: PlayerId, tick: Tick, input: ShipInput },
-    /// `free`: fired from within the owner's home zone, so it took nothing from the magazine.
-    ShellSpawn { tick: Tick, id: ShellId, owner: PlayerId, p: Particle, free: bool },
+    /// `free`: fired from within the owner's home zone, so it took nothing from the magazine. `blast`:
+    /// how far from a ship it goes off.
+    ShellSpawn { tick: Tick, id: ShellId, owner: PlayerId, p: Particle, free: bool, blast: f64 },
     ShellGone { tick: Tick, id: ShellId, exploded: bool },
     ShipDied { tick: Tick, player: PlayerId, killer: Option<PlayerId>, body: Option<u32>, respawn_tick: Tick },
     /// A player's totals were set by hand.

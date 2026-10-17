@@ -353,6 +353,7 @@ impl Authority {
                 let full = match s {
                     Supply::Shield => p.shield,
                     Supply::Lock => p.lock,
+                    Supply::RapidFire => p.quick,
                     Supply::Repair => hp >= BASE_HP || sudden_death,
                     _ => p.items.count(s) >= shop::CARRY,
                 };

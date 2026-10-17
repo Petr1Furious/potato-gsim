@@ -100,6 +100,8 @@ struct Shell {
     owner: PlayerId,
     spawn_tick: Tick,
     p: Particle,
+    /// How far from a ship it goes off.
+    blast: f64,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -551,7 +553,7 @@ impl Authority {
             shells: self
                 .shells
                 .iter()
-                .map(|s| ShellInfo { id: s.id, owner: s.owner, spawn_tick: s.spawn_tick, p: s.p })
+                .map(|s| ShellInfo { id: s.id, owner: s.owner, spawn_tick: s.spawn_tick, p: s.p, blast: s.blast })
                 .collect(),
             pieces: self.pieces.iter().map(|p| PieceInfo { id: p.id, kind: p.kind, p: p.p, fading: p.fading }).collect(),
         }
@@ -718,14 +720,14 @@ impl Authority {
                     vx: ship.p.vx + dx * speed,
                     vy: ship.p.vy + dy * speed,
                 };
-                spawned.push((Shell { id: 0, owner: p.id, spawn_tick: t, p: particle }, free));
+                spawned.push((Shell { id: 0, owner: p.id, spawn_tick: t, p: particle, blast: shop::blast_radius(&rules, &p.upgrades) }, free));
             }
         }
         for (mut s, free) in spawned {
             s.id = self.next_shell_id;
             self.next_shell_id += 1;
             self.stats.shells_fired += 1;
-            self.event(Event::ShellSpawn { tick: t, id: s.id, owner: s.owner, p: s.p, free });
+            self.event(Event::ShellSpawn { tick: t, id: s.id, owner: s.owner, p: s.p, free, blast: s.blast });
             self.shells.push(s);
         }
 
@@ -755,7 +757,6 @@ impl Authority {
         // A shield takes the first shell, and is gone.
         let mut shielded: Vec<PlayerId> = self.players.values().filter(|p| p.shield).map(|p| p.id).collect();
         let mut spent: Vec<PlayerId> = Vec::new();
-        let reach2 = (rules.shell_blast_radius + rules.ship_radius) * (rules.shell_blast_radius + rules.ship_radius);
         let mut gone: Vec<(ShellId, bool)> = Vec::new();
         // (body, shooter) for every shell that struck a body.
         let mut struck: Vec<(u32, PlayerId)> = Vec::new();
@@ -770,6 +771,7 @@ impl Authority {
             }
             if age >= rules.shell_arm_ticks as Tick {
                 let after = (s.p.x, s.p.y);
+                let reach2 = (s.blast + rules.ship_radius) * (s.blast + rules.ship_radius);
                 let mut exploded = false;
                 for (victim, a0, a1) in &segs {
                     if !gods.contains(victim) && swept_min_dist2(before, after, *a0, *a1) <= reach2 {

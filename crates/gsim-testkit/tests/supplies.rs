@@ -334,3 +334,21 @@ fn a_target_lock_lasts_until_the_ship_is_lost() {
     sim.run_with(0.5, idle);
     assert!(!sim.clients[a].session.world.as_ref().unwrap().players[&ann].lock, "gone with the ship");
 }
+
+#[test]
+fn a_bigger_blast_reaches_further() {
+    let (mut sim, a, b, ann, bob) = duel(14);
+    let rules = sim.server.rules.clone();
+    buy(&mut sim, a, Ware::Upgrade(Upgrade::Blast));
+    buy(&mut sim, a, Ware::Upgrade(Upgrade::Blast));
+    // bob sits 1.5 times the plain blast radius off the line of ann's shell.
+    place(&mut sim, ann, Particle { x: 2.0e11, y: 0.0, vx: 0.0, vy: 0.0 });
+    place(&mut sim, bob, Particle { x: 2.0e11 + 1.0e9, y: 1.5 * rules.shell_blast_radius, vx: 0.0, vy: 0.0 });
+    sim.run_with(0.1, idle);
+    let t0 = sim.time;
+    sim.run_with(2.0, |i, t| if i == a && t < t0 + 0.1 { Controls { fire: Some((0, 8000.0)), ..Controls::default() } } else { Controls::default() });
+    let w = sim.clients[b].session.world.as_ref().unwrap();
+    assert!(w.shells.values().all(|s| s.blast == 2.0 * rules.shell_blast_radius) || w.shells.is_empty());
+    assert!(sim.server.ship(bob).is_none(), "twice the radius: bob is caught");
+    agree(&sim);
+}

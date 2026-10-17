@@ -48,7 +48,8 @@ pub struct Settings {
     pub shell_prediction: bool,
     pub trails: bool,
     pub trails_relative: bool,
-    pub body_names: bool,
+    /// Mass, size, speed and distance of the selected body under it.
+    pub body_details: bool,
     pub camera: Camera,
     /// Large-scale worlds: the camera stays with the selection (or else where it is).
     pub follow: bool,
@@ -65,7 +66,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ship_color: random_color(), ui_scale: 1.5, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_names: false, camera: Camera::Selection, follow: true, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
+        Self { name: "Player".into(), server: "localhost".into(), preset: "random".into(), mouse_aim: true, fullscreen: false, ship_color: random_color(), ui_scale: 1.5, zoom_speed: default_zoom_speed(), burn_preview: 5.0, gpu: true, prediction: true, shell_prediction: false, trails: false, trails_relative: true, body_details: false, camera: Camera::Selection, follow: true, details: false, color: ColorMode::Mass, long_exposure: false, params: BTreeMap::new(), measured: BTreeMap::new() }
     }
 }
 
@@ -162,7 +163,7 @@ impl Settings {
                 "shell_prediction" => s.shell_prediction = v == "1",
                 "trails" => s.trails = v == "1",
                 "trails_relative" => s.trails_relative = v != "0",
-                "body_names" => s.body_names = v == "1",
+                "body_details" => s.body_details = v == "1",
                 "camera" => s.camera = Camera::ALL.into_iter().find(|m| m.name() == v).unwrap_or(s.camera),
                 "details" => s.details = v == "1",
                 "long_exposure" => s.long_exposure = v == "1",
@@ -204,7 +205,7 @@ impl Settings {
             ("shell_prediction", self.shell_prediction),
             ("trails", self.trails),
             ("trails_relative", self.trails_relative),
-            ("body_names", self.body_names),
+            ("body_details", self.body_details),
             ("details", self.details),
             ("long_exposure", self.long_exposure),
             ("follow", self.follow),

@@ -735,11 +735,21 @@ pub fn row(ui: &mut egui::Ui, label: &str, value: egui::RichText, key: Option<&s
         caption(ui, label);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(key) = key {
-                ui.label(egui::RichText::new(key).monospace().color(c32(ACCENT)));
+                key_cap(ui, key);
             }
             ui.label(value);
         });
     });
+}
+
+/// A key, drawn as a key: its letter in a small box.
+pub fn key_cap(ui: &mut egui::Ui, key: &str) {
+    egui::Frame::NONE
+        .stroke(egui::Stroke::new(1.0, c32(alpha(ACCENT, 0.7))))
+        .fill(c32(alpha(ACCENT, 0.12)))
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(5, 0))
+        .show(ui, |ui| ui.label(egui::RichText::new(key).monospace().small().color(c32(ACCENT))));
 }
 
 /// Section header inside a window.

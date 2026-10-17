@@ -201,12 +201,15 @@ const WHEEL: f32 = if cfg!(target_arch = "wasm32") { 0.02 } else { 1.0 };
 /// Seconds of a frame kept clear of predictions, for what goes on after this screen is done
 /// with it: the window library sending the picture off, and the browser's own work.
 const SLACK: f64 = 0.0015;
+/// The scales (m per pixel) refocusing on the ship keeps the view within: close enough to see
+/// the ship's surroundings, far enough to see its orbit.
+const FOCUS_MPP: (f64, f64) = (2.0e5, 5.0e6);
 /// Seconds the self-destruct key has to be held.
 const DESTRUCT_HOLD: f64 = 1.5;
 /// How long news for the player stays under the clock (s).
 const ALERT_SECONDS: f64 = 4.0;
 /// Keys that buy upgrades in the shop: those for the ship, then those for the base.
-const SHOP_KEYS: [KeyCode; 8] = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5, KeyCode::Key6, KeyCode::Key7, KeyCode::Key8];
+const SHOP_KEYS: [KeyCode; 9] = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5, KeyCode::Key6, KeyCode::Key7, KeyCode::Key8, KeyCode::Key9];
 
 impl Game {
     /// `server`: host or host:port (in a browser, nothing: the server the page came from).
@@ -293,6 +296,8 @@ impl Game {
         let keys = !self.ui_has_keyboard && !self.menu_open && !self.chat.open;
         let mouse = mouse_position();
         let mut shop_asked = false;
+        // V was pressed: back to our ship (and the selection).
+        let mut refocus = false;
         // E was pressed: fire a gravity well towards the cursor, as a shell.
         let mut well_asked = false;
 
@@ -342,9 +347,6 @@ impl Game {
                 let (x, y) = self.view.to_world(mouse.0, mouse.1);
                 self.net.session.send_mark(x, y);
             }
-            if is_key_pressed(KeyCode::N) {
-                settings.body_names = !settings.body_names;
-            }
             if is_key_pressed(KeyCode::O) {
                 settings.shell_prediction = !settings.shell_prediction;
             }
@@ -360,6 +362,7 @@ impl Game {
                 });
             }
             self.pick_target |= is_key_pressed(KeyCode::R);
+            refocus = is_key_pressed(KeyCode::V);
             if is_key_pressed(KeyCode::B) {
                 self.shop_open = !self.shop_open;
                 shop_asked = self.shop_open;
@@ -672,6 +675,19 @@ impl Game {
         if let (Target::Body(_), Some(ship), false, false) = (target, own, self.had_ship, auto) {
             frame_both(&mut self.view, &mut self.offset, target_pos, (ship.x, ship.y));
         }
+        if let (true, Some(ship)) = (refocus, own) {
+            self.watch = None;
+            if matches!(target, Target::Body(_) | Target::Picked(_)) {
+                // The ship and what is selected, together.
+                fit_both(&mut self.view, &mut self.offset, target_pos, (ship.x, ship.y));
+                self.view.mpp = self.view.mpp.max(FOCUS_MPP.0);
+            } else {
+                // The ship in the middle, at a scale that shows its neighborhood.
+                self.offset = (0.0, 0.0);
+                self.view.mpp = self.view.mpp.clamp(FOCUS_MPP.0, FOCUS_MPP.1);
+            }
+            self.auto.hands_off_until = 0.0;
+        }
         self.had_ship = own.is_some();
 
         let pointer = !self.ui_has_pointer && !self.menu_open;
@@ -916,7 +932,7 @@ impl Game {
             if (mass < 0.0 || shaped[j as usize]) && !base {
                 style::body(s, r_px, mass, j, fade, ui, style::light_from(s, star));
             }
-            if let Some(name) = world.names.get(&j).filter(|_| settings.body_names && self.selected != Some(j) && !base) {
+            if let Some(name) = world.names.get(&j).filter(|_| self.selected != Some(j) && !base) {
                 let size = LABEL * ui;
                 let below = s.1 + r_px.max(1.1 * ui).min(4000.0) + size;
                 labels.push(name.as_str(), s.0, below, size, style::alpha(style::DIM, fade), Rank::BodyName);
@@ -997,11 +1013,6 @@ impl Game {
             let top = r_px.max(6.0 * ui).min(4000.0) + 16.0 * ui;
             if b.hp > 0 {
                 labels.push(if mine { "HOME".to_string() } else { name.to_uppercase() }, s.0, s.1 - top - 4.0 * ui, LABEL * ui, color, Rank::Target);
-                // Health under the base.
-                let (w, h) = (44.0 * ui, 4.0 * ui);
-                let y = s.1 + top;
-                draw_rectangle(s.0 - w * 0.5, y, w, h, Color::from_rgba(24, 32, 46, 220));
-                draw_rectangle(s.0 - w * 0.5, y, w * health, h, if besieged { style::EMBER } else { color });
             } else {
                 labels.push(format!("{} · DOWN", name.to_uppercase()), s.0, s.1 - top, LABEL * ui, style::DIM, Rank::Target);
             }
@@ -1041,9 +1052,9 @@ impl Game {
         }
 
         // --- shells and effects ----------------------------------------------------------------
-        let blast_px = (world.rules.shell_blast_radius / view.mpp) as f32;
         for (id, shell) in &world.shells {
             let Some(p) = world.shell_at(*id, tick_f) else { continue };
+            let blast_px = (shell.blast / view.mpp) as f32;
             let s = view.to_screen(p.x, p.y);
             if !view.on_screen(s, blast_px) {
                 continue;
@@ -1099,7 +1110,7 @@ impl Game {
             let s = view.to_screen(e.at.x + e.at.vx * sim_age, e.at.y + e.at.vy * sim_age);
             let fade = (1.0 - age / 1.5) as f32;
             match e.kind {
-                EffectKind::ShellBlast => style::disc(s.0, s.1, blast_px.max(6.0), Color::new(1.0, 0.6, 0.3, 0.5 * fade)),
+                EffectKind::ShellBlast(blast) => style::disc(s.0, s.1, ((blast / view.mpp) as f32).max(6.0), Color::new(1.0, 0.6, 0.3, 0.5 * fade)),
                 EffectKind::Captured => {
                     // Two gold rings bursting outwards.
                     for delay in [0.0f32, 0.18] {
@@ -1199,15 +1210,6 @@ impl Game {
             draw_path(&paths.held, anchor, &view, ui, Color::from_rgba(255, 220, 90, 150));
             draw_path(&paths.coast, anchor, &view, ui, Color::from_rgba(90, 255, 120, 170));
             draw_path(&paths.shell, anchor, &view, ui, Color::from_rgba(255, 130, 90, 170));
-        }
-        if let (false, Some((i, d))) = (stale, paths.shell_closest) {
-            // How near the shell would pass what is selected.
-            let q = paths.shell[i];
-            let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
-            let c = Color::from_rgba(255, 130, 90, 255);
-            style::ring(s.0, s.1, 5.0 * ui, 1.5 * ui, c);
-            let eta = i as f64 / world.rules.tick_hz as f64;
-            labels.block(vec![format!("shell {}", fmt::distance(d)), format!("in {eta:.1} s")], s.0, s.1 + 18.0 * ui, LABEL * ui, c, Rank::Approach);
         }
         let shell_live = (!stale).then(|| paths.shell.get(world.rules.shell_arm_ticks as usize)).flatten();
         if let Some(q) = shell_live {
@@ -1320,6 +1322,13 @@ impl Game {
             }
             if !mine {
                 labels.push(p.name.as_str(), s.0, s.1 + 20.0 * ui, LABEL * ui, color, Rank::Player);
+            } else {
+                // How fast, and how fast against what is selected.
+                let mut text = fmt::speed(ship.vx.hypot(ship.vy));
+                if let Some(r) = ref_now {
+                    text = format!("{text} · rel {}", fmt::speed((ship.vx - r.vx).hypot(ship.vy - r.vy)));
+                }
+                labels.push(text, s.0, s.1 + 20.0 * ui, LABEL * ui, style::DIM, Rank::Player);
             }
         }
 
@@ -1384,17 +1393,23 @@ impl Game {
                 lines.push(format!("d = {}", fmt::distance((p.x - ship.x).hypot(p.y - ship.y))));
                 lines.push(format!("rel v = {}", fmt::speed((p.vx - ship.vx).hypot(p.vy - ship.vy))));
             }
+            if !settings.body_details {
+                lines.truncate(1);
+            }
             labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
         }
-        if let (Some(slot), Some(b)) = (self.selected, ref_now) {
+        if let (Some(slot), Some(b), None) = (self.selected, ref_now, self.picked) {
             let s = view.to_screen(b.x, b.y);
             let r_px = ((row.props.radius[slot as usize] / view.mpp) as f32).min(4000.0) + 6.0 * ui;
             draw_rectangle_lines(s.0 - r_px, s.1 - r_px, 2.0 * r_px, 2.0 * r_px, 1.5 * ui, WHITE);
-            // The name line on top of the label is optional (N).
-            let mut lines = Vec::new();
-            if settings.body_names {
-                lines.push(world.body_name(slot));
-            }
+            // The details only with the setting on.
+            if !settings.body_details {
+                // A named body keeps its name label.
+                if let Some(name) = world.names.get(&slot) {
+                    labels.push(name.as_str(), s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
+                }
+            } else {
+            let mut lines = vec![world.body_name(slot)];
             lines.push(format!("m = {}", fmt::mass(row.props.mass[slot as usize])));
             lines.push(format!("r = {}", fmt::distance(row.props.radius[slot as usize])));
             lines.push(format!("v = {}", fmt::speed((b.vx * b.vx + b.vy * b.vy).sqrt())));
@@ -1405,6 +1420,7 @@ impl Game {
                 lines.push(format!("rel v = {}", fmt::speed(v)));
             }
             labels.block(lines, s.0, s.1 + r_px + 12.0 * ui, LABEL * ui, WHITE, Rank::Selection);
+            }
         }
 
         // --- pings -----------------------------------------------------------------------------
@@ -1578,7 +1594,9 @@ impl Game {
         let shop_open = self.shop_open;
         let rules_now = world.rules.clone();
         let mut bought: Option<Ware> = None;
-        let (items, shielded, locked_on) = me.map_or((Items::default(), false, false), |m| (m.items, m.shield, m.lock));
+        let (items, shielded, locked_on, rapid) = me.map_or((Items::default(), false, false, false), |m| (m.items, m.shield, m.lock, m.quick));
+        // Seconds of scrap magnet left.
+        let magnet = me.map(|m| (m.magnet_until as f64 - tick_f) / world.rules.tick_hz as f64).filter(|s| *s > 0.0);
         let thrust_pct = self.thrust_pct;
         // The ruler replaces a "meters per pixel" readout.
         style::scale_bar(screen_width() * 0.5, screen_height() - 18.0 * hud, view.mpp, fmt::distance_round, hud);
@@ -1802,8 +1820,14 @@ impl Game {
                                 let what = format!("{} · thrust {:.0} %", cargo.describe(), 100.0 * thrust_share);
                                 style::gauge(ui, "HOLD", &what, thrust_share, style::piece_color(PieceKind::Scrap));
                             }
-                            if locked_on {
-                                style::row(ui, "TARGET LOCK", RichText::new("on").color(gold), None);
+                            // What is on the ship for now: buffs, with no key to use them.
+                            for (on, what) in [(shielded, "SHIELD"), (rapid, "RAPID FIRE"), (locked_on, "TARGET LOCK")] {
+                                if on {
+                                    style::row(ui, what, RichText::new("on").color(good), None);
+                                }
+                            }
+                            if let Some(left) = magnet {
+                                style::row(ui, "SCRAP MAGNET", RichText::new(format!("{left:.0} s left")).color(good), None);
                             }
                             // Supplies carried, and the keys that use them.
                             for (k, supply) in Supply::CARRIED.into_iter().enumerate() {
@@ -1860,7 +1884,7 @@ impl Game {
             }
 
             if shop_open {
-                bought = shop(ctx, &rules_now, &bank, &upgrades, &items, (shielded, locked_on));
+                bought = shop(ctx, &rules_now, &bank, &upgrades, &items, (shielded, locked_on, rapid));
             }
 
             chat_out = self.chat.show(ctx, &self.net.session.chat, now, chat_wheel, &complete_ctx, &mentions);
@@ -2050,6 +2074,11 @@ pub(crate) fn frame_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f
     if view.on_screen(view.to_screen(body.0, body.1), 0.0) && view.on_screen(view.to_screen(ship.0, ship.1), 0.0) {
         return;
     }
+    fit_both(view, offset, body, ship);
+}
+
+/// Look at `body` (what the camera stays with) and `ship` together, whatever the view was.
+pub(crate) fn fit_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f64), ship: (f64, f64)) {
     let (dx, dy) = (ship.0 - body.0, ship.1 - body.1);
     *offset = (0.5 * dx, 0.5 * dy);
     // Each of them half way from the middle to the edge on the tighter axis: clear of the
@@ -2058,13 +2087,16 @@ pub(crate) fn frame_both(view: &mut View, offset: &mut (f64, f64), body: (f64, f
     view.mpp = needed.clamp(MIN_MPP, 1.0e12);
 }
 
+/// A predicted path, fading out towards its end (the further ahead, the less it is to be relied on).
 pub(crate) fn draw_path(points: &[(f64, f64)], anchor: (f64, f64), view: &View, ui: f32, color: Color) {
     let mut prev: Option<(f32, f32)> = None;
-    for q in points {
+    let n = points.len().max(1) as f32;
+    for (k, q) in points.iter().enumerate() {
         let s = view.to_screen(anchor.0 + q.0, anchor.1 + q.1);
         if let Some(p) = prev {
             if (view.on_screen(p, 200.0) || view.on_screen(s, 200.0)) && s.0.is_finite() && s.1.is_finite() {
-                draw_line(p.0, p.1, s.0, s.1, 1.5 * ui, color);
+                let fade = 1.0 - 0.85 * k as f32 / n;
+                draw_line(p.0, p.1, s.0, s.1, 1.5 * ui, style::alpha(color, color.a * fade));
             }
         }
         prev = Some(s);
@@ -2194,7 +2226,7 @@ impl Game {
 
 /// The shop, at home: the next tier of each upgrade, and supplies, for what is banked.
 /// Returns what was bought, if anything.
-fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrades: &Upgrades, items: &Items, (shield, lock): (bool, bool)) -> Option<Ware> {
+fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrades: &Upgrades, items: &Items, (shield, lock, quick): (bool, bool, bool)) -> Option<Ware> {
     use egui::RichText;
     let mut bought = None;
     let (dim, gold, text) = (style::c32(style::DIM), style::c32(style::GOLD), style::c32(style::TEXT));
@@ -2219,7 +2251,7 @@ fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrade
                     ui.end_row();
                 }
                 let tier = upgrades.tier(u);
-                style::key_hint(ui, &(k + 1).to_string());
+                style::key_cap(ui, &(k + 1).to_string());
                 ui.label(RichText::new(u.name().to_uppercase()).strong());
                 // Tiers bought, out of all of them.
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(TIERS as f32 * 11.0, 10.0), egui::Sense::hover());
@@ -2252,6 +2284,7 @@ fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrade
                 let have = match s {
                     Supply::Shield if shield => "on".to_string(),
                     Supply::Lock if lock => "on".to_string(),
+                    Supply::RapidFire if quick => "on".to_string(),
                     _ if s.carried() => format!("{} / {}", items.count(s), shop::CARRY),
                     _ => String::new(),
                 };
@@ -2259,6 +2292,7 @@ fn shop(ctx: &egui::Context, rules: &gsim_core::GameRules, bank: &Purse, upgrade
                 let can = match s {
                     Supply::Shield => !shield,
                     Supply::Lock => !lock,
+                    Supply::RapidFire => !quick,
                     _ => !s.carried() || items.count(s) < shop::CARRY,
                 };
                 if price_button(ui, s.price(), can) {

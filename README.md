@@ -124,7 +124,7 @@ stretch as the base's own pull fades in, so orbits around home keep their shape.
 
 At home (or waiting there for a ship), `B` opens the shop, even once the base has fallen. Ship
 upgrades, three tiers each, kept when the ship is lost and shared by the whole team: thrust (up to x3), delta-v (up to
-60 km/s), shells (up to 50), fire rate (up to x3) and shell speed (up to 24 km/s), for 4, 8 and
+60 km/s), shells (up to 50), fire rate (up to x3), shell speed (up to 24 km/s) and blast radius (up to 50 Mm), for 4, 8 and
 16 scrap (the last also takes 4 crystals). Base upgrades: armor (up to x3),
 home zone (out to 1600 Mm) and respawn (down to 1 s), for 6, 12 and 24 scrap (and 4 crystals).
 Supplies: a target lock (other ships can be clicked to select them, for the predicted path and
@@ -134,7 +134,7 @@ shells, fired and coming back twice as fast, until the ship is lost), base repai
 five to carry along, used with the keys 1 to 5 while the shop is closed: warp home (1 or `Q`: a
 jump back home, leaving the cargo behind), a gravity well (2 or `E`: fired towards the cursor
 like a shell, after a second it pulls every ship near it in for 10 s), an EMP (3: the engines
-of enemy ships within 1.2 Gm go dead for 3 s), a scrap magnet (4: pieces are taken from three
+of enemy ships within 1.2 Gm go dead for 3 s), a scrap magnet (4: pieces are taken from ten
 times as far for 30 s) and an afterburner (5: 10 km/s of delta-v beyond a full tank). Every two
 minutes a **supply crate** turns up somewhere: the first ship through it gets a carried supply.
 
@@ -224,10 +224,11 @@ Operators (listed in `ops.txt`; the host of a solo game always is one):
 | Click | Select a body, a piece of scrap, a crystal or a crate (or, with a target lock, another ship): prediction is then drawn relative to it |
 | F | Camera: with the selected body, or your ship while nothing is selected (the default), or automatic: with the selection, moving and zooming by itself to keep the ship, its predicted path up to the closest approach and the selected body on screen (it holds still under thrust, and leaves a view set by hand alone for a few seconds) |
 | R | Select the nearest target (with bases: enemy base), then the next one |
-| P, O, N | Ship trajectory prediction, shell trajectory preview, body names |
+| P, O | Ship trajectory prediction, shell trajectory preview |
+| V | Back to your ship and the selection (or just the ship, at a sensible zoom) |
 | L, K | Trails, trails relative to selection / world |
 | T, /, G | Chat, command, point at the map |
-| B, 1 - 8, 1 - 5, Q, E | Shop (bases, at home), buy upgrades; use supplies (Q warp home, E gravity well) |
+| B, 1 - 9, 1 - 5, Q, E | Shop (bases, at home), buy upgrades; use supplies (Q warp home, E gravity well) |
 | Backspace (held 1.5 s) | Destroy your own ship and respawn |
 | F3, F11, Esc | Network details, fullscreen, menu |
 
